@@ -1,0 +1,64 @@
+Targetting Order: (* = prepped, ✓ = hackable)
+  * ✓ Money: $1.391t of $1.391t ($2.085k/ram.sec), Sec: 33.0 of 33.0, TTW: 6m 7s, Hack: 1179 - megacorp Sym: MGCP Owned: true Manip: grow
+  * ✓ Money: $284.6b of $525.9b ($1.483k/ram.sec), Sec: 33.0 of 33.0, TTW: 5m 40s, Hack: 1092 - omnitek Sym: OMTK Owned: true Manip: hack
+  * ✓ Money: $38.01b of $43.32b ($76.97/ram.sec), Sec: 32.0 of 32.0, TTW: 5m 52s, Hack: 1165 - fulcrumtech Sym: FLCM Owned: true Manip: grow
+  * ✓ Money: $551.3b of $551.3b ($4.513k/ram.sec), Sec: 19.0 of 19.0, TTW: 3m 6s, Hack: 1029 - clarkinc Sym: CLRK Owned: false Manip: hack
+  * ✓ Money: $603.5b of $604.4b ($3.723k/ram.sec), Sec: 25.0 of 25.0, TTW: 4m, Hack: 1015 - 4sigma Sym: FSIG Owned: false Manip: hack
+  * ✓ Money: $79.44b of $543.4b ($1.497k/ram.sec), Sec: 33.0 of 33.0, TTW: 5m 42s, Hack: 1096 - kuai-gong Sym: KGI Owned: false Manip: hack
+  * ✓ Money: $38.63b of $615.1b ($1.145k/ram.sec), Sec: 31.0 of 31.0, TTW: 5m 41s, Hack: 1165 - blade Sym: BLD Owned: false Manip: grow
+  * ✓ Money: $14.51b of $14.51b ($311.5/ram.sec), Sec: 14.0 of 14.0, TTW: 1m 6s, Hack: 488 - rho-construction Sym: RHOC Owned: false Manip: grow
+  * ✓ Money: $11.42b of $30.92b ($298.1/ram.sec), Sec: 21.0 of 21.0, TTW: 2m 36s, Hack: 779 - nova-med Sym: NVMD Owned: false Manip: grow
+  * ✓ Money: $2.160b of $13.82b ($200.9/ram.sec), Sec: 20.0 of 20.0, TTW: 1m 53s, Hack: 593 - syscore Sym: SYSC Owned: false Manip: hack
+  * ✓ Money: $2.532b of $15.98b ($198.9/ram.sec), Sec: 20.0 of 20.0, TTW: 1m 37s, Hack: 508 - alpha-ent Sym: APHE Owned: false Manip: hack
+  * ✓ Money: $1.591b of $1.591b ($120.3/ram.sec), Sec: 10.00 of 10.00, TTW: 20.5s, Hack: 198 - omega-net Sym: OMGA Owned: false Manip: hack
+  * ✓ Money: $2.883b of $8.238b ($108.4/ram.sec), Sec: 22.0 of 22.0, TTW: 1m 25s, Hack: 404 - catalyst Sym: CTYS Owned: false Manip: hack
+  * ✓ Money: $3.593b of $6.875b ($91.24/ram.sec), Sec: 26.0 of 26.0, TTW: 1m 43s, Hack: 412 - netlink Sym: NTLK Owned: false Manip: hack
+  * ✓ Money: $57.50m of $57.50m ($16.06/ram.sec), Sec: 3.00 of 3.00, TTW: 2.02s, Hack: 5 - sigma-cosmetics Sym: SGC Owned: false Manip: hack
+  * ✓ Money: $16.47m of $50.00m ($7.399/ram.sec), Sec: 3.00 of 3.00, TTW: 1.91s, Hack: 1 - foodnstuff Sym: FNS Owned: false Manip: hack
+    ✓ Money: $61.47b of $1.537t ($863.7/ram.sec), Sec: 70.5 of 33.0, TTW: 13m 49s, Hack: 1248 - ecorp Sym: ECP Owned: false Manip: hack
+    ✓ Money: $1.511b of $37.79b ($290.9/ram.sec), Sec: 39.8 of 26.0, TTW: 5m 6s, Hack: 815 - global-pharm Sym: GPH Owned: false Manip: hack
+    ✓ Money: $1.135b of $28.37b ($215.6/ram.sec), Sec: 53.9 of 26.0, TTW: 7m 30s, Hack: 886 - stormtech Sym: STM Owned: false Manip: hack
+    ✓ Money: $1.133b of $28.32b ($197.3/ram.sec), Sec: 67.1 of 27.0, TTW: 8m 29s, Hack: 805 - univ-energy Sym: UNV Owned: false Manip: grow
+    ✓ Money: $782.7m of $19.57b ($178.6/ram.sec), Sec: 51.7 of 21.0, TTW: 5m 46s, Hack: 708 - lexo-corp Sym: LXO Owned: false Manip: grow
+    ✓ Money: $703.8m of $17.60b ($153.6/ram.sec), Sec: 60.4 of 24.0, TTW: 7m 8s, Hack: 751 - solaris Sym: SLRS Owned: false Manip: grow
+    ✓ Money: $1.176b of $29.40b ($138.3/ram.sec), Sec: 68.5 of 27.0, TTW: 9m 38s, Hack: 895 - aerocorp Sym: AERO Owned: false Manip: hack
+    ✓ Money: $958.9m of $23.97b ($127.7/ram.sec), Sec: 94.0 of 31.0, TTW: 12m 41s, Hack: 860 - icarus Sym: ICRS Owned: false Manip: hack
+    ✓ Money: $771.8m of $19.29b ($118.9/ram.sec), Sec: 85.0 of 28.0, TTW: 10m 53s, Hack: 815 - vitalife Sym: VITA Owned: false Manip: grow
+    ✓ Money: $968.8m of $24.22b ($112.5/ram.sec), Sec: 85.0 of 28.0, TTW: 12m 23s, Hack: 928 - omnia Sym: OMN Owned: false Manip: grow
+    ✓ Money: $785.3m of $19.63b ($109.4/ram.sec), Sec: 80.0 of 27.0, TTW: 10m 17s, Hack: 818 - titan-labs Sym: TITN Owned: false Manip: hack
+    ✓ Money: $532.1m of $13.30b ($96.40/ram.sec), Sec: 74.0 of 25.0, TTW: 9m 26s, Hack: 812 - microdyne Sym: MDYN Owned: false Manip: hack
+    ✓ Money: $712.4m of $17.81b ($88.10/ram.sec), Sec: 90.0 of 30.0, TTW: 11m 32s, Hack: 816 - helios Sym: HLS Owned: false Manip: hack
+    ✓ Money: $865.5m of $21.64b ($78.48/ram.sec), Sec: 89.0 of 30.0, TTW: 13m 49s, Hack: 989 - defcomm Sym: DCOMM Owned: false Manip: grow
+  * ✓ Money: $401.1m of $4.642b ($218.6/ram.sec), Sec: 13.0 of 13.0, TTW: 38.8s, Hack: 302 - the-hub
+  * ✓ Money: $204.0m of $600.0m ($140.1/ram.sec), Sec: 7.00 of 7.00, TTW: 8.45s, Hack: 100 - phantasy
+  * ✓ Money: $315.1m of $5.380b ($120.0/ram.sec), Sec: 16.0 of 16.0, TTW: 1m 12s, Hack: 466 - summit-uni
+  * ✓ Money: $338.8m of $5.838b ($111.2/ram.sec), Sec: 20.0 of 20.0, TTW: 1m 1s, Hack: 315 - computek
+  * ✓ Money: $129.7m of $1.125b ($102.3/ram.sec), Sec: 10.00 of 10.00, TTW: 16.0s, Hack: 150 - silver-helix
+  * ✓ Money: $320.8m of $5.808b ($92.85/ram.sec), Sec: 17.0 of 17.0, TTW: 1m 4s, Hack: 390 - rothman-uni
+  * ✓ Money: $85.61m of $250.0m ($75.05/ram.sec), Sec: 5.00 of 5.00, TTW: 5.64s, Hack: 80 - max-hardware
+  * ✓ Money: $100.0m of $100.0m ($59.98/ram.sec), Sec: 5.00 of 5.00, TTW: 3.76s, Hack: 40 - harakiri-sushi
+  * ✓ Money: $46.17m of $187.5m ($56.29/ram.sec), Sec: 8.00 of 8.00, TTW: 7.51s, Hack: 75 - zer0
+  * ✓ Money: $46.59m of $500.0m ($42.93/ram.sec), Sec: 10.00 of 10.00, TTW: 11.3s, Hack: 100 - iron-gym
+  * ✓ Money: $21.26m of $125.0m ($31.28/ram.sec), Sec: 8.00 of 8.00, TTW: 5.64s, Hack: 50 - neo-net
+  * ✓ Money: $445.4 of $68.75m ($30.34/ram.sec), Sec: 7.00 of 7.00, TTW: 3.19s, Hack: 20 - nectar-net
+  * ✓ Money: $1.750m of $1.750m ($8.345/ram.sec), Sec: 1.000 of 1.000, TTW: 1.89s, Hack: 1 - n00dles
+    ✓ Money: $27.40b of $685.1b ($2.752k/ram.sec), Sec: 62.7 of 28.0, TTW: 9m 46s, Hack: 992 - b-and-a
+    ✓ Money: $29.72b of $743.1b ($2.407k/ram.sec), Sec: 68.5 of 33.0, TTW: 11m 16s, Hack: 1047 - nwo
+    ✓ Money: $819.7m of $20.49b ($262.1/ram.sec), Sec: 58.0 of 19.0, TTW: 7m 32s, Hack: 827 - galactic-cyber
+    ✓ Money: $1.090b of $27.24b ($254.0/ram.sec), Sec: 65.0 of 22.0, TTW: 8m 5s, Hack: 791 - zb-def
+    ✓ Money: $957.8m of $23.94b ($221.0/ram.sec), Sec: 74.0 of 25.0, TTW: 8m 38s, Hack: 743 - zb-institute
+    ✓ Money: $1.372b of $34.30b ($214.1/ram.sec), Sec: 83.0 of 28.0, TTW: 10m 37s, Hack: 815 - zeus-med
+    ✓ Money: $1.623b of $40.58b ($206.8/ram.sec), Sec: 82.0 of 27.0, TTW: 11m 31s, Hack: 895 - deltaone
+    ✓ Money: $1.007b of $25.17b ($200.5/ram.sec), Sec: 73.0 of 24.0, TTW: 9m 4s, Hack: 790 - unitalife
+    ✓ Money: $704.4m of $17.61b ($181.0/ram.sec), Sec: 62.0 of 21.0, TTW: 8m, Hack: 821 - applied-energetics
+    ✓ Money: $900.0m of $22.50b ($152.3/ram.sec), Sec: 64.0 of 21.0, TTW: 10m 19s, Hack: 1027 - powerhouse-fitness
+    ✓ Money: $891.7m of $22.29b ($135.7/ram.sec), Sec: 77.0 of 26.0, TTW: 10m 31s, Hack: 870 - taiyang-digital
+    ✓ Money: $880.0m of $22.00b ($128.3/ram.sec), Sec: 74.0 of 25.0, TTW: 10m 26s, Hack: 898 - infocomm
+    ✓ Money: $450.0m of $11.25b ($127.5/ram.sec), Sec: 53.0 of 18.0, TTW: 6m 14s, Hack: 747 - snap-fitness
+    ✓ Money: $250.0m of $6.250b ($95.06/ram.sec), Sec: 26.2 of 15.0, TTW: 2m 8s, Hack: 514 - millenium-fitness
+    ✓ Money: $337.1m of $8.427b ($68.05/ram.sec), Sec: 79.0 of 26.0, TTW: 5m 19s, Hack: 427 - aevum-police
+    ✓ Money: $75.93m of $1.898b ($43.17/ram.sec), Sec: 29.4 of 21.0, TTW: 1m 24s, Hack: 299 - johnson-ortho
+    ✓ Money: $52.90m of $1.322b ($38.44/ram.sec), Sec: 39.5 of 15.0, TTW: 1m 28s, Hack: 231 - crush-fitness
+    ✓ Money: $378.5 of $62.50m ($30.00/ram.sec), Sec: 5.53 of 5.00, TTW: 2.40s, Hack: 10 - joesguns
+    ✓ Money: $3.000m of $75.00m ($25.73/ram.sec), Sec: 15.0 of 5.00, TTW: 6.11s, Hack: 30 - hong-fang-tea
+    X Money: $1.000m of $25.00m ($0.000/ram.sec), Sec: 99.0 of 33.0, TTW: 22m 2s, Hack: 1420 - fulcrumassets Sym: FLCM Owned: true Manip: grow
