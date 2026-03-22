@@ -1,0 +1,5 @@
+import { jsonReplacer } from 'helpers.js'
+export async function main(ns) { let r;try{r=JSON.stringify(
+    ns.stock.has4SDataTixApi()
+, jsonReplacer);}catch(e){r="ERROR: "+(typeof e=='string'?e:e?.message??JSON.stringify(e));}
+const f="/Temp/has-4s-api.txt"; if(ns.read(f)!==r) ns.write(f,r,'w') }
