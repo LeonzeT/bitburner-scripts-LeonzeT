@@ -1,6 +1,7 @@
 /** @param {NS} ns */
 export async function main(ns) {
     const base = "https://raw.githubusercontent.com/LeonzeT/bitburner-scripts-LeonzeT/main/";
+    const SKIP = ["sync.js", "manifest.json", "push.py", "generate-manifest.py"];
 
     ns.tprint("Fetching manifest...");
     const ok = await ns.wget(base + "manifest.json", "/Temp/sync-manifest.json", "home");
@@ -9,7 +10,7 @@ export async function main(ns) {
     const raw = ns.read("/Temp/sync-manifest.json");
     if (!raw) { ns.tprint("ERR: manifest.json was empty"); return; }
 
-    const files = JSON.parse(raw);
+    const files = JSON.parse(raw).filter(f => !SKIP.includes(f));
     ns.tprint(`Syncing ${files.length} files...`);
 
     let success = 0, fail = 0;
