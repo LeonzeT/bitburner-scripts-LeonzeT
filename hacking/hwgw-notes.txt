@@ -1,0 +1,167 @@
+# HWGW Pipeline — Hard-Won Knowledge
+# =====================================
+# This file documents bugs, pitfalls, and non-obvious design decisions
+# found across many debugging sessions. Read this before touching anything.
+
+## 1. THE GROW FORMULA (most important)
+
+**Wrong formula (DO NOT USE):**
+    growNeed = log(ratio) / log(1 + serverGrowth*bnRate/100) * 1.2
+
+This computes growNeed ≈ 2 for omega-net when ~330 are actually needed.
+It assumes growth works like (1+perThread)^threads, which is not how the game works.
+
+**Correct Bitburner formula:**
+    adjustedGrowthRate = min(1.0035, 1 + 0.03 / minSecurity)
+    growNeed = log(ratio) / (log(adjustedGrowthRate) * serverGrowth/100 * mults) * 1.2
+
+Symptoms of the wrong formula:
+- Prep deploys 2-3 grow threads and gets ~1% growth per cycle
+- Prep hits MAX_ITERATIONS (30) and sends PREP_FAILED
+- Batcher exits → manager relaunches → infinite restart loop
+- Dashboard shows money e.g. $93.35m → $94.07m each cycle with no real progress
+
+Source: hwgw-prep.js Phase 2 grow block, hwgw-batcher.js calculateBatchParams fallback,
+  hwgw-manager.js estimateScore + estimateRamPerBatch fallbacks.
+
+The batcher fallback is used when Formulas.exe is not present. With the wrong formula,
+the batcher underestimates grow threads, restores less money than was hacked each cycle,
+and the server gradually drains to $0 over many batches (appears as unexplained drain).
+
+
+## 2. PREP WORKERS MUST NOT SIGNAL PORT 1
+
+hwgw-grow.js and hwgw-weaken.js write "role:batchId:result" to port 1 on completion.
+Port 1 is the batcher's desync detection channel.
+
+Prep launches workers with: ns.exec(script, host, t, target, 0, -1, 'PREP')
+  → args = [target, delay=0, batchId=-1, role='PREP']
+
+If these workers write to port 1, the batcher sees "PREP:-1:..." messages it
+didn't schedule, counts them as anomalies, hits DESYNC_THRESHOLD=3, and restarts.
+
+Fix: in hwgw-grow.js and hwgw-weaken.js:
+    if (role !== 'PREP') port.tryWrite(...)
+
+Source: hwgw-grow.js and hwgw-weaken.js, completion signal.
+
+
+## 3. MANAGER MUST GATE BATCHER LAUNCH ON PREP COMPLETION
+
+The manager's watchdog launches the batcher every 10s regardless of prep status.
+If batcher starts while prep is growing, batcher's hack workers raise security
+which severely reduces grow effectiveness.
+
+Fix: in hwgw-manager.js, watchdog checks prepAlive before launching any batcher.
+    const prepAlive = prepPid > 0 && ns.getRunningScript(prepPid, 'home') !== null;
+    if (!prepAlive) { /* launch batchers */ }
+
+Source: hwgw-manager.js, "Watchdog: restart dead batchers" section.
+
+
+## 4. KILL GUARDS FOR PREP WORKERS
+
+Two places kill workers by matching (scriptName + args[0]===target):
+
+a) hwgw-manager.js → killBatcherForTarget()
+   Fix: skip processes where proc.args.includes('PREP')
+
+b) hwgw-batcher.js → killInFlightWorkers()  
+   Fix: same check — skip PREP-tagged workers on desync recovery
+   (batcher kills its own in-flight workers on desync; must not kill prep's too)
+
+Without these guards, prep's grow workers get swept during batcher restarts
+and prep never completes.
+
+Source: hwgw-manager.js killBatcherForTarget(), hwgw-batcher.js killInFlightWorkers()
+
+
+## 5. NaN PROPAGATION IN JS
+
+Math.max(fallback, NaN) === NaN in JavaScript.
+Math.min(x, NaN) === NaN.
+The fallback is SILENTLY discarded when any argument is NaN.
+
+?? (nullish coalescing) only catches null/undefined — NOT NaN.
+Number.isFinite() catches all of: NaN, undefined, null, Infinity.
+
+In hwgw-prep.js, every ns.* return value goes through:
+    const fin = (v, fallback) => Number.isFinite(v) ? v : fallback;
+
+And every thread count is clamped through:
+    const threads = n => (Number.isFinite(n) && n >= 1) ? Math.floor(n) : 0;
+
+Source: hwgw-prep.js, top-level helpers.
+
+
+## 6. DESYNC EXPLAINED
+
+The batcher's inner loop hits DESYNC_THRESHOLD=3 when 3 consecutive batch results
+are anomalous (wrong money returned, ops landing out of order).
+
+Common cause: period too short. When batches are packed tightly, a single lag
+spike from the game engine shifts one batch's landing. Subsequent batches were
+scheduled relative to it, so they also land wrong. 3 anomalies → restart.
+
+Fix: increase --period (200ms default → 400-500ms gives more breathing room).
+Tradeoff: fewer timing slots per weakenTime → slightly lower throughput.
+
+
+## 7. DASHBOARD: STOCK DATA SPLIT
+
+Per-symbol stock data (getSymbols, getPosition, getPrice, getForecast) was moved
+to dashboard-stocks.js (on-demand, Stocks tab only).
+dashboard-data.js retains only the lightweight flags (hasWse, hasTix, has4SData,
+has4SApi, stockCosts) needed by the Shortcuts "Stock Market" section.
+
+buyStock/sellStock commands are in FORWARD_CMDS → forwarded to port 18 →
+handled by dashboard-stocks.js when the Stocks tab is open.
+
+
+## 8. ON-DEMAND TAB ARCHITECTURE
+
+One companion script per tab, each self-exits when the tab changes away.
+All share port 18. Only one runs at a time (since only one tab is open at a time).
+
+Port 17: React → dashboard-data.js (all commands arrive here first)
+Port 18: dashboard-data.js → on-demand companion (for commands needing singularity/cloud/gang)
+
+Unknown commands silently ignored (default: break) so wrong-tab commands are harmless.
+
+Do NOT drain port 18 on startup — commands may have been queued in the ~1s
+gap between ns.run() and the script becoming active.
+
+Temp files written by each script:
+    /Temp/dashboard-data.txt
+    /Temp/dashboard-factions.txt
+    /Temp/dashboard-shortcuts.txt
+    /Temp/dashboard-servers.txt
+    /Temp/dashboard-stocks.txt
+    /Temp/dashboard-gangs.txt
+
+
+## 9. PREP WORKERS TAGGED 'PREP'
+
+Workers deployed by hwgw-prep.js are launched with 'PREP' as args[3]:
+    ns.exec(script, host, threads, target, 0, -1, 'PREP')
+
+This tag is checked in three places:
+1. hwgw-grow.js / hwgw-weaken.js — skip port 1 signal
+2. hwgw-manager.js killBatcherForTarget() — skip kill
+3. hwgw-batcher.js killInFlightWorkers() — skip kill
+
+If you add a new place that kills workers by matching script+target, add this check:
+    const isPrepWorker = Array.isArray(proc.args) && proc.args.includes('PREP');
+    if (!isPrepWorker) { ns.kill(proc.pid); }
+
+
+## 10. HACKNET AUTO-DISABLE
+
+autopilot.js auto-passes --disable-hacknet to daemon when:
+    bitNodeMults.HacknetNodeMoney < 0.5 AND currentNode !== 9
+
+BN4: HacknetNodeMoney=0.05 → disabled (5% baseline, terrible ROI)
+BN9: HacknetNodeMoney=1.0 → enabled (hacknet IS the mechanic)
+BN12: HacknetNodeMoney=1.0 → enabled
+
+Can be forced with --disable-hacknet flag on autopilot regardless of BN.
