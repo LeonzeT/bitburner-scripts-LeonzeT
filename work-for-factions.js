@@ -610,7 +610,7 @@ async function earnFactionInvite(ns, factionName) {
             if (player.city != "Volhaven") await goToCity(ns, "Volhaven");
             studying = await study(ns, false, "Algorithms");
         } else if (uniByCity[player.city]) // Otherwise only go to free university if our city has a university
-            studying = await study(ns, false, "Study Computer Science");
+            studying = await study(ns, false, "Computer Science");
         else
             return ns.print(`You have insufficient money (${formatMoney(player.money)} < --pay-for-studies-threshold ` +
                 `${formatMoney(options['pay-for-studies-threshold'])}) to travel or pay for studies, and your current ` +
