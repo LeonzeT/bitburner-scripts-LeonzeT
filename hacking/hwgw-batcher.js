@@ -322,7 +322,7 @@ export async function main(ns) {
         } catch { /* non-critical */ }
 
         if (params.maxBatches < 1) {
-            logAlways(`WARNING: Insufficient RAM for even one batch of "${target}". ` +
+            log(`WARNING: Insufficient RAM for even one batch of "${target}". ` +
                       `Try a target with shorter weaken time, or free up more RAM.`);
             await ns.sleep(30000); // Wait and hope RAM becomes available
             continue;

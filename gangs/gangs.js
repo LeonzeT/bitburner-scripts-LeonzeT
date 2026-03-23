@@ -94,8 +94,7 @@ let lastDashLiveWrite  = 0;      // timestamp of last live patch write
 let bothIsMoneyTick    = false;   // alternates each territory tick in 'both' optStat mode
 
 // Wanted recovery hysteresis: once recovery triggers, stay in it until wanted
-// reaches minimum (~1.0), not just until the penalty barely improves. Without
-// this, the script oscillates between crimes and VJ every tick at low respect.
+// reaches minimum (~1.0), not just until the penalty barely improves.
 let inWantedRecovery   = false;
 
 /** @param {NS} ns */
@@ -400,62 +399,40 @@ async function optimizeGangCrime(ns, myGangInfo) {
     const currentPenalty = getWantedPenalty(myGangInfo) - 1;
     // wantedGainTolerance: how much wanted gain per cycle is acceptable.
     //
-    // Five modes, evaluated in priority order:
+    // Four modes, evaluated in priority order:
     //
-    // 1. RECOVERY (hysteresis): penalty is bad AND wanted > minimum. Dedicate
-    //    everyone to VJ to drain wanted back to minimum. Once triggered, STAYS
-    //    active until wanted <= 1.05 — this prevents the tick-by-tick oscillation
-    //    between crimes and VJ that happens at low respect.
-    //    OLD BUG: recovery was gated behind respect > 200, meaning low-respect
-    //    gangs (post-ascension) could NEVER enter recovery. Removed that gate.
+    // 1. RECOVERY (hysteresis): penalty is bad AND wanted > minimum. Once triggered,
+    //    STAYS active until wanted <= 1.05 — prevents tick-by-tick oscillation.
     //
-    // 2. BOOTSTRAP: wanted is at minimum (~1.0) but respect is very low. VJ can't
-    //    help (wanted is already as low as it goes). The only way out is to do
-    //    crimes and eat the bad penalty until respect rebuilds. Uses a tight
-    //    tolerance so the optimizer assigns 1-2 members to low-wanted crimes
-    //    while the rest stay on VJ to contain wanted growth.
+    // 2. BOOTSTRAP: wanted is at minimum (~1.0) but respect is very low (post-ascension).
+    //    VJ can't help (wanted is already at min). Allow a tight trickle of wanted so
+    //    1-2 members can run low-wanted crimes to rebuild respect.
     //
-    // 3. SUSTAIN: penalty is mildly bad but manageable, respect is moderate.
-    //    Allow a small trickle of wanted gain so low-wanted crimes can still run.
+    // 3. SUSTAIN: penalty is mildly bad but manageable, allow a small trickle.
     //
-    // 4. NORMAL: penalty is fine. Allow wanted growth proportional to earnings.
+    // 4. NORMAL: penalty is fine, allow growth proportional to earnings.
 
-    // Recovery hysteresis: enter on bad penalty + elevated wanted, exit only
-    // when wanted reaches minimum. This eliminates the oscillation cycle.
     const penaltyBad = currentPenalty < -1.1 * WANTED_PENALTY_THRESH;
     const wantedAboveMin = myGangInfo.wantedLevel > 1.05;
     if (penaltyBad && wantedAboveMin && !inWantedRecovery) {
         inWantedRecovery = true;
-        log(ns, `Wanted recovery activated: penalty=${(currentPenalty*100).toFixed(2)}%, wanted=${myGangInfo.wantedLevel.toFixed(2)}. Draining to minimum.`);
+        log(ns, `Wanted recovery ON: penalty=${(currentPenalty*100).toFixed(2)}%, wanted=${myGangInfo.wantedLevel.toFixed(2)}`);
     }
     if (inWantedRecovery && !wantedAboveMin) {
         inWantedRecovery = false;
-        log(ns, `Wanted recovery complete: wanted=${myGangInfo.wantedLevel.toFixed(2)}. Resuming crimes.`);
+        log(ns, `Wanted recovery OFF: wanted=${myGangInfo.wantedLevel.toFixed(2)}`);
     }
 
     let wantedGainTolerance;
     if (inWantedRecovery) {
-        // Mode 1: RECOVERY — pure VJ, drain wanted to minimum
         wantedGainTolerance = -0.01 * myGangInfo.wantedLevel;
-
     } else if (!wantedAboveMin && myGangInfo.respect < 200) {
-        // Mode 2: BOOTSTRAP — wanted is at minimum, respect is low. VJ can't help.
-        // Allow a small trickle of wanted so 1-2 members can run low-wanted crimes
-        // to rebuild respect. The tolerance is tight enough that the optimizer won't
-        // assign high-wanted tasks — it'll pick things like Mug People or low-wanted
-        // crimes that contribute some respect without sending wanted out of control.
         wantedGainTolerance = 0.1;
-        log(ns, `[wanted-dbg] Bootstrap mode: respect=${formatNumberShort(myGangInfo.respect)}, ` +
-            `wanted=${myGangInfo.wantedLevel.toFixed(2)}, tolerance=0.1`);
-
     } else if (currentPenalty < -0.9 * WANTED_PENALTY_THRESH &&
                myGangInfo.wantedLevel >= (1.1 + myGangInfo.respect / 10000) &&
                myGangInfo.respect >= 200) {
-        // Mode 3: SUSTAIN — penalty is mildly bad, allow a trickle of wanted
         wantedGainTolerance = myGangInfo.wantedLevel / 50;
-
     } else {
-        // Mode 4: NORMAL — penalty is fine, allow growth proportional to earnings
         wantedGainTolerance = Math.max(myGangInfo.respectGainRate / 1000, myGangInfo.wantedLevel / 10);
     }
 
@@ -880,10 +857,8 @@ async function tryAscendMembers(ns, myGangInfo) {
         // Hard respect floor: don't ascend if it would drop respect below the level
         // where wanted management breaks down. penalty = respect / (respect + wanted).
         // At respect=50, wanted=1.0: penalty ≈ 0.98. Below that, even minimum wanted
-        // produces a crippling penalty, VJ can't fix it (wanted is already at min),
-        // and the script soft-locks oscillating between crimes and VJ every tick.
-        // This floor takes precedence over the "below recruit threshold — ascending
-        // anyway" path that previously had no bottom limit at all.
+        // produces a crippling penalty and the script soft-locks oscillating between
+        // crimes and VJ every tick.
         const RESPECT_WANTED_FLOOR = 50;
         if (earnedResp > 0 && currentRespect - earnedResp < RESPECT_WANTED_FLOOR) {
             log(ns, `Holding ascension for ${m}: would drop respect ` +
@@ -893,20 +868,23 @@ async function tryAscendMembers(ns, myGangInfo) {
         }
 
         // Charisma co-ascension guard: don't let combat stats drag cha along for free.
-        // The main trigger (line above) fires if ANY stat meets threshold — so str=1.08
-        // can trigger ascension while cha=1.00, gaining zero cha_asc_points every cycle.
-        // Over dozens of ascensions, cha_asc_mult stays pinned at 1.0.
+        // The main trigger fires if ANY stat meets threshold — so str=1.07 can trigger
+        // ascension while cha=1.00, gaining zero cha_asc_points every cycle. Over dozens
+        // of ascensions, cha_asc_mult stays pinned at 1.0 forever.
         //
-        // Fix: while cha_asc_mult is still weak (cha_asc_points < 2000 → mult < 1.0),
-        // require that result.cha also meets the ascension threshold. This forces the
+        // Fix: while cha_asc_mult is still weak (asc_points < 2000 → mult < 1.0),
+        // require that result.cha ALSO meets the ascension threshold. This forces the
         // member to train cha enough that ascending actually builds cha mults too.
-        // Once cha mults are healthy (>= 2000 pts), drop the requirement — cha is
-        // established and doesn't need to keep pace with combat stats every cycle.
+        // Once cha mults are healthy (>= 2000 pts), drop the requirement.
+        //
+        // Game formulas: ascMult = max(sqrt(asc_points / 2000), 1)
+        //                ascGain = max(exp - 1000, 0) per ascension
+        // At 2000 pts, cha_asc_mult = 1.0 — the baseline. Below that, cha needs help.
         const chaAscPts = info?.cha_asc_points ?? 0;
         const chaResult = result?.cha ?? 0;
         if (chaAscPts < 2000 && chaResult < threshold) {
-            log(ns, `Holding ascension for ${m}: cha result ×${chaResult.toFixed(3)} < threshold ${threshold.toFixed(3)} ` +
-                `(cha_asc_pts=${Math.floor(chaAscPts)} < 2000 — cha mults still need building). Train cha first.`);
+            log(ns, `Holding ascension for ${m}: cha→×${chaResult.toFixed(3)} < threshold ${threshold.toFixed(3)} ` +
+                `(cha_asc_pts=${Math.floor(chaAscPts)}, need ≥2000 to waive). Train cha first.`);
             continue;
         }
 
