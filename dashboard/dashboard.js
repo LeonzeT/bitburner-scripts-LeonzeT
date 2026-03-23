@@ -1,4 +1,6 @@
 /**
+ * AUTHOR: LeonzeT
+ *
  * dashboard.js — NEXUS overlay UI  (~3 GB, always running)
  *
  * RAM breakdown (3-file split):
