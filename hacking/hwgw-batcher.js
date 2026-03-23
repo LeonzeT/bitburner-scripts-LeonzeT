@@ -217,10 +217,20 @@ export async function main(ns) {
     ns.disableLog("sleep");
     ns.disableLog("exec");
     ns.disableLog("scp");
+    ns.disableLog("scan");
+    ns.disableLog("kill");
     ns.disableLog("getServerSecurityLevel");
     ns.disableLog("getServerMoneyAvailable");
+    ns.disableLog("getServerMaxMoney");
+    ns.disableLog("getServerMinSecurityLevel");
     ns.disableLog("getServerMaxRam");
     ns.disableLog("getServerUsedRam");
+    ns.disableLog("getServerGrowth");
+    ns.disableLog("hasRootAccess");
+    ns.disableLog("fileExists");
+    ns.disableLog("getScriptRam");
+    ns.disableLog("getWeakenTime");
+    ns.disableLog("hackAnalyze");
 
     // ── BitNode awareness ─────────────────────────────────────────────────────
     // Read multipliers from daemon.js's cache file (free) instead of going
@@ -383,7 +393,8 @@ export async function main(ns) {
                 }
                 processWorkerCompletion(ns, msg, params, logQuiet,
                                         (income) => { totalIncome += income; },
-                                        () => { anomalyCount++; batchesInFlight--; },
+                                        () => { anomalyCount++; batchesInFlight--;
+                                                if (anomalyCount === 1) logQuiet(`Anomaly detected (G≈1.0). ${DESYNC_THRESHOLD - 1} more → desync recovery.`); },
                                         () => { anomalyCount = 0; batchesInFlight--; });
             }
             // Re-queue messages for other batchers
@@ -393,6 +404,7 @@ export async function main(ns) {
 
             // Schedule new batches if we have room in RAM and haven't hit our
             // calculated maximum concurrent batches.
+            let scheduledThisTick = 0;
             while (batchesInFlight < params.maxBatches) {
                 // Snap nextBatchBaseTime forward if the clock has overtaken it.
                 // This happens every weakenTime (~122s for the-hub) when all
@@ -416,7 +428,10 @@ export async function main(ns) {
                 batchId = (batchId + 1) % 10000; // Wrap to keep IDs manageable
                 loopBatchIndex++;
                 batchesInFlight++;
+                scheduledThisTick++;
             }
+            if (scheduledThisTick > 0)
+                logQuiet(`Scheduled ${scheduledThisTick} batches (${batchesInFlight}/${params.maxBatches} in-flight)`);
 
             // Status update every 30 seconds
             if (Date.now() - startTime > 30000) {
@@ -433,11 +448,8 @@ export async function main(ns) {
                 const timingSlots  = Math.floor(params.weakenTime / period);
                 const newRamSlots  = Math.floor(effectiveRam / params.ramPerBatch);
                 const newMax       = Math.max(0, Math.min(timingSlots, newRamSlots, MAX_BATCHES_PER_TARGET));
-                if (newMax > params.maxBatches) {
-                    logQuiet(`[REFRESH] maxBatches: ${params.maxBatches} → ${newMax} ` +
-                             `(free RAM: ${(currentFreeRam/1000).toFixed(1)}TB + ${(inFlightRam/1000).toFixed(1)}TB in-flight)`);
+                if (newMax > params.maxBatches)
                     params.maxBatches = newMax;
-                }
 
                 logQuiet(`[STATUS] Target: ${target} | In-flight: ${batchesInFlight}/${params.maxBatches} | ` +
                          (hackIncomeViable
@@ -676,10 +688,7 @@ function scheduleBatch(ns, target, batchId, loopIndex, batchBaseTime, params, re
 
     // Verify there's enough RAM across eligible hosts before committing to launch.
     const totalFreeRam = getTotalFreeRam(ns, reserveRam, hosts);
-    if (totalFreeRam < params.ramPerBatch) {
-        logFn(`Not enough RAM for batch ${batchId}: need ${params.ramPerBatch.toFixed(1)}GB, have ${totalFreeRam.toFixed(1)}GB`);
-        return false;
-    }
+    if (totalFreeRam < params.ramPerBatch) return false;
 
     // Stock manipulation: read stockmaster's position data and determine whether
     // hack and grow should influence the associated stock's forecast.
@@ -707,7 +716,6 @@ function scheduleBatch(ns, target, batchId, loopIndex, batchBaseTime, params, re
         return false;
     }
 
-    logFn(`Scheduled batch ${batchId}: W1+${d.w1}ms H+${d.h}ms W2+${d.w2}ms G+${d.g}ms`);
     return true;
 }
 
@@ -807,8 +815,8 @@ function processWorkerCompletion(ns, msg, params, logFn, onIncome, onAnomaly, on
         // This value may need tuning — if you get too many false desync recoveries,
         // raise it slightly; if desyncs cascade before detection, lower it.
         if (result < 1.001) {
-            logFn(`Anomaly: G result ${result.toFixed(6)} suggests server was already at max money`);
             onAnomaly();
+            // Only log the first anomaly and the one that triggers desync — skip the noise in between
         } else {
             onHealthy();
         }
@@ -901,7 +909,7 @@ async function ensurePrepped(ns, target, reserveRam, logAlwaysFn, logFn) {
     while (Date.now() - startWait < maxPrepWait) {
         const signal = ns.read(signalFile);
         if (signal === "DONE") {
-            logAlwaysFn(`Prep complete for "${target}".`);
+            logFn(`Prep complete for "${target}".`);
             ns.write(signalFile, "", "w"); // clear after reading
             return true;
         } else if (signal.startsWith("FAILED:")) {
