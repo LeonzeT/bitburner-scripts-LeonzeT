@@ -483,8 +483,16 @@ async function mainLoop(ns) {
         foundWork = await workForSingleFaction(ns, mostFavorFaction, false, false, targetRep);
     }
     if (!foundWork && !options['no-crime']) { // Otherwise, kill some time by doing crimes for a little while
-        ns.print(`INFO: Nothing to do. Doing a little crime...`);
-        await crimeForKillsKarmaStats(ns, 0, -ns.heart.break() + 1000 /* Hack: Decrease Karma by 1000 */, 0);
+        // Skip idle crime if bladeburner is active and needs focus — let it run instead
+        playerInBladeburner = playerInBladeburner || (playerGang && !hasSimulacrum && !options['no-bladeburner-check'] &&
+            await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'));
+        if (playerInBladeburner && !hasSimulacrum && !options['no-bladeburner-check']) {
+            ns.print(`INFO: Nothing to do. Yielding to Bladeburner instead of doing idle crime.`);
+            await ns.sleep(loopSleepInterval);
+        } else {
+            ns.print(`INFO: Nothing to do. Doing a little crime...`);
+            await crimeForKillsKarmaStats(ns, 0, -ns.heart.break() + 1000 /* Hack: Decrease Karma by 1000 */, 0);
+        }
     } else if (!foundWork) { // If our hands our tied, twiddle our thumbs a bit
         ns.print(`INFO: Nothing to do. Sleeping for 30 seconds to see if magically we join a faction`);
         await ns.sleep(30000);
