@@ -59,6 +59,11 @@ const PREP_PORT   = 2; // Prep done/failed signals
 // Falls back to bare filenames if the JSON doesn't exist (standalone mode).
 // Uses ns.read() only (0 GB) so this adds no RAM overhead.
 let SCRIPTS = null;
+// RAM costs cached after resolveScripts() — never call getScriptRam() in hot paths.
+// launchWorker() runs 4× per batch scheduled (potentially thousands of times per minute)
+// and calculateBatchParams() runs once per prep cycle. Both use these constants.
+let SCRIPT_RAM = { hack: 0, grow: 0, weaken: 0 };
+
 function resolveScripts(ns) {
     if (SCRIPTS) return SCRIPTS;
     let paths = {};
@@ -72,6 +77,10 @@ function resolveScripts(ns) {
         grow:   paths['hwgw-grow']   ?? "hacking/hwgw-grow.js",
         prep:   paths['hwgw-prep']   ?? "hacking/hwgw-prep.js",
     };
+    // Cache RAM once — these values never change at runtime
+    SCRIPT_RAM.hack   = ns.getScriptRam(SCRIPTS.hack,   "home") || 0;
+    SCRIPT_RAM.grow   = ns.getScriptRam(SCRIPTS.grow,   "home") || 0;
+    SCRIPT_RAM.weaken = ns.getScriptRam(SCRIPTS.weaken, "home") || 0;
     return SCRIPTS;
 }
 
@@ -217,20 +226,10 @@ export async function main(ns) {
     ns.disableLog("sleep");
     ns.disableLog("exec");
     ns.disableLog("scp");
-    ns.disableLog("scan");
-    ns.disableLog("kill");
     ns.disableLog("getServerSecurityLevel");
     ns.disableLog("getServerMoneyAvailable");
-    ns.disableLog("getServerMaxMoney");
-    ns.disableLog("getServerMinSecurityLevel");
     ns.disableLog("getServerMaxRam");
     ns.disableLog("getServerUsedRam");
-    ns.disableLog("getServerGrowth");
-    ns.disableLog("hasRootAccess");
-    ns.disableLog("fileExists");
-    ns.disableLog("getScriptRam");
-    ns.disableLog("getWeakenTime");
-    ns.disableLog("hackAnalyze");
 
     // ── BitNode awareness ─────────────────────────────────────────────────────
     // Read multipliers from daemon.js's cache file (free) instead of going
@@ -265,9 +264,9 @@ export async function main(ns) {
     const hasFormulas = ns.fileExists("Formulas.exe", "home");
 
     log(`hwgw-batcher starting on target: "${target}"`);
-    log(`  BitNode weaken/thread: ${actualWeakenPerThread.toFixed(4)} | Formulas: ${hasFormulas}`);
-    log(`  Period: ${period}ms | Delta: ${delta}ms | HackPercent: ${(hackPercent*100).toFixed(1)}%`);
-    log(`  Home RAM reserve: ${reserveRam}GB`);
+    logQuiet(`  BitNode weaken/thread: ${actualWeakenPerThread.toFixed(4)} | Formulas: ${hasFormulas}`);
+    logQuiet(`  Period: ${period}ms | Delta: ${delta}ms | HackPercent: ${(hackPercent*100).toFixed(1)}%`);
+    logQuiet(`  Home RAM reserve: ${reserveRam}GB`);
 
     // ── State tracking ────────────────────────────────────────────────────────
     let batchId         = 0;        // Monotonically increasing, wraps at 10000
@@ -285,7 +284,7 @@ export async function main(ns) {
         // The batch loop assumes the server is at min security + max money.
         // If it isn't, our thread calculations will be wrong and batches
         // will desync immediately. We always verify before batching.
-        const prepped = await ensurePrepped(ns, target, reserveRam, logAlways, logQuiet);
+        const prepped = await ensurePrepped(ns, target, reserveRam, log, logAlways, logQuiet);
         if (!prepped) {
             logAlways(`FATAL: Could not prep "${target}". Exiting batcher.`);
             return;
@@ -393,8 +392,7 @@ export async function main(ns) {
                 }
                 processWorkerCompletion(ns, msg, params, logQuiet,
                                         (income) => { totalIncome += income; },
-                                        () => { anomalyCount++; batchesInFlight--;
-                                                if (anomalyCount === 1) logQuiet(`Anomaly detected (G≈1.0). ${DESYNC_THRESHOLD - 1} more → desync recovery.`); },
+                                        () => { anomalyCount++; batchesInFlight--; },
                                         () => { anomalyCount = 0; batchesInFlight--; });
             }
             // Re-queue messages for other batchers
@@ -404,7 +402,6 @@ export async function main(ns) {
 
             // Schedule new batches if we have room in RAM and haven't hit our
             // calculated maximum concurrent batches.
-            let scheduledThisTick = 0;
             while (batchesInFlight < params.maxBatches) {
                 // Snap nextBatchBaseTime forward if the clock has overtaken it.
                 // This happens every weakenTime (~122s for the-hub) when all
@@ -428,10 +425,7 @@ export async function main(ns) {
                 batchId = (batchId + 1) % 10000; // Wrap to keep IDs manageable
                 loopBatchIndex++;
                 batchesInFlight++;
-                scheduledThisTick++;
             }
-            if (scheduledThisTick > 0)
-                logQuiet(`Scheduled ${scheduledThisTick} batches (${batchesInFlight}/${params.maxBatches} in-flight)`);
 
             // Status update every 30 seconds
             if (Date.now() - startTime > 30000) {
@@ -448,8 +442,11 @@ export async function main(ns) {
                 const timingSlots  = Math.floor(params.weakenTime / period);
                 const newRamSlots  = Math.floor(effectiveRam / params.ramPerBatch);
                 const newMax       = Math.max(0, Math.min(timingSlots, newRamSlots, MAX_BATCHES_PER_TARGET));
-                if (newMax > params.maxBatches)
+                if (newMax > params.maxBatches) {
+                    logQuiet(`[REFRESH] maxBatches: ${params.maxBatches} → ${newMax} ` +
+                             `(free RAM: ${(currentFreeRam/1000).toFixed(1)}TB + ${(inFlightRam/1000).toFixed(1)}TB in-flight)`);
                     params.maxBatches = newMax;
+                }
 
                 logQuiet(`[STATUS] Target: ${target} | In-flight: ${batchesInFlight}/${params.maxBatches} | ` +
                          (hackIncomeViable
@@ -468,7 +465,7 @@ export async function main(ns) {
         }
 
         // If we broke out of the inner loop, we hit the desync threshold.
-        logAlways(`Desync detected on "${target}" (${anomalyCount} anomalies). Re-prepping...`);
+        log(`Desync detected on "${target}" (${anomalyCount} anomalies). Re-prepping...`);
 
         // Kill all in-flight workers so they don't land on an unprepped server
         // and compound the problem. We target scripts by their filename and
@@ -588,9 +585,10 @@ function calculateBatchParams(ns, target, hackPercent, delta, period, reserveRam
     // ── RAM per batch ─────────────────────────────────────────────────────────
     // Each worker occupies RAM from launch until its operation completes.
     // Total RAM per batch = sum of all four workers' RAM costs * their thread counts.
-    const hackRam   = ns.getScriptRam(SCRIPTS.hack, "home");
-    const growRam   = ns.getScriptRam(SCRIPTS.grow, "home");
-    const weakenRam = ns.getScriptRam(SCRIPTS.weaken, "home");
+    // Uses module-level SCRIPT_RAM cache (populated once in resolveScripts).
+    const hackRam   = SCRIPT_RAM.hack;
+    const growRam   = SCRIPT_RAM.grow;
+    const weakenRam = SCRIPT_RAM.weaken;
 
     const ramPerBatch = (hackThreads   * hackRam)   +
                         (growThreads   * growRam)   +
@@ -688,7 +686,10 @@ function scheduleBatch(ns, target, batchId, loopIndex, batchBaseTime, params, re
 
     // Verify there's enough RAM across eligible hosts before committing to launch.
     const totalFreeRam = getTotalFreeRam(ns, reserveRam, hosts);
-    if (totalFreeRam < params.ramPerBatch) return false;
+    if (totalFreeRam < params.ramPerBatch) {
+        logFn(`Not enough RAM for batch ${batchId}: need ${params.ramPerBatch.toFixed(1)}GB, have ${totalFreeRam.toFixed(1)}GB`);
+        return false;
+    }
 
     // Stock manipulation: read stockmaster's position data and determine whether
     // hack and grow should influence the associated stock's forecast.
@@ -716,6 +717,7 @@ function scheduleBatch(ns, target, batchId, loopIndex, batchBaseTime, params, re
         return false;
     }
 
+    logFn(`Scheduled batch ${batchId}: W1+${d.w1}ms H+${d.h}ms W2+${d.w2}ms G+${d.g}ms`);
     return true;
 }
 
@@ -738,7 +740,12 @@ function scheduleBatch(ns, target, batchId, loopIndex, batchBaseTime, params, re
  * @returns {boolean} true if all threads were launched
  */
 function launchWorker(ns, script, threads, target, delay, batchId, role, hosts, reserveRam, stockManip = false) {
-    const scriptRam = ns.getScriptRam(script, "home");
+    // SCRIPT_RAM is keyed by the script's role-name fragment. Derive the key by
+    // matching the script path against the known names — avoids a getScriptRam()
+    // call on every invocation of this hot-path function (4× per batch scheduled).
+    const scriptRam = script === SCRIPTS.hack   ? SCRIPT_RAM.hack
+                    : script === SCRIPTS.grow   ? SCRIPT_RAM.grow
+                    : SCRIPT_RAM.weaken; // weaken covers W1, W2, and any fallback
     let remaining   = threads;
 
     for (const host of hosts) {
@@ -815,8 +822,8 @@ function processWorkerCompletion(ns, msg, params, logFn, onIncome, onAnomaly, on
         // This value may need tuning — if you get too many false desync recoveries,
         // raise it slightly; if desyncs cascade before detection, lower it.
         if (result < 1.001) {
+            logFn(`Anomaly: G result ${result.toFixed(6)} suggests server was already at max money`);
             onAnomaly();
-            // Only log the first anomaly and the one that triggers desync — skip the noise in between
         } else {
             onHealthy();
         }
@@ -839,10 +846,11 @@ function processWorkerCompletion(ns, msg, params, logFn, onIncome, onAnomaly, on
  * @param {NS} ns
  * @param {string} target
  * @param {number} reserveRam
- * @param {Function} logAlwaysFn  for important messages
- * @param {Function} logFn        for routine messages
+ * @param {Function} logFn        progress messages — respects --quiet (terminal only when not quiet)
+ * @param {Function} logErrorFn   errors/fatals   — always printed to terminal regardless of --quiet
+ * @param {Function} logQuietFn   routine detail  — tail window only, never terminal
  */
-async function ensurePrepped(ns, target, reserveRam, logAlwaysFn, logFn) {
+async function ensurePrepped(ns, target, reserveRam, logFn, logErrorFn, logQuietFn) {
     // Quick check first -- if already prepped, skip launching the prep script.
     const currentSec = ns.getServerSecurityLevel(target);
     const minSec     = ns.getServerMinSecurityLevel(target);
@@ -852,11 +860,13 @@ async function ensurePrepped(ns, target, reserveRam, logAlwaysFn, logFn) {
     const alreadyPrepped = (currentSec / minSec) <= 1.01 &&
                            maxMon > 0 && (currentMon / maxMon) >= 0.99;
     if (alreadyPrepped) {
-        logFn(`"${target}" is already prepped. Skipping prep.`);
+        logQuietFn(`"${target}" is already prepped. Skipping prep.`);
         return true;
     }
 
-    logAlwaysFn(`Prepping "${target}"... (sec: ${currentSec.toFixed(2)}/${minSec}, money: ${ns.format.percent(currentMon/maxMon)})`);
+    // Prepping and "Prep complete" are progress events — they go to terminal
+    // unless --quiet is set, so the player knows what's happening without spam.
+    logFn(`Prepping "${target}"... (sec: ${currentSec.toFixed(2)}/${minSec}, money: ${ns.format.percent(currentMon/maxMon)})`);
 
     // File-based signaling -- avoids the shared-port race condition where
     // batcher-A consumes the PREP_DONE:B signal meant for batcher-B.
@@ -880,10 +890,10 @@ async function ensurePrepped(ns, target, reserveRam, logAlwaysFn, logFn) {
         // Standalone mode -- launch our own prep.
         const pid = ns.exec(SCRIPTS.prep, "home", 1, target, "--reserve", reserveRam);
         if (pid === 0) {
-            logAlwaysFn(`ERROR: Failed to launch hwgw-prep.js on home. Not enough RAM?`);
+            logErrorFn(`ERROR: Failed to launch hwgw-prep.js on home. Not enough RAM?`);
             return false;
         }
-        logFn(`Launched prep (standalone mode, PID ${pid})`);
+        logQuietFn(`Launched prep (standalone mode, PID ${pid})`);
     } else {
         // Manager mode. The manager launches prep on target selection, but NOT on
         // internal desync (batcher still alive from manager's view). Check if a
@@ -893,11 +903,11 @@ async function ensurePrepped(ns, target, reserveRam, logAlwaysFn, logFn) {
         if (!prepRunning) {
             const pid = ns.exec(SCRIPTS.prep, "home", 1, target, "--reserve", reserveRam);
             if (pid > 0)
-                logFn(`Launched prep (desync recovery, PID ${pid})`);
+                logQuietFn(`Launched prep (desync recovery, PID ${pid})`);
             else
-                logAlwaysFn(`ERROR: Failed to launch hwgw-prep.js for desync recovery. Not enough RAM?`);
+                logErrorFn(`ERROR: Failed to launch hwgw-prep.js for desync recovery. Not enough RAM?`);
         } else {
-            logFn(`Prep already running for "${target}" -- waiting for completion.`);
+            logQuietFn(`Prep already running for "${target}" -- waiting for completion.`);
         }
     }
 
@@ -914,7 +924,7 @@ async function ensurePrepped(ns, target, reserveRam, logAlwaysFn, logFn) {
             return true;
         } else if (signal.startsWith("FAILED:")) {
             const reason = signal.slice(7) || "unknown";
-            logAlwaysFn(`Prep failed for "${target}": ${reason}`);
+            logErrorFn(`Prep failed for "${target}": ${reason}`);
             ns.write(signalFile, "", "w"); // clear after reading
             return false;
         }
@@ -922,15 +932,15 @@ async function ensurePrepped(ns, target, reserveRam, logAlwaysFn, logFn) {
         const prepStillRunning = ns.ps('home').some(p =>
             p.filename.endsWith('hacking/hwgw-prep.js') && p.args.includes(target));
         if (!prepStillRunning && signal === "") {
-            logFn(`Prep for "${target}" vanished without signaling. Re-launching...`);
+            logQuietFn(`Prep for "${target}" vanished without signaling. Re-launching...`);
             const pid = ns.exec(SCRIPTS.prep, "home", 1, target, "--reserve", reserveRam);
             if (pid === 0)
-                logAlwaysFn(`ERROR: Re-launch of prep failed. Not enough RAM?`);
+                logErrorFn(`ERROR: Re-launch of prep failed. Not enough RAM?`);
         }
         await ns.sleep(5000);
     }
 
-    logAlwaysFn(`ERROR: Prep for "${target}" timed out after 30 minutes.`);
+    logErrorFn(`ERROR: Prep for "${target}" timed out after 30 minutes.`);
     return false;
 }
 // ─────────────────────────────────────────────────────────────────────────────
