@@ -65,9 +65,13 @@ const cannotWorkForFactions = ["Church of the Machine God", "Bladeburners", "Sha
 // These factions should ideally be completed in this order
 const preferredEarlyFactionOrder = [
     "Netburners", // Improve hash income, which is useful or critical for almost all BNs
-    "Tian Di Hui", "Aevum", // These give all the company_rep and faction_rep bonuses early game
+    // City factions first — Neuregen from Chongqing (1.4× hack_exp) is exclusive and worth
+    // getting before committing to Aevum/Sector-12/Volhaven which preclude them.
+    "Chongqing", "New Tokyo", "Ishima",
+    "Tian Di Hui", // Faction/company rep bonuses early game
     "Daedalus", // Once we have all faction_rep boosting augs, there's no reason not to work towards Daedalus as soon as it's available/feasible so we can buy Red Pill
     "CyberSec", /* Quick, and NightSec aug depends on an aug from here */ "NiteSec", "Tetrads", // Cha augs to speed up earning company promotions
+    "Aevum", // company_rep and faction_rep bonuses (only accessible if not in Chongqing/Ishima/New Tokyo)
     "Bachman & Associates", // Boost company/faction rep for future augs
     "BitRunners", // Fast source of some unique hack augs
     "Fulcrum Secret Technologies", // Will be removed if hack level is too low to backdoor their server
@@ -75,7 +79,6 @@ const preferredEarlyFactionOrder = [
     "The Black Hand", // Fastest sources of hacking augs after the above companies
     "The Dark Army", // Unique cmp_rep aug TODO: Can it sensibly be gotten before megacorps? Requires 300 all combat stats.
     "Clarke Incorporated", "OmniTek Incorporated", "NWO", // More hack augs from companies
-    "Chongqing", // Unique Source of big 1.4x hack exp boost (Can only join if not in e.g. Aevum as well)
 ];
 // This is an approximate order of most useful augmentations left to offer, assuming all early-game factions have been cleaned out
 const preferredCompanyFactionOrder = [

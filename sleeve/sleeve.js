@@ -683,65 +683,6 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
         }
     }
 
-    // If the player is in bladeburner, and has already unlocked gangs with Karma, generate contracts and operations
-    if (playerInBladeburner) {
-        // Stat-aware bladeburner task assignment: pick based on sleeve combat power, not index.
-        // Contracts require high stats (can fail → HP/shock loss). Infiltrate/Diplomacy are safe.
-        // Each contract type can only be performed by one sleeve at a time.
-        const combatPower = sleeve.skills.strength + sleeve.skills.defense +
-            sleeve.skills.dexterity + sleeve.skills.agility;
-
-        let action, contractName;
-        if (combatPower >= 800 && !assignedContracts.has('Retirement')) {
-            [action, contractName] = ["Take on contracts", "Retirement"];
-            assignedContracts.add('Retirement');
-        } else if (combatPower >= 600 && !assignedContracts.has('Bounty Hunter')) {
-            [action, contractName] = ["Take on contracts", "Bounty Hunter"];
-            assignedContracts.add('Bounty Hunter');
-        } else if (combatPower >= 400 && !assignedContracts.has('Tracking')) {
-            [action, contractName] = ["Take on contracts", "Tracking"];
-            assignedContracts.add('Tracking');
-        } else if (options['enable-bladeburner-team-building'] && !assignedBbSupport) {
-            [action, contractName] = ["Support main sleeve"];
-            assignedBbSupport = true;
-        } else if (options['enable-bladeburner-team-building'] && !assignedBbRecruit) {
-            [action, contractName] = ["Recruitment"];
-            assignedBbRecruit = true;
-        } else {
-            // Low-stat sleeves or all contracts taken: safe fallback
-            [action, contractName] = ["Infiltrate Synthoids"];
-        }
-
-        const contractChance = bladeburnerContractChances[contractName] ?? 1;
-        const contractCount = bladeburnerContractCounts[contractName] ?? Infinity;
-        const onCooldown = () => Date.now() <= bladeburnerCooldown[i]; // Function to check if we're on cooldown
-        // Detect if the sleeve recently failed the task. If so, put them on a "cooldown" before trying again
-        if (sleeve.hp.current < lastSleeveHp[i] || sleeve.shock > lastSleeveShock[i]) {
-            bladeburnerCooldown[i] = Date.now() + options['failed-bladeburner-contract-cooldown'];
-            log(ns, `Sleeve ${i} appears to have recently failed its designated bladeburner task '${action} - ${contractName}' ` +
-                `(HP ${lastSleeveHp[i].toFixed(1)} -> ${sleeve.hp.current.toFixed(1)}, ` +
-                `Shock: ${lastSleeveShock[i].toFixed(2)} -> ${sleeve.shock.toFixed(2)}). ` +
-                `Will try again in ${formatDuration(options['failed-bladeburner-contract-cooldown'])}`);
-        } // If the contract success chance appears too low, or there are insufficient contracts remaining, smaller cooldown
-        else if (!onCooldown() && (contractChance <= minBbProbability || contractCount < minBbContracts)) {
-            bladeburnerCooldown[i] = Date.now() + waitForContractCooldown;
-            log(ns, `Delaying sleeve ${i} designated bladeburner task '${action} - ${contractName}' - ` +
-                (contractCount < minBbContracts ? `Insufficient contract count (${contractCount} < ${minBbContracts})` :
-                    `Player chance is too low (${(contractChance * 100).toFixed(2)}% < ${(minBbProbability * 100)}%). `) +
-                `Will try again in ${formatDuration(waitForContractCooldown)}`);
-        }
-        // As current city chaos gets progressively bad, assign more and more sleeves to Diplomacy to help get it under control
-        if (bladeburnerCityChaos > (10 - i) * 10) // Later sleeves are first to get assigned, sleeve 0 is last at 100 chaos.
-            [action, contractName] = ["Diplomacy"];
-        // If the sleeve is on cooldown ,do not perform their designated bladeburner task
-        else if (onCooldown()) { // When on cooldown from a failed task, recover shock if applicable, or else add contracts
-            if (sleeve.shock > 0) return shockRecoveryTask(sleeve, i, `bladeburner task is on cooldown`);
-            [action, contractName] = ["Infiltrate Synthoids"]; // Fall-back to something long-term useful
-        }
-        return [`Bladeburner ${action} ${contractName || ''}`.trimEnd(),
-        /*   */ `ns.sleeve.setToBladeburnerAction(ns.args[0], ns.args[1], ns.args[2])`, [i, action, contractName ?? ''],
-        /*   */ `doing ${action}${contractName ? ` - ${contractName}` : ''} in Bladeburner.`];
-    }
     // If there's nothing more productive to do (above) and there's still shock, prioritize recovery
     if (sleeve.shock > 0)
         return shockRecoveryTask(sleeve, i, `there appears to be nothing better to do`);
