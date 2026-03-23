@@ -1,4 +1,4 @@
-import { log, disableLogs, getConfiguration, instanceCount, getNsDataThroughFile, getFilePath, getActiveSourceFiles, formatNumberShort, formatDuration } from '../helpers.js'
+import { log, disableLogs, getConfiguration, instanceCount, getNsDataThroughFile, getFilePath, getActiveSourceFiles, formatNumberShort, formatDuration } from '/helpers.js'
 
 const cityNames = ["Sector-12", "Aevum", "Volhaven", "Chongqing", "New Tokyo", "Ishima"];
 const antiChaosOperation = "Stealth Retirement Operation"; // Note: Faster and more effective than Diplomacy at reducing city chaos
@@ -30,7 +30,7 @@ const argsSchema = [
     // NOTE: success-threshold is now dynamic — the script picks the best available action
     //       above a minimum floor, adapting automatically to weak early-game stats.
     ['min-success-floor', 0.5], // Never attempt an action with min success below this (avoids catastrophic failures)
-    ['chaos-recovery-threshold', 50], // Prefer to do "Stealth Retirement" operations to reduce chaos when it reaches this number
+    ['chaos-recovery-threshold', 25], // Prefer to do "Stealth Retirement" operations to reduce chaos when it reaches this number
     ['max-chaos', 100], // If chaos exceeds this amount in every city, we will reluctantly resort to diplomacy to reduce it.
     ['toast-upgrades', false], // Set to true to toast each time a skill is upgraded
     ['toast-operations', false], // Set to true to toast each time we switch operations
@@ -288,7 +288,7 @@ async function mainLoop(ns) {
         bestActionName = chaosByCity[currentCity] > options['max-chaos'] ? "Diplomacy" : "Field Analysis";
         reason = `Stamina is low: ${(100 * staminaPct).toFixed(1)}% < ${(100 * options['low-stamina-pct']).toFixed(1)}%`
     } // If current city chaos is greater than our threshold, keep it low with "Stealth Retirement" if odds are good
-    else if (chaosByCity[currentCity] > options['chaos-recovery-threshold'] && getCount(antiChaosOperation) > 0 && minChance(antiChaosOperation) > 0.99) {
+    else if (chaosByCity[currentCity] > options['chaos-recovery-threshold'] && getCount(antiChaosOperation) > 0 && minChance(antiChaosOperation) > 0.8) {
         bestActionName = antiChaosOperation;
         reason = `Chaos is high: ${chaosByCity[currentCity].toFixed(2)} > ${options['chaos-recovery-threshold']} (--chaos-recovery-threshold) ${actionSummaryString(bestActionName)}`;
     } // If current city chaos is very high, we should be very wary of the snowballing effects, and try to reduce it.
@@ -319,8 +319,9 @@ async function mainLoop(ns) {
         const floor = _floor;
         const aboveFloor = candidateActions.filter(a => getCount(a) >= 1 &&
             (populationUncertain ? maxChance(a) : minChance(a)) >= floor);
-        // Sort by minChance descending so we take the most reliable action first
-        aboveFloor.sort((a, b) => minChance(b) - minChance(a));
+        // Tier order preserved — candidateActions is already sorted highest-tier first.
+        // Sorting by minChance here would pick low-tier high-chance actions (e.g. Tracking)
+        // over high-tier lower-chance ones (e.g. Assassination), costing hundreds of rank/action.
         bestActionName = aboveFloor[0];
         if (bestActionName)
             reason = actionSummaryString(bestActionName);
