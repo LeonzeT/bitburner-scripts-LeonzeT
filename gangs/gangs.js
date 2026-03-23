@@ -104,7 +104,7 @@ export async function main(ns) {
         return log(ns, 'ERROR: SF2 required for gang access.');
 
     await initialize(ns);
-    log(ns, 'Gang manager starting main loop...');
+    log(ns, 'Gang manager starting main loop... [v4: wanted-safe ascension]');
     while (true) {
         try { await mainLoop(ns); }
         catch (err) {
@@ -773,23 +773,11 @@ async function tryAscendMembers(ns, myGangInfo) {
     const ascResults  = await getGangDict(ns, myGangMembers, 'getAscensionResult');
     const memberInfos = await getGangDict(ns, myGangMembers, 'getMemberInformation');
 
-    // Respect guard: don't ascend if it would drop us below next recruit threshold.
-    // Game formula: threshold = 5^(currentCount - numFreeMembers + 1) = 5^(currentCount - 2)
-    // respectForMember(n) = 5^(n-2), so pass currentCount directly (not +1).
     const nextRecruitResp = respectForMember(myGangMembers.length);
     let currentRespect = myGangInfo?.respect ?? Infinity;
     const startRespect = currentRespect;
-
-    // Per-tick cascade guard: even when below the recruit threshold (so the
-    // recruit-floor check is bypassed), don't wipe all respect in one tick by
-    // ascending every ready member simultaneously. Cap total respect loss per
-    // tick to 30% of starting respect. Members are processed in earnedRespect
-    // ascending order (lowest impact first) so the cheapest ascensions happen
-    // before the budget runs out.
     const MAX_RESPECT_LOSS_FRAC = 0.30;
 
-    // Sort by earnedRespect ascending: ascend cheapest members first so budget
-    // runs out on the expensive ones, not vice versa.
     const membersByImpact = [...myGangMembers].sort((a, b) =>
         (memberInfos[a]?.earnedRespect ?? 0) - (memberInfos[b]?.earnedRespect ?? 0));
 
@@ -800,16 +788,13 @@ async function tryAscendMembers(ns, myGangInfo) {
         if (!result) continue;
 
         const statsList = [...importantStats, 'cha'];
-
-        // Dynamic threshold from this member's actual asc_points (highest among relevant stats)
         const maxAscPts = Math.max(
             ...statsList.map(s => info?.[s + '_asc_points'] ?? 0)
         );
         const threshold = optimalAscendThreshold(maxAscPts);
 
-        // Check if any relevant stat's mult-ratio meets the dynamic threshold
+        // ── Gate 1: Does any stat meet the ascension threshold? ──────────
         if (!statsList.some(s => (result[s] ?? 0) >= threshold)) {
-            // Log progress for the stat closest to threshold
             const bestStat = statsList.reduce((best, s) =>
                 (result[s] ?? 0) > (result[best] ?? 0) ? s : best, statsList[0]);
             const bestRatio = result[bestStat] ?? 0;
@@ -818,65 +803,67 @@ async function tryAscendMembers(ns, myGangInfo) {
             continue;
         }
 
-        // Respect protection: don't ascend if it would drop respect below next recruit cost
-        // AND the next recruit is actually reachable (respect already >= threshold).
-        // If respect is currently below the threshold, the ascension loss is irrelevant —
-        // the recruit is already out of reach regardless, so blocking ascension only
-        // locks the gang in a deadlock (can't earn fast enough without ascending).
-        // Irrelevant once at 12 members (max).
-        const earnedResp = info?.earnedRespect ?? 0;
-        const alreadyAboveThreshold = currentRespect >= nextRecruitResp;
-        if (myGangMembers.length < 12 && alreadyAboveThreshold &&
-                currentRespect - earnedResp < nextRecruitResp) {
-            log(ns, `Holding ascension for ${m}: would drop respect ` +
-                `(${formatNumberShort(currentRespect)}→${formatNumberShort(currentRespect - earnedResp)}) ` +
-                `below recruit floor ${formatNumberShort(nextRecruitResp)}.`);
-            continue;
-        }
-        if (myGangMembers.length < 12 && !alreadyAboveThreshold && earnedResp > 0)
-            log(ns, `[asc-dbg] ${m}: respect ${formatNumberShort(currentRespect)} below threshold ` +
-                `${formatNumberShort(nextRecruitResp)} regardless — ascending anyway.`);
-
-        // Hard respect floor: prevent ascension from crashing respect so low that
-        // wanted management breaks down and soft-locks the script.
-        const RESPECT_WANTED_FLOOR = 50;
-        if (earnedResp > 0 && currentRespect - earnedResp < RESPECT_WANTED_FLOOR) {
-            log(ns, `Holding ascension for ${m}: would drop respect ` +
-                `(${formatNumberShort(currentRespect)}→${formatNumberShort(currentRespect - earnedResp)}) ` +
-                `below wanted-management floor (${RESPECT_WANTED_FLOOR}).`);
-            continue;
-        }
-
-        // Charisma co-ascension guard: don't let combat stats drag cha along for free.
-        // The main trigger fires if ANY stat meets threshold — so str=1.07 can trigger
-        // ascension while cha=1.00, gaining zero cha_asc_points every cycle.
-        //
-        // While cha_asc_mult is still weak (asc_points < 2000 → mult < 1.0),
-        // require that result.cha ALSO meets the ascension threshold.
-        // Once cha_asc_points >= 2000, drop the requirement.
+        // ── Gate 2: Cha co-ascension guard ───────────────────────────────
+        // While cha mults are still weak, require cha result to also meet
+        // threshold. Prevents cha→×1.00 ascensions that never build cha.
         const chaAscPts = info?.cha_asc_points ?? 0;
         const chaResult = result?.cha ?? 0;
         if (chaAscPts < 2000 && chaResult < threshold) {
-            log(ns, `Holding ascension for ${m}: cha→×${chaResult.toFixed(3)} < threshold ${threshold.toFixed(3)} ` +
-                `(cha_asc_pts=${Math.floor(chaAscPts)}, need >=2000 to waive). Train cha first.`);
+            log(ns, `Holding ${m}: cha→×${chaResult.toFixed(3)} < ${threshold.toFixed(3)} ` +
+                `(cha_asc_pts=${Math.floor(chaAscPts)}). Train cha first.`);
             continue;
         }
 
-        // Per-tick cascade guard: stop if we've already lost too much respect this tick.
+        const earnedResp = info?.earnedRespect ?? 0;
+
+        // ── Gate 3: Hard respect floor ───────────────────────────────────
+        // Don't ascend if it would crash respect so low that wanted
+        // management breaks down (penalty formula is catastrophic < 50).
+        if (earnedResp > 0 && currentRespect - earnedResp < 50) {
+            log(ns, `Holding ${m}: would drop respect to ${formatNumberShort(currentRespect - earnedResp)} (below floor 50).`);
+            continue;
+        }
+
+        // ── Gate 4: Wanted safety ────────────────────────────────────────
+        // Don't ascend if the respect drop would push the wanted penalty
+        // past the threshold. This is the key anti-spiral guard:
+        // penalty = respect / (respect + wanted). After ascension,
+        // respect drops by earnedResp. If the post-ascension penalty
+        // would be bad, hold off — the respect needs to recover first.
+        if (earnedResp > 0 && myGangInfo.wantedLevel > 1.05) {
+            const postRespect = currentRespect - earnedResp;
+            const postPenalty = postRespect / (postRespect + myGangInfo.wantedLevel);
+            if (postPenalty < 1 - WANTED_PENALTY_THRESH) {
+                log(ns, `Holding ${m}: post-ascension penalty would be ${(postPenalty*100).toFixed(1)}% ` +
+                    `(respect ${formatNumberShort(currentRespect)}→${formatNumberShort(postRespect)}, ` +
+                    `wanted=${myGangInfo.wantedLevel.toFixed(1)}). Wait for wanted to drop.`);
+                continue;
+            }
+        }
+
+        // ── Gate 5: Recruit threshold protection ─────────────────────────
+        const alreadyAboveThreshold = currentRespect >= nextRecruitResp;
+        if (myGangMembers.length < 12 && alreadyAboveThreshold &&
+                currentRespect - earnedResp < nextRecruitResp) {
+            log(ns, `Holding ${m}: would drop respect below recruit floor ${formatNumberShort(nextRecruitResp)}.`);
+            continue;
+        }
+
+        // ── Gate 6: Per-tick cascade limit ───────────────────────────────
         const alreadyLost = startRespect - currentRespect;
         if (startRespect > 1 && alreadyLost / startRespect >= MAX_RESPECT_LOSS_FRAC) {
-            log(ns, `[asc-dbg] Deferring ${m} and remaining: already lost ` +
-                `${formatNumberShort(alreadyLost)} (${(alreadyLost/startRespect*100).toFixed(1)}%) this tick.`);
+            log(ns, `[asc-dbg] Deferring ${m}: already lost ${(alreadyLost/startRespect*100).toFixed(1)}% respect this tick.`);
             break;
         }
 
+        // ── All gates passed — ascend ────────────────────────────────────
         const ok = await getNsDataThroughFile(ns,
             `ns.gang.ascendMember(ns.args[0])`, null, [m]);
         if (ok !== undefined) {
             log(ns, `Ascended ${m}: ${statsList.map(s => `${s}→×${(result[s]??1).toFixed(2)}`).join(' ')} ` +
                 `(threshold=${threshold.toFixed(3)}, pts=${formatNumberShort(maxAscPts)})`, false, 'success');
             lastMemberReset[m] = Date.now();
-            currentRespect -= earnedResp; // Track cumulative respect loss within this tick
+            currentRespect -= earnedResp;
         } else {
             log(ns, `ERROR: Ascend failed for ${m}`, false, 'error');
         }
