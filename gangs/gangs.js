@@ -432,7 +432,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
     // ── Debug: log key state every optimization pass ────────────────────────
     const memberStats = Object.values(dictMembers).map(m =>
         `${m.name}: str=${m.str} dex=${m.dex} agi=${m.agi} cha=${m.cha}`).join(', ');
-    log(ns, `[gang-dbg] Tolerance=${wantedGainTolerance.toFixed(4)} respect=${myGangInfo.respect.toFixed(0)} wanted=${myGangInfo.wantedLevel.toFixed(2)} optStat=${optStat}${optStat==='both'?' ('+effectiveStat+' tick)':''} moneyRate=${formatMoney(myGangInfo.moneyGainRate*5)}/s`);
+    log(ns, `[gang-dbg] Tolerance=${wantedGainTolerance.toFixed(4)} respect=${myGangInfo.respect.toFixed(0)} wanted=${myGangInfo.wantedLevel.toFixed(2)} optStat=${optStat}${optStat==='both'?' ('+(!bothIsMoneyTick?'money':'respect')+' tick)':''} moneyRate=${formatMoney(myGangInfo.moneyGainRate*5)}/s`);
     log(ns, `[gang-dbg] Stats: ${memberStats}`);
 
     // Determine which members should train cha/hack this tick (per-member, not global)
