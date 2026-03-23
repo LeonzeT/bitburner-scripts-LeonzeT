@@ -250,22 +250,22 @@ async function loadStartupData(ns) {
     playerGang = gangInfo ? gangInfo.faction : null;
     if (playerGang && !options['disable-treating-gang-as-sole-provider-of-its-augs']) {
         // Whatever augmentations the gang provides are so easy to get from them, might as well ignore any other factions that have them.
-        const gangAugs = dictFactionAugs[playerGang] ?? [];
+        const gangAugs = dictFactionAugs[playerGang];
         ns.print(`Your gang ${playerGang} provides easy access to ${gangAugs.length} augs. Ignoring these augs from the original factions that provide them.`);
         for (const faction of allKnownFactions.filter(f => f != playerGang))
-            dictFactionAugs[faction] = (dictFactionAugs[faction] ?? []).filter(a => !gangAugs.includes(a));
+            dictFactionAugs[faction] = dictFactionAugs[faction].filter(a => !gangAugs.includes(a));
     }
 
     mostExpensiveAugByFaction = Object.fromEntries(allKnownFactions.map(f => [f,
-        (dictFactionAugs[f] ?? []).filter(aug => !ownedAugmentations.includes(aug))
+        dictFactionAugs[f].filter(aug => !ownedAugmentations.includes(aug))
             .reduce((max, aug) => Math.max(max, dictAugRepReqs[aug]), -1)]));
     //ns.print("Most expensive unowned aug by faction: " + JSON.stringify(mostExpensiveAugByFaction));
     // TODO: Detect when the most expensive aug from two factions is the same - only need it from the first one. (Update lists and remove 'afforded' augs?)
     mostExpensiveDesiredAugByFaction = Object.fromEntries(allKnownFactions.map(f => [f,
-        (dictFactionAugs[f] ?? []).filter(aug => !ownedAugmentations.includes(aug) && (
+        dictFactionAugs[f].filter(aug => !ownedAugmentations.includes(aug) && (
             options['desired-augs'].includes(aug) ||
-            Object.keys(Object(dictAugStats[aug])).length == 0 || options['desired-stats'].length == 0 ||
-            Object.keys(Object(dictAugStats[aug])).some(key => options['desired-stats'].some(stat => key.includes(stat)))
+            Object.keys(dictAugStats[aug]).length == 0 || options['desired-stats'].length == 0 ||
+            Object.keys(dictAugStats[aug]).some(key => options['desired-stats'].some(stat => key.includes(stat)))
         )).reduce((max, aug) => Math.max(max, dictAugRepReqs[aug]), -1)]));
     //ns.print("Most expensive desired aug by faction: " + JSON.stringify(mostExpensiveDesiredAugByFaction));
 
@@ -1053,6 +1053,24 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
     let bestFactionJob = null;
     while ((currentReputation = (await getFactionReputation(ns, factionName))) < factionRepRequired) {
         if (breakToMainLoop()) return ns.print('INFO: Interrupting faction work to check on high-level priorities.');
+        // Bladeburner yield: if in bladeburner without Simulacrum, stop faction work and
+        // sleep for the current BB action duration so bladeburner can use player focus.
+        if (playerGang && playerInBladeburner && !hasSimulacrum && !options['no-bladeburner-check']) {
+            const bbAction = await getNsDataThroughFile(ns, 'ns.bladeburner.getCurrentAction()');
+            if (bbAction && bbAction.type && bbAction.type !== 'General') {
+                const bbDone = await getNsDataThroughFile(ns,
+                    'ns.bladeburner.getActionTime(ns.args[0],ns.args[1])*(1-ns.bladeburner.getActionCurrentCompletion())',
+                    null, [bbAction.type, bbAction.name]);
+                await stop(ns);
+                workAssigned = false;
+                if (lastInterruptionNotice !== 'bb-yield') {
+                    log(ns, `INFO: Gang will give us most augs — pausing faction work for Bladeburner "${bbAction.name}". Sleeping ${formatDuration(bbDone || loopSleepInterval)}.`);
+                    lastInterruptionNotice = 'bb-yield';
+                }
+                await ns.sleep((bbDone > 0 ? bbDone : loopSleepInterval) + 200);
+                continue;
+            } else { lastInterruptionNotice = ''; }
+        }
         const currentWork = await getCurrentWorkInfo(ns);
         let factionJob = currentWork.factionWorkType;
         // Detect if faction work was interrupted and log a warning
