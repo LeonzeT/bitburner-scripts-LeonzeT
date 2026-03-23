@@ -20,7 +20,7 @@ export async function main(ns) {
         const savedRaw = ns.read(HASH_FILE);
         if (savedRaw) local = JSON.parse(savedRaw);
     } catch {}
- 
+
     const files = Object.keys(remote).filter(f => !SKIP.includes(f));
     const changed = files.filter(f => remote[f] !== local[f]);
     const unchanged = files.length - changed.length;
