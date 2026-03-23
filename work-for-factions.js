@@ -1055,6 +1055,7 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
         if (breakToMainLoop()) return ns.print('INFO: Interrupting faction work to check on high-level priorities.');
         // Bladeburner yield: if in bladeburner without Simulacrum, stop faction work and
         // sleep for the current BB action duration so bladeburner can use player focus.
+        playerInBladeburner = playerInBladeburner || (playerGang && !hasSimulacrum && await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'));
         if (playerGang && playerInBladeburner && !hasSimulacrum && !options['no-bladeburner-check']) {
             const bbAction = await getNsDataThroughFile(ns, 'ns.bladeburner.getCurrentAction()');
             if (bbAction && bbAction.type && bbAction.type !== 'General') {
