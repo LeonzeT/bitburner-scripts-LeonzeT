@@ -1304,6 +1304,26 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
     let repRequiredForFaction = (companyConfig?.repRequiredForFaction || 400_000) - (backdoored ? 100_000 : 0);
     while (((currentReputation = (await getCompanyReputation(ns, companyName))) < repRequiredForFaction) && !player.factions.includes(factionName)) {
         if (breakToMainLoop()) return ns.print('INFO: Interrupting corporation work to check on high-level priorities.');
+        // Bladeburner yield: same as faction work loop — stop company work and sleep
+        // for the BB action duration so bladeburner can use player focus.
+        playerInBladeburner = playerInBladeburner || (playerGang && !hasSimulacrum && !options['no-bladeburner-check'] &&
+            await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'));
+        if (playerGang && playerInBladeburner && !hasSimulacrum && !options['no-bladeburner-check']) {
+            const bbAction = await getNsDataThroughFile(ns, 'ns.bladeburner.getCurrentAction()');
+            if (bbAction && bbAction.type && bbAction.type !== 'General') {
+                const bbDone = await getNsDataThroughFile(ns,
+                    'ns.bladeburner.getActionTime(ns.args[0],ns.args[1])',
+                    '/Temp/wff-bb-action-remaining.txt', [bbAction.type, bbAction.name]);
+                await stop(ns);
+                isWorking = false;
+                if (lastInterruptionNotice !== 'bb-yield') {
+                    log(ns, `INFO: Gang will give us most augs — pausing company work for Bladeburner "${bbAction.name}". Sleeping ${formatDuration(bbDone || loopSleepInterval)}.`);
+                    lastInterruptionNotice = 'bb-yield';
+                }
+                await ns.sleep((bbDone > 0 ? bbDone : loopSleepInterval) + 200);
+                continue;
+            } else { lastInterruptionNotice = ''; }
+        }
         // Determine the next promotion we're striving for (the sooner we get promoted, the faster we can earn company rep)
         const getTier = job => Math.min( // Check all requirements for all job (taking into account modifiers) and find the minimum we meet
             job.reqRep.filter(r => (r * (backdoored ? 0.75 : 1)) <= currentReputation).length,
