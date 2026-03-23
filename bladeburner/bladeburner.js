@@ -436,7 +436,9 @@ async function spendSkillPoints(ns) {
                 [skillToUpgrade, minPercievedCost] = [skillName, percievedCost];
         }
         // If the percieved or actual cost of the next best upgrade is too high, save our remaining points for later
-        if (minPercievedCost > unspent || skillCosts[skillToUpgrade] > unspent) return;
+        // Check real cost first — perceived cost includes priority adjustments and may exceed
+        // actual SP even when we can afford the upgrade. Only block if real cost > unspent.
+        if (skillCosts[skillToUpgrade] > unspent) return;
         // Otherwise, purchase the upgrade
         if (await getBBInfo(ns, `upgradeSkill(ns.args[0])`, skillToUpgrade))
             log(ns, `SUCCESS: Upgraded Bladeburner skill ${skillToUpgrade}`, false, options['toast-upgrades'] ? 'success' : undefined);
