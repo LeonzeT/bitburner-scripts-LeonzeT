@@ -93,6 +93,12 @@ let xpCycleActive = false; // autopilot XP cycle is grinding/money phase
 // BitRunners: Neurolink 1.20× + NeuralAccelerator 1.15× + ENMCore 1.15×
 // The Black Hand: ENMCore 1.15× + EnhancedMyelinSheathing 1.10×
 const XP_FACTIONS = new Set(['Chongqing', 'NiteSec', 'BitRunners', 'The Black Hand']);
+// City factions with exclusive augs worth prioritizing over general faction work.
+// Deprioritized once all their augs are installed on this sleeve.
+// Chongqing: Neuregen (hack_exp ×1.4, exclusive), Neuralstimulator
+// New Tokyo:  NuoptimalNootropicInjector, FocusWire
+// Ishima:     SmartSonar, INFRARET Enhancement
+const CITY_PRIORITY_FACTIONS = new Set(['Chongqing', 'New Tokyo', 'Ishima']);
 let options;
 
 export function autocomplete(data, _) {
@@ -541,6 +547,69 @@ async function pickSleeveTask(ns, playerInfo, playerWorkInfo, i, sleeve, canTrai
     // rather than being assigned to faction work that doesn't help unlock the gang.
     if (sleeve.shock === 0 && !playerInGang && !options['disable-gang-homicide-priority'] && (2 in ownedSourceFiles) && ns.heart.break() > -54000)
         return await crimeTask(ns, 'Homicide', i, sleeve, 'grinding karma to unlock gang (shock=0)');
+    // ── Bladeburner priority (after training, before general faction work) ──────────────
+    // Exceptions: Daedalus (already handled above) and city priority factions (below).
+    // This ensures sleeves generate BB contracts/operations without waiting for all
+    // faction slots to fill up first.
+    if (playerInBladeburner && !options['disable-bladeburner']) {
+        // Stat-aware contract assignment (same logic as main BB block below)
+        const combatPower = sleeve.skills.strength + sleeve.skills.defense +
+            sleeve.skills.dexterity + sleeve.skills.agility;
+        let action, contractName;
+        if (combatPower >= 800 && !assignedContracts.has('Retirement')) {
+            [action, contractName] = ["Take on contracts", "Retirement"];
+            assignedContracts.add('Retirement');
+        } else if (combatPower >= 600 && !assignedContracts.has('Bounty Hunter')) {
+            [action, contractName] = ["Take on contracts", "Bounty Hunter"];
+            assignedContracts.add('Bounty Hunter');
+        } else if (combatPower >= 400 && !assignedContracts.has('Tracking')) {
+            [action, contractName] = ["Take on contracts", "Tracking"];
+            assignedContracts.add('Tracking');
+        } else if (options['enable-bladeburner-team-building'] && !assignedBbSupport) {
+            [action, contractName] = ["Support main sleeve"];
+            assignedBbSupport = true;
+        } else if (options['enable-bladeburner-team-building'] && !assignedBbRecruit) {
+            [action, contractName] = ["Recruitment"];
+            assignedBbRecruit = true;
+        } else {
+            [action, contractName] = ["Infiltrate Synthoids"];
+        }
+        // Apply same cooldown/chaos/count checks as the late BB block
+        const contractChance = bladeburnerContractChances[contractName] ?? 1;
+        const contractCount  = bladeburnerContractCounts[contractName]  ?? Infinity;
+        const onCooldown = () => Date.now() <= bladeburnerCooldown[i];
+        if (sleeve.hp.current < lastSleeveHp[i] || sleeve.shock > lastSleeveShock[i]) {
+            bladeburnerCooldown[i] = Date.now() + options['failed-bladeburner-contract-cooldown'];
+            log(ns, `Sleeve ${i} appears to have recently failed its BB task '${action} - ${contractName}'. ` +
+                `Will try again in ${formatDuration(options['failed-bladeburner-contract-cooldown'])}`);
+        } else if (!onCooldown() && (contractChance <= minBbProbability || contractCount < minBbContracts)) {
+            bladeburnerCooldown[i] = Date.now() + waitForContractCooldown;
+        }
+        if (bladeburnerCityChaos > (10 - i) * 10) [action, contractName] = ["Diplomacy"];
+        else if (onCooldown()) {
+            if (sleeve.shock > 0) return shockRecoveryTask(sleeve, i, `bladeburner task is on cooldown`);
+            [action, contractName] = ["Infiltrate Synthoids"];
+        }
+        return [`Bladeburner ${action} ${contractName || ''}`.trimEnd(),
+            `ns.sleeve.setToBladeburnerAction(ns.args[0], ns.args[1], ns.args[2])`, [i, action, contractName ?? ''],
+            `doing ${action}${contractName ? ` - ${contractName}` : ''} in Bladeburner.`];
+    }
+    // ── City priority factions (Chongqing/New Tokyo/Ishima) ──────────────────────────────
+    // Assign a sleeve to these before general faction work, until all their augs are installed.
+    // One sleeve per city faction — only fires if the player has joined the faction.
+    const joinedCityPriority = [...CITY_PRIORITY_FACTIONS].filter(f =>
+        playerInfo.factions?.includes(f) && !assignedFactions.has(f) && !noWorkFactions.has(f) && f !== gangFaction);
+    if (joinedCityPriority.length > 0) {
+        const cityFaction = joinedCityPriority[0]; // Take first available city priority faction
+        const work = works[workByFaction[cityFaction] || 0];
+        assignedFactions.add(cityFaction);
+        return [
+            `work for faction '${cityFaction}' (${work})`,
+            `ns.sleeve.setToFactionWork(ns.args[0], ns.args[1], ns.args[2])`,
+            [i, cityFaction, work],
+            `earning rep with city faction ${cityFaction} (priority for exclusive augs).`
+        ];
+    }
     // If player is currently working for faction or company rep, a sleeve can help him out (Note: Only one sleeve can work for a faction)
     // Skip if the faction is the gang's own faction — gang already earns rep for it passively.
     if (i == followPlayerSleeve && playerWorkInfo.type == "FACTION" && playerWorkInfo.factionName !== gangFaction) {
