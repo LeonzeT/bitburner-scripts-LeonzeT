@@ -832,19 +832,23 @@ async function tryAscendMembers(ns, myGangInfo) {
             log(ns, `[asc-dbg] ${m}: respect ${formatNumberShort(currentRespect)} below threshold ` +
                 `${formatNumberShort(nextRecruitResp)} regardless — ascending anyway.`);
 
-        // Only block ascension if cha training is actively IN PROGRESS but < 3000:
-        //   cha_exp == 0 → never trained → nothing to lose, allow ascension
-        //   cha_exp  > 0 and < 3000 → training in progress, ascending resets to 0
-        //                             and gains 0 asc_points → hold until 3000
+        // Block ascension if cha would gain 0 asc_points AND the member still needs cha.
+        //   cha_exp < 3000 → ascending gains 0 cha asc_points (1000 exp dead zone + overhead)
         //   cha_exp >= 3000 → will gain cha asc_points on ascension → allow
+        //
+        // Exception: if cha_asc_points is already substantial (>= 2000, i.e. cha_asc_mult >= 1.0),
+        // the member's cha mult is healthy enough that skipping one cycle is fine — don't
+        // hold combat-ready members hostage for marginal cha gains.
         // If info is null (RAM failure), hold as safety.
-        const chaExp = info?.cha_exp ?? null;
+        const chaExp    = info?.cha_exp ?? null;
+        const chaAscPts = info?.cha_asc_points ?? 0;
         if (chaExp === null) {
             log(ns, `Holding ascension for ${m}: could not verify cha_exp (RAM issue).`);
             continue;
         }
-        if (chaExp > 0 && chaExp < 3000) {
-            log(ns, `Holding ascension for ${m}: cha_exp=${Math.floor(chaExp)} (0 < exp < 3000 = training in progress, would gain 0 asc pts). Keep training.`);
+        if (chaExp < 3000 && chaAscPts < 2000) {
+            log(ns, `Holding ascension for ${m}: cha_exp=${Math.floor(chaExp)} < 3000 (would gain 0 cha asc pts) ` +
+                `and cha_asc_pts=${Math.floor(chaAscPts)} < 2000 (cha mult still weak). Train cha first.`);
             continue;
         }
 
