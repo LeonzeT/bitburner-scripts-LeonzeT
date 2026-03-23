@@ -253,22 +253,22 @@ async function loadStartupData(ns) {
     playerGang = gangInfo ? gangInfo.faction : null;
     if (playerGang && !options['disable-treating-gang-as-sole-provider-of-its-augs']) {
         // Whatever augmentations the gang provides are so easy to get from them, might as well ignore any other factions that have them.
-        const gangAugs = dictFactionAugs[playerGang];
+        const gangAugs = dictFactionAugs[playerGang] ?? [];
         ns.print(`Your gang ${playerGang} provides easy access to ${gangAugs.length} augs. Ignoring these augs from the original factions that provide them.`);
         for (const faction of allKnownFactions.filter(f => f != playerGang))
-            dictFactionAugs[faction] = dictFactionAugs[faction].filter(a => !gangAugs.includes(a));
+            dictFactionAugs[faction] = (dictFactionAugs[faction] ?? []).filter(a => !gangAugs.includes(a));
     }
 
     mostExpensiveAugByFaction = Object.fromEntries(allKnownFactions.map(f => [f,
-        dictFactionAugs[f].filter(aug => !ownedAugmentations.includes(aug))
+        (dictFactionAugs[f] ?? []).filter(aug => !ownedAugmentations.includes(aug))
             .reduce((max, aug) => Math.max(max, dictAugRepReqs[aug]), -1)]));
     //ns.print("Most expensive unowned aug by faction: " + JSON.stringify(mostExpensiveAugByFaction));
     // TODO: Detect when the most expensive aug from two factions is the same - only need it from the first one. (Update lists and remove 'afforded' augs?)
     mostExpensiveDesiredAugByFaction = Object.fromEntries(allKnownFactions.map(f => [f,
-        dictFactionAugs[f].filter(aug => !ownedAugmentations.includes(aug) && (
+        (dictFactionAugs[f] ?? []).filter(aug => !ownedAugmentations.includes(aug) && (
             options['desired-augs'].includes(aug) ||
-            Object.keys(dictAugStats[aug]).length == 0 || options['desired-stats'].length == 0 ||
-            Object.keys(dictAugStats[aug]).some(key => options['desired-stats'].some(stat => key.includes(stat)))
+            Object.keys(Object(dictAugStats[aug])).length == 0 || options['desired-stats'].length == 0 ||
+            Object.keys(Object(dictAugStats[aug])).some(key => options['desired-stats'].some(stat => key.includes(stat)))
         )).reduce((max, aug) => Math.max(max, dictAugRepReqs[aug]), -1)]));
     //ns.print("Most expensive desired aug by faction: " + JSON.stringify(mostExpensiveDesiredAugByFaction));
 
