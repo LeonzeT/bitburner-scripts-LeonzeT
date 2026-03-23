@@ -84,6 +84,12 @@ const BATCHER_WATCHDOG_INTERVAL = 30 * 1000;
 const EXEC_HOSTS_FILE = "/Temp/hwgw-exec-hosts.txt";
 const STATUS_FILE = "/Temp/hwgw-status.txt";
 let BATCHER_SCRIPT, PREP_SCRIPT, WORKER_SCRIPTS;
+
+// Worker script RAM costs, cached after the first resolveScripts() call.
+// getScriptRam() is called once at startup instead of on every target in
+// every estimateScore() and estimateRamPerBatch() invocation.
+let HACK_RAM = 0, GROW_RAM = 0, WEAKEN_RAM = 0;
+
 function resolveScripts(ns) {
     let paths = {};
     try {
@@ -97,6 +103,10 @@ function resolveScripts(ns) {
         paths['hwgw-hack']   ?? "hacking/hwgw-hack.js",
         paths['hwgw-grow']   ?? "hacking/hwgw-grow.js",
     ];
+    // Cache RAM costs once here — these never change at runtime
+    WEAKEN_RAM = ns.getScriptRam(WORKER_SCRIPTS[0], "home") || 0;
+    HACK_RAM   = ns.getScriptRam(WORKER_SCRIPTS[1], "home") || 0;
+    GROW_RAM   = ns.getScriptRam(WORKER_SCRIPTS[2], "home") || 0;
 }
 
 /** @param {NS} ns */
@@ -888,10 +898,19 @@ function estimateScore(ns, host, maxMoney, hackChance, hackPct, hackPercent,
     server.hackDifficulty = minSec + hackThreads * HACK_SECURITY_PER_THREAD;
     growThreads = Math.ceil(ns.formulas.hacking.growThreads(server, player, maxMoney));
   } else {
-    const growFactor = 1 / Math.max(0.01, 1 - actualHack);
+    // Correct Bitburner grow formula (see hwgw-notes.txt §1).
+    // The game's grow mechanic uses adjustedGrowthRate = min(1.0035, 1 + 0.03/minSec)
+    // as the per-thread multiplier base, NOT (1 + serverGrowth*bnRate/100).
+    // Using the wrong formula underestimates grow threads by 10-100×, which makes
+    // RAM-per-batch look far cheaper than it is and corrupts target scoring.
+    const minSec       = ns.getServerMinSecurityLevel(host);
     const serverGrowth = ns.getServerGrowth(host);
-    const growPerThread = Math.max(0.001, (serverGrowth * bnMults.ServerGrowthRate) / 100);
-    growThreads = Math.ceil((Math.log(growFactor) / Math.log(1 + growPerThread)) * 1.2);
+    const growRate     = bnMults.ServerGrowthRate ?? 1;
+    const growFactor   = 1 / Math.max(0.01, 1 - actualHack);
+    const adjGrowthRate = Math.min(1.0035, 1 + 0.03 / Math.max(1, minSec));
+    growThreads = Math.ceil(
+      (Math.log(growFactor) / (Math.log(adjGrowthRate) * serverGrowth / 100 * growRate)) * 1.2
+    );
   }
 
   const secFromHack = hackThreads * HACK_SECURITY_PER_THREAD;
@@ -899,15 +918,14 @@ function estimateScore(ns, host, maxMoney, hackChance, hackPct, hackPercent,
   const w1Threads = Math.ceil(secFromHack / actualWeakenPerThread);
   const w2Threads = Math.ceil((secFromHack + secFromGrow) / actualWeakenPerThread);
 
-  const hackRam = ns.getScriptRam(WORKER_SCRIPTS[1], "home");
-  const growRam = ns.getScriptRam(WORKER_SCRIPTS[2], "home");
-  const weakenRam = ns.getScriptRam(WORKER_SCRIPTS[0], "home");
-  if (!hackRam || !growRam || !weakenRam) return 0;
+  // Use module-level cached RAM values (populated once in resolveScripts)
+  // instead of calling getScriptRam() on every target in every scoring pass.
+  if (!HACK_RAM || !GROW_RAM || !WEAKEN_RAM) return 0;
 
-  const ramPerBatch = hackThreads * hackRam
-    + growThreads * growRam
-    + w1Threads * weakenRam
-    + w2Threads * weakenRam;
+  const ramPerBatch = hackThreads * HACK_RAM
+    + growThreads * GROW_RAM
+    + w1Threads * WEAKEN_RAM
+    + w2Threads * WEAKEN_RAM;
   if (ramPerBatch <= 0) return 0;
 
   // How many batches can simultaneously run?
@@ -1026,21 +1044,24 @@ function estimateRamPerBatch(ns, host, hackPct, hackPercent, period, bnMults, ha
     server.hackDifficulty = ns.getServerMinSecurityLevel(host) + hackThreads * HACK_SECURITY_PER_THREAD;
     growThreads = Math.ceil(ns.formulas.hacking.growThreads(server, player, maxMoney));
   } else {
-    const growFactor = 1 / Math.max(0.01, 1 - actualHack);
-    const serverGrowth = ns.getServerGrowth(host);
-    const growPerThread = Math.max(0.001, (serverGrowth * bnMults.ServerGrowthRate) / 100);
-    growThreads = Math.ceil((Math.log(growFactor) / Math.log(1 + growPerThread)) * 1.2);
+    // Same correct formula as estimateScore — see hwgw-notes.txt §1
+    const minSec        = ns.getServerMinSecurityLevel(host);
+    const serverGrowth  = ns.getServerGrowth(host);
+    const growRate      = bnMults.ServerGrowthRate ?? 1;
+    const growFactor    = 1 / Math.max(0.01, 1 - actualHack);
+    const adjGrowthRate = Math.min(1.0035, 1 + 0.03 / Math.max(1, minSec));
+    growThreads = Math.ceil(
+      (Math.log(growFactor) / (Math.log(adjGrowthRate) * serverGrowth / 100 * growRate)) * 1.2
+    );
   }
   const secFromHack = hackThreads * HACK_SECURITY_PER_THREAD;
   const secFromGrow = growThreads * GROW_SECURITY_PER_THREAD;
   const w1Threads = Math.ceil(secFromHack / actualWeakenPerThread);
   const w2Threads = Math.ceil((secFromHack + secFromGrow) / actualWeakenPerThread);
-  const hackRam = ns.getScriptRam(WORKER_SCRIPTS[1], "home");
-  const growRam = ns.getScriptRam(WORKER_SCRIPTS[2], "home");
-  const weakenRam = ns.getScriptRam(WORKER_SCRIPTS[0], "home");
-  if (!hackRam || !growRam || !weakenRam) return null;
-  return (hackThreads * hackRam) + (growThreads * growRam) +
-    (w1Threads * weakenRam) + (w2Threads * weakenRam);
+  // Use cached RAM values — same reasoning as estimateScore
+  if (!HACK_RAM || !GROW_RAM || !WEAKEN_RAM) return null;
+  return (hackThreads * HACK_RAM) + (growThreads * GROW_RAM) +
+    (w1Threads * WEAKEN_RAM) + (w2Threads * WEAKEN_RAM);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -48,11 +48,11 @@ const WORKER_PORT = 1; // batcher's desync channel — prep must NOT write here
 const MAX_ITERATIONS = 50; // give up after this many weaken+grow cycles
 
 // Fraction of total free exec RAM prep is allowed to consume per wave.
-// Leaving 50% free ensures batchers already running (on other targets)
-// can still launch their workers without RAM starvation. Prep naturally
-// runs in multiple waves so it reaches the same outcome, just one pass
-// at a time instead of hammering every GB at once.
-const PREP_RAM_FRACTION = 0.50;
+// When no batchers are running (fresh start / only target) we can safely
+// hammer the full RAM pool and finish prep as fast as possible.
+// When batchers ARE running on other targets we leave 50% free so their
+// workers don't get starved between waves.
+// This is computed dynamically in getPrepRamFraction() below.
 
 /** Safe number helper — guards against NaN/Infinity cascades (see hwgw-notes.txt §5) */
 const fin  = (v, fallback) => Number.isFinite(v) ? v : fallback;
@@ -138,6 +138,21 @@ export async function main(ns) {
         }, 0);
     }
 
+    // ── Adaptive RAM fraction ──────────────────────────────────────────────
+    // If batcher workers (non-PREP) are currently running on any exec host,
+    // we share nicely and only consume half the free RAM per wave.
+    // If we're the only thing running (fresh BN, first target), take up to
+    // 90% so prep completes in as few iterations as possible.
+    function getPrepRamFraction(hosts) {
+        const batcherWorkerRunning = hosts.some(h =>
+            ns.ps(h).some(p =>
+                (p.filename === WEAKEN || p.filename === GROW) &&
+                Array.isArray(p.args) && p.args[3] !== 'PREP'
+            )
+        );
+        return batcherWorkerRunning ? 0.50 : 0.90;
+    }
+
     // ── Copy workers to all exec hosts ─────────────────────────────────────
     async function ensureScriptsCopied(hosts) {
         for (const host of hosts) {
@@ -170,23 +185,19 @@ export async function main(ns) {
     }
 
     // ── Wait for all running prep workers on this target to finish ─────────
-    async function waitForWorkers() {
+    // Accepts the host list computed at the start of the current iteration so
+    // we don't re-run a BFS scan (or re-parse the exec-hosts file) every 500ms
+    // for the entire duration of a weaken or grow wave. The list doesn't change
+    // mid-wave, so computing it once is both correct and cheaper.
+    async function waitForWorkers(hosts) {
         while (true) {
-            const running = ns.ps().some(p =>
-                (p.filename === WEAKEN || p.filename === GROW) &&
-                Array.isArray(p.args) && p.args[0] === target && p.args[3] === 'PREP'
-            );
-            // Also check all exec hosts
-            const hosts = getWorkerHosts();
-            let anyRunning = running;
-            if (!anyRunning) {
-                for (const h of hosts) {
-                    if (anyRunning) break;
-                    anyRunning = ns.ps(h).some(p =>
-                        (p.filename === WEAKEN || p.filename === GROW) &&
-                        Array.isArray(p.args) && p.args[0] === target && p.args[3] === 'PREP'
-                    );
-                }
+            let anyRunning = false;
+            for (const h of hosts) {
+                if (anyRunning) break;
+                anyRunning = ns.ps(h).some(p =>
+                    (p.filename === WEAKEN || p.filename === GROW) &&
+                    Array.isArray(p.args) && p.args[0] === target && p.args[3] === 'PREP'
+                );
             }
             if (!anyRunning) break;
             await ns.sleep(500);
@@ -238,38 +249,40 @@ export async function main(ns) {
             return;
         }
 
+        const prepRamFraction = getPrepRamFraction(hosts);
+
         // ── Phase 1: Weaken if security above minimum ──────────────────────
         if (!secOk) {
             const secDelta  = fin(currentSec - minSec, 0);
             const needed    = threads(Math.ceil(secDelta / actualWeakenPerThread) * 1.1);
-            const freeRam   = getTotalFreeRam(hosts) * PREP_RAM_FRACTION;
+            const freeRam   = getTotalFreeRam(hosts) * prepRamFraction;
             const canLaunch = threads(freeRam / weakenRam);
             const toLaunch  = Math.min(needed, canLaunch);
 
             if (toLaunch > 0) {
-                ns.print(`[Iter ${iters}] Weaken: sec=${currentSec.toFixed(2)}/${minSec} — launching ${toLaunch} threads`);
+                ns.print(`[Iter ${iters}] Weaken: sec=${currentSec.toFixed(2)}/${minSec} — launching ${toLaunch} threads (${(prepRamFraction*100).toFixed(0)}% RAM)`);
                 dispatchThreads(WEAKEN, toLaunch, hosts);
             } else {
                 ns.print(`[Iter ${iters}] Weaken needed but no RAM (free=${freeRam.toFixed(0)}GB, need ${weakenRam}GB/thread). Waiting...`);
             }
-            await waitForWorkers();
+            await waitForWorkers(hosts);
             continue; // re-evaluate before growing
         }
 
         // ── Phase 2: Grow if money below maximum ───────────────────────────
         if (!monOk) {
             const growNeeded = estimateGrowThreads(currentMon, maxMon, minSec);
-            const freeRam    = getTotalFreeRam(hosts) * PREP_RAM_FRACTION;
+            const freeRam    = getTotalFreeRam(hosts) * prepRamFraction;
             const canLaunch  = threads(freeRam / growRam);
             const toLaunch   = Math.min(growNeeded, canLaunch);
 
             if (toLaunch > 0) {
-                ns.print(`[Iter ${iters}] Grow: money=${(currentMon/maxMon*100).toFixed(1)}% — launching ${toLaunch}/${growNeeded} threads`);
+                ns.print(`[Iter ${iters}] Grow: money=${(currentMon/maxMon*100).toFixed(1)}% — launching ${toLaunch}/${growNeeded} threads (${(prepRamFraction*100).toFixed(0)}% RAM)`);
                 dispatchThreads(GROW, toLaunch, hosts);
             } else {
                 ns.print(`[Iter ${iters}] Grow needed but no RAM (free=${freeRam.toFixed(0)}GB). Waiting...`);
             }
-            await waitForWorkers();
+            await waitForWorkers(hosts);
 
             // After growing, security will have risen — loop back to weaken
             continue;
