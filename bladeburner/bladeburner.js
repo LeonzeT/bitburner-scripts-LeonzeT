@@ -15,7 +15,9 @@ const costAdjustments = {
     "Hyperdrive": 2, // Improves stats gained, but not Rank gained. Less useful if training outside of BB
     "Tracer": 2, // Only boosts Contract success chance, which are relatively easy to begin with.
     "Cyber's Edge": 5, // Boosts stamina, but contract counts are much more limiting than stamina, so isn't really needed
-    "Hands of Midas": 2 // Improves money gain. Deprioritized, but not ignored — in BN7 where hacking income is 50%, BB contracts are a meaningful supplement.
+    "Hands of Midas": 2, // Improves money gain. Deprioritized, but not ignored — in BN7 where hacking income is 50%, BB contracts are a meaningful supplement.
+    "Blade's Intuition": 0.7, // Contract success chance boost — very valuable early when Tracking/Bounty Hunter success is borderline.
+    "Digital Observer": 0.7, // Operation success chance boost — same reasoning; prioritize before raw combat boosts.
 };
 
 // Some bladeburner info gathered at startup and cached
@@ -177,6 +179,11 @@ async function mainLoop(ns) {
     await spendSkillPoints(ns);
     // See if we are able to do bladeburner work
     if (!(await canDoBladeburnerWork(ns))) return;
+
+    // Early exit: if the current action is still running, skip all expensive
+    // data-gathering API calls. Rank/skills/busy are checked above; nothing
+    // else can change until the action completes.
+    if (Date.now() < currentTaskEndTime) return;
 
     // NEXT STEP: Gather data needed to determine what and where to work
     // If any blackops have been completed, remove them from the list of remaining blackops
@@ -379,6 +386,13 @@ async function mainLoop(ns) {
                 `is less than the time remaining (${formatDuration(currentDuration)} < ${formatDuration(currentTaskEndTime - Date.now())})`);
         } else if (Date.now() < currentTaskEndTime || bestActionName == currentAction.name) return;
     } // Otherwise prior action was stopped or ended and no count remain, so we should start a new one regardless of expected currentTaskEndTime
+
+    // Stamina gate: don't start a Black Op with low stamina — they're long actions
+    // and draining to near-zero mid-operation wastes the entire run time on Field Analysis.
+    if (bestActionName && remainingBlackOpsNames.includes(bestActionName) && staminaPct < options['high-stamina-pct']) {
+        bestActionName = staminaPct < options['low-stamina-pct'] ? "Field Analysis" : "Field Analysis";
+        reason = `Waiting for stamina to recover before Black Op (${(staminaPct*100).toFixed(1)}% < ${(options['high-stamina-pct']*100).toFixed(1)}%)`;
+    }
 
     // Change actions if we're not currently doing the desired action
     const bestActionType = nextBlackOp == bestActionName ? "Black Operations" : contractNames.includes(bestActionName) ? "Contracts" :
