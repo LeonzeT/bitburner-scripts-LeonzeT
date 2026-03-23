@@ -104,7 +104,7 @@ export async function main(ns) {
         return log(ns, 'ERROR: SF2 required for gang access.');
 
     await initialize(ns);
-    log(ns, 'Gang manager starting main loop... [v4: wanted-safe ascension]');
+    log(ns, 'Gang manager starting main loop... [v5: cha<1.005 blocks unconditionally]');
     while (true) {
         try { await mainLoop(ns); }
         catch (err) {
@@ -803,22 +803,20 @@ async function tryAscendMembers(ns, myGangInfo) {
             continue;
         }
 
-        // ── Gate 2: Cha co-ascension guard ───────────────────────────────
-        // While cha mults are still weak, require cha result to also meet
-        // threshold. Prevents cha→×1.00 ascensions that never build cha.
-        const chaAscPts = info?.cha_asc_points ?? 0;
+        // ── Gate 2: Cha must gain something ──────────────────────────────
+        // result.cha < 1.005 means this ascension gains effectively zero
+        // cha_asc_points (cha_exp didn't clear the 1000 dead zone).
+        // Block unconditionally — doesn't matter how many cha_asc_points
+        // the member has from past cycles. Every ascension should build cha.
         const chaResult = result?.cha ?? 0;
-        if (chaAscPts < 2000 && chaResult < threshold) {
-            log(ns, `Holding ${m}: cha→×${chaResult.toFixed(3)} < ${threshold.toFixed(3)} ` +
-                `(cha_asc_pts=${Math.floor(chaAscPts)}). Train cha first.`);
+        if (chaResult < 1.005) {
+            log(ns, `Holding ${m}: cha→×${chaResult.toFixed(3)} (no cha gain). Train cha before ascending.`);
             continue;
         }
 
         const earnedResp = info?.earnedRespect ?? 0;
 
         // ── Gate 3: Hard respect floor ───────────────────────────────────
-        // Don't ascend if it would crash respect so low that wanted
-        // management breaks down (penalty formula is catastrophic < 50).
         if (earnedResp > 0 && currentRespect - earnedResp < 50) {
             log(ns, `Holding ${m}: would drop respect to ${formatNumberShort(currentRespect - earnedResp)} (below floor 50).`);
             continue;
@@ -826,10 +824,8 @@ async function tryAscendMembers(ns, myGangInfo) {
 
         // ── Gate 4: Wanted safety ────────────────────────────────────────
         // Don't ascend if the respect drop would push the wanted penalty
-        // past the threshold. This is the key anti-spiral guard:
-        // penalty = respect / (respect + wanted). After ascension,
-        // respect drops by earnedResp. If the post-ascension penalty
-        // would be bad, hold off — the respect needs to recover first.
+        // past the threshold. Prevents the spiral: ascend → penalty bad →
+        // everyone to VJ → zero progress.
         if (earnedResp > 0 && myGangInfo.wantedLevel > 1.05) {
             const postRespect = currentRespect - earnedResp;
             const postPenalty = postRespect / (postRespect + myGangInfo.wantedLevel);
