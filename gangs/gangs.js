@@ -411,7 +411,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
         : currentPenalty < -0.9 * WANTED_PENALTY_THRESH &&
           myGangInfo.wantedLevel >= (1.1 + myGangInfo.respect / 10000) &&
           myGangInfo.respect >= 500
-            ? myGangInfo.wantedLevel / 50                                // Sustain (with floor)
+            ? myGangInfo.wantedLevel / 10                                // Sustain (floor = same as normal minimum, avoids all-VJ deadlock)
         : Math.max(myGangInfo.respectGainRate / 1000, myGangInfo.wantedLevel / 10); // Normal
 
     let factionRep = -1;
@@ -469,7 +469,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
     const flatChaThreshold = isHackGang ? options['hack-threshold'] : options['cha-threshold'];
     const memberChaThreshold = (m) => isHackGang
         ? flatChaThreshold
-        : Math.max(flatChaThreshold, 0.8 * (m.dex ?? 0)); // Math.max: at least flat floor, then scales with dex
+        : Math.min(flatChaThreshold, Math.max(20, 0.8 * (m.dex ?? 0))); // Math.max: at least flat floor, then scales with dex
 
     // Update consecutive-training counters before building the set.
     // Members who have been locked in cha training for too long get one
@@ -680,7 +680,9 @@ async function optimizeGangCrime(ns, myGangInfo) {
     }
 
     if (myGangInfo.wantedLevelGainRate > wantedGainTolerance)
-        await fixWantedGainRate(ns, myGangInfo, wantedGainTolerance);
+    // fixWantedGainRate removed: the optimizer's downgrade loop already handles this.
+    // Calling it again overshoots — pushing more members to VJ than needed —
+    // which deepens the oscillation between all-VJ and all-crime.
 }
 
 async function fixWantedGainRate(ns, myGangInfo, tolerance = 0) {
