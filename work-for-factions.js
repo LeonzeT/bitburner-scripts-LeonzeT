@@ -1061,7 +1061,7 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
             if (bbAction && bbAction.type && bbAction.type !== 'General') {
                 // Use a unique temp file to avoid colliding with bladeburner.js's getActionTime temp script
                 const bbDone = await getNsDataThroughFile(ns,
-                    'ns.bladeburner.getActionTime(ns.args[0],ns.args[1])*(1-ns.bladeburner.getActionCurrentCompletion())',
+                    'ns.bladeburner.getActionTime(ns.args[0],ns.args[1])',
                     '/Temp/wff-bb-action-remaining.txt', [bbAction.type, bbAction.name]);
                 await stop(ns);
                 workAssigned = false;
