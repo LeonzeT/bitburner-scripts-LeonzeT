@@ -429,11 +429,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
         : (myGangInfo.respect < 9000)  ? 'respect'
         : 'both';
 
-    // ── Debug: log key state every optimization pass ────────────────────────
-    const memberStats = Object.values(dictMembers).map(m =>
-        `${m.name}: str=${m.str} dex=${m.dex} agi=${m.agi} cha=${m.cha}`).join(', ');
-    log(ns, `[gang-dbg] Tolerance=${wantedGainTolerance.toFixed(4)} respect=${myGangInfo.respect.toFixed(0)} wanted=${myGangInfo.wantedLevel.toFixed(2)} optStat=${optStat}${optStat==='both'?' ('+(!bothIsMoneyTick?'money':'respect')+' tick)':''} moneyRate=${formatMoney(myGangInfo.moneyGainRate*5)}/s`);
-    log(ns, `[gang-dbg] Stats: ${memberStats}`);
+
 
     // Determine which members should train cha/hack this tick (per-member, not global)
     const statKey     = isHackGang ? 'hack' : 'cha';
@@ -473,7 +469,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
     const flatChaThreshold = isHackGang ? options['hack-threshold'] : options['cha-threshold'];
     const memberChaThreshold = (m) => isHackGang
         ? flatChaThreshold
-        : Math.min(flatChaThreshold, Math.max(20, 0.8 * (m.dex ?? 0)));
+        : Math.max(flatChaThreshold, 0.8 * (m.dex ?? 0)); // Math.max: at least flat floor, then scales with dex
 
     // Update consecutive-training counters before building the set.
     // Members who have been locked in cha training for too long get one
@@ -507,7 +503,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
             .map(m => m.name)
     );
 
-    log(ns, `[gang-dbg] chaTrainSet (${chaTrainSet.size} below threshold, ${trainCount} min needed): [${[...chaTrainSet].join(', ')}]`);
+
 
     // Build a combat training set for members who haven't reached ascension threshold yet.
     // These members need Train Combat to push their stats high enough to ascend.
@@ -669,7 +665,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
             [bestAssignments, bestGain, bestWanted] = [proposed, totalGain, totalWanted];
     }
 
-    log(ns, `[gang-dbg] Best: ${bestAssignments ? Object.entries(bestAssignments).map(([m,t])=>m.split(' ')[1]+':'+t.name).join(' | ') : 'null (no improvement)'}`);
+
     if (bestAssignments && myGangMembers.some(m => assignedTasks[m] !== bestAssignments[m]?.name)) {
         myGangMembers.forEach(m => { if (bestAssignments[m]) assignedTasks[m] = bestAssignments[m].name; });
         const old = myGangInfo;
