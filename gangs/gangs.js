@@ -91,10 +91,7 @@ let lastLoopTime = null;
 // Dashboard live-update state
 let lastDashboardData  = null;   // full snapshot cached by writeDashboardDataFull
 let lastDashLiveWrite  = 0;      // timestamp of last live patch write
-let bothIsMoneyTick    = false;   // alternates each territory tick in 'both' optStat mode
-
-// Wanted recovery hysteresis: once recovery triggers, stay in it until wanted
-// reaches minimum (~1.0), not just until the penalty barely improves.
+let bothIsMoneyTick    = false;
 let inWantedRecovery   = false;
 
 /** @param {NS} ns */
@@ -397,20 +394,6 @@ async function optimizeGangCrime(ns, myGangInfo) {
     const dictMembers = await getGangDict(ns, myGangMembers, 'getMemberInformation');
 
     const currentPenalty = getWantedPenalty(myGangInfo) - 1;
-    // wantedGainTolerance: how much wanted gain per cycle is acceptable.
-    //
-    // Four modes, evaluated in priority order:
-    //
-    // 1. RECOVERY (hysteresis): penalty is bad AND wanted > minimum. Once triggered,
-    //    STAYS active until wanted <= 1.05 — prevents tick-by-tick oscillation.
-    //
-    // 2. BOOTSTRAP: wanted is at minimum (~1.0) but respect is very low (post-ascension).
-    //    VJ can't help (wanted is already at min). Allow a tight trickle of wanted so
-    //    1-2 members can run low-wanted crimes to rebuild respect.
-    //
-    // 3. SUSTAIN: penalty is mildly bad but manageable, allow a small trickle.
-    //
-    // 4. NORMAL: penalty is fine, allow growth proportional to earnings.
 
     const penaltyBad = currentPenalty < -1.1 * WANTED_PENALTY_THRESH;
     const wantedAboveMin = myGangInfo.wantedLevel > 1.05;
@@ -854,11 +837,8 @@ async function tryAscendMembers(ns, myGangInfo) {
             log(ns, `[asc-dbg] ${m}: respect ${formatNumberShort(currentRespect)} below threshold ` +
                 `${formatNumberShort(nextRecruitResp)} regardless — ascending anyway.`);
 
-        // Hard respect floor: don't ascend if it would drop respect below the level
-        // where wanted management breaks down. penalty = respect / (respect + wanted).
-        // At respect=50, wanted=1.0: penalty ≈ 0.98. Below that, even minimum wanted
-        // produces a crippling penalty and the script soft-locks oscillating between
-        // crimes and VJ every tick.
+        // Hard respect floor: prevent ascension from crashing respect so low that
+        // wanted management breaks down and soft-locks the script.
         const RESPECT_WANTED_FLOOR = 50;
         if (earnedResp > 0 && currentRespect - earnedResp < RESPECT_WANTED_FLOOR) {
             log(ns, `Holding ascension for ${m}: would drop respect ` +
@@ -869,22 +849,16 @@ async function tryAscendMembers(ns, myGangInfo) {
 
         // Charisma co-ascension guard: don't let combat stats drag cha along for free.
         // The main trigger fires if ANY stat meets threshold — so str=1.07 can trigger
-        // ascension while cha=1.00, gaining zero cha_asc_points every cycle. Over dozens
-        // of ascensions, cha_asc_mult stays pinned at 1.0 forever.
+        // ascension while cha=1.00, gaining zero cha_asc_points every cycle.
         //
-        // Fix: while cha_asc_mult is still weak (asc_points < 2000 → mult < 1.0),
-        // require that result.cha ALSO meets the ascension threshold. This forces the
-        // member to train cha enough that ascending actually builds cha mults too.
-        // Once cha mults are healthy (>= 2000 pts), drop the requirement.
-        //
-        // Game formulas: ascMult = max(sqrt(asc_points / 2000), 1)
-        //                ascGain = max(exp - 1000, 0) per ascension
-        // At 2000 pts, cha_asc_mult = 1.0 — the baseline. Below that, cha needs help.
+        // While cha_asc_mult is still weak (asc_points < 2000 → mult < 1.0),
+        // require that result.cha ALSO meets the ascension threshold.
+        // Once cha_asc_points >= 2000, drop the requirement.
         const chaAscPts = info?.cha_asc_points ?? 0;
         const chaResult = result?.cha ?? 0;
         if (chaAscPts < 2000 && chaResult < threshold) {
             log(ns, `Holding ascension for ${m}: cha→×${chaResult.toFixed(3)} < threshold ${threshold.toFixed(3)} ` +
-                `(cha_asc_pts=${Math.floor(chaAscPts)}, need ≥2000 to waive). Train cha first.`);
+                `(cha_asc_pts=${Math.floor(chaAscPts)}, need >=2000 to waive). Train cha first.`);
             continue;
         }
 
