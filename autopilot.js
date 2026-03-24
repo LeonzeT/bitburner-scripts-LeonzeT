@@ -2,7 +2,7 @@ import {
     log, getFilePath, initScriptPaths, getConfiguration, instanceCount, getNsDataThroughFile, runCommand, waitForProcessToComplete,
     getActiveSourceFiles, tryGetBitNodeMultipliers, getStocksValue, unEscapeArrayArgs,
     formatMoney, formatDuration, formatNumber, getErrorInfo, tail, jsonReplacer
-} from './helpers.js'
+} from '/helpers.js'
 const argsSchema = [ // The set of all command line arguments
     ['next-bn', 0], // If we destroy the current BN, the next BN to start
     ['disable-auto-destroy-bn', false], // Set to true if you do not want to auto destroy this BN when done
@@ -1022,6 +1022,16 @@ export async function main(ns) {
             }
             xpCyclePhase = 'idle';
             try { ns.write('/Temp/xp-grind-active.txt', '', 'w'); } catch {} // clear flag
+            // Relaunch hwgw-manager immediately — it was killed when grinding started and
+            // won't restart on its own until the next checkOnRunningScripts tick.
+            if (hwgwViable && ns.fileExists(hwgwScript, 'home') && !findScript(resolveScript('hwgw-manager'))) {
+                const hackLvl = player.skills.hacking;
+                const minMoney = hackLvl >= 1000 ? 1e9 : hackLvl >= 500 ? 1e8 : hackLvl >= 100 ? 1e7 : 0;
+                const hwgwArgs = ['--quiet'];
+                if (minMoney > 0) hwgwArgs.push('--min-money', minMoney);
+                log(ns, `INFO: XP cycle: goal met — launching hwgw-manager.`, false, 'info');
+                launchScriptHelper(ns, hwgwScript, hwgwArgs, false);
+            }
         }
 
         // ── State: IDLE → GRINDING (worthiness check) ──────────────────────────
@@ -1136,7 +1146,11 @@ export async function main(ns) {
                 if (hwgwProc) {
                     log(ns, `INFO: Killing hwgw-manager to free RAM for XP grinding.`);
                     await killScript(ns, resolveScript('hwgw-manager'), runningScripts, hwgwProc);
-                    ns.write('/Temp/hwgw-exec-hosts.txt', '[]', 'w');
+                    // Write '' (not '[]') so the hwgw-manager launch block's fallback host
+                    // scan (getAllRootedHosts_autopilot) fires on the next tick. Writing '[]'
+                    // is truthy so JSON.parse('[]').length > 0 === false, which permanently
+                    // blocks the relaunch — hwgw-manager never restarts after XP grinding ends.
+                    ns.write('/Temp/hwgw-exec-hosts.txt', '', 'w');
                     await ns.sleep(2000);
                 }
                 if ((10 in unlockedSFs) && (2 in unlockedSFs) && !findScript(resolveScript('sleeve')))
@@ -1188,6 +1202,23 @@ export async function main(ns) {
                 xpCyclePhase = 'money';
                 xpCyclePhaseStart = Date.now();
                 try { ns.write('/Temp/xp-grind-active.txt', 'money', 'w'); } catch {}
+
+                // Immediately relaunch hwgw-manager now that XP grinding is done and RAM is free.
+                // The general launch block can't do this reliably on its own because it checks
+                // execHostsRaw — which was cleared to '' above when grinding started — and won't
+                // see any hosts until hwgw-manager itself writes them on startup.
+                // Launching it here is the earliest possible moment: xp-grind is dead, RAM is free.
+                if (hwgwViable && ns.fileExists(hwgwScript, 'home') && !findScript(resolveScript('hwgw-manager'))) {
+                    const hackLvl = player.skills.hacking;
+                    const minMoney = hackLvl >= 1000 ? 1e9
+                                   : hackLvl >= 500  ? 1e8
+                                   : hackLvl >= 100  ? 1e7
+                                   : 0;
+                    const hwgwArgs = ['--quiet'];
+                    if (minMoney > 0) hwgwArgs.push('--min-money', minMoney);
+                    log(ns, `INFO: XP cycle: launching hwgw-manager for money phase.`, false, 'info');
+                    launchScriptHelper(ns, hwgwScript, hwgwArgs, false);
+                }
             }
         }
 
@@ -1217,6 +1248,15 @@ export async function main(ns) {
                     xpCyclePhase = 'idle'; // Reset — autopilot will re-enter grinding after install
                 } else {
                     log(ns, `INFO: XP cycle: 30 min money phase done but no augs affordable. Back to grinding.`, true, 'info');
+                    // Kill hwgw-manager proactively so grinding starts with full RAM on the very
+                    // next tick, rather than waiting for the grinding block to kill it one tick later.
+                    const hwgwProcMoney = findScript(resolveScript('hwgw-manager'));
+                    if (hwgwProcMoney) {
+                        log(ns, `INFO: Killing hwgw-manager to free RAM for XP grinding.`);
+                        await killScript(ns, resolveScript('hwgw-manager'), runningScripts, hwgwProcMoney);
+                        ns.write('/Temp/hwgw-exec-hosts.txt', '', 'w');
+                        await ns.sleep(2000);
+                    }
                     xpCyclePhase = 'grinding';
                     xpCyclePhaseStart = Date.now();
                 }

@@ -487,7 +487,7 @@ async function mainLoop(ns) {
     }
     if (!foundWork && !options['no-crime']) { // Otherwise, kill some time by doing crimes for a little while
         // Skip idle crime if bladeburner is active and needs focus — let it run instead
-        playerInBladeburner = playerInBladeburner || (playerGang && !hasSimulacrum && !options['no-bladeburner-check'] &&
+        playerInBladeburner = playerInBladeburner || (!hasSimulacrum && !options['no-bladeburner-check'] &&
             await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'));
         if (playerInBladeburner && !hasSimulacrum && !options['no-bladeburner-check']) {
             ns.print(`INFO: Nothing to do. Yielding to Bladeburner instead of doing idle crime.`);
@@ -967,19 +967,26 @@ async function isValidInterruption(ns, currentWork = null) {
         interruptionNotice = "Grafting in progress. Pausing all activity to avoid interrupting...";
         wasGrafting = true;
     }
-    // If bladeburner is currently active, but we do not yet have The Blade's Simulacrum, we may choose to we pause working.
-    else if (7 in dictSourceFiles && !hasSimulacrum && !options['no-bladeburner-check']) {
-        // Heuristic: If we're in a gang, its rep will give us access to most augs, we can take a break from working in favour of bladeburner progress
-        //       Also, if we're done all "priority" work (scope >= 2), consider letting Bladeburner take over
-        // TODO: Are there other situations we want to prioritize bladeburner over normal work? Perhaps if we're in a Bladeburner BN? (6 or 7)
-        if (playerGang || scope >= 2) {
-            // Check if the player has joined bladeburner (can stop checking once we see they are)
-            playerInBladeburner = playerInBladeburner || await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()');
+    // If bladeburner is currently active, but we do not yet have The Blade's Simulacrum, we may choose to pause working.
+    // BN6 and BN7 have bladeburner available natively without requiring SF7, so we check for those BNs explicitly.
+    else if ((7 in dictSourceFiles || currentBitnode === 6 || currentBitnode === 7) && !hasSimulacrum && !options['no-bladeburner-check']) {
+        // Heuristic: If we're in a gang, its rep will give us access to most augs, we can take a break from working in favour of bladeburner progress.
+        //       Also, if we're done all "priority" work (scope >= 2), consider letting Bladeburner take over.
+        //       In BN6/BN7, bladeburner IS the primary mechanic — always yield if we're in it.
+        const isBladeburnerBN = currentBitnode === 6 || currentBitnode === 7;
+        if (playerGang || scope >= 2 || isBladeburnerBN) {
+            // Check if the player has joined bladeburner (can stop checking once we see they are).
+            // !hasSimulacrum guard is already enforced by the outer else-if, but included here
+            // explicitly to match the pattern at all other playerInBladeburner update sites and
+            // prevent silent breakage if this block is ever refactored out of the outer guard.
+            playerInBladeburner = playerInBladeburner || (!hasSimulacrum && !options['no-bladeburner-check'] && await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'));
             if (playerInBladeburner) {
                 if (playerGang)
                     interruptionNotice = `Gang will give us most augs, so pausing work to allow Bladeburner to operate.`;
+                else if (isBladeburnerBN)
+                    interruptionNotice = `In a Bladeburner BN — pausing work to allow Bladeburner to operate.`;
                 else
-                    interruptionNotice = `Decided that doing Bladeburner is more important that working right now.`;
+                    interruptionNotice = `Decided that doing Bladeburner is more important than working right now.`;
                 if (currentWork.type)
                     await stop(ns); // Stop working so bladeburner can run (bladeburner won't interrupt work for us)
             }
@@ -1066,8 +1073,10 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
         if (breakToMainLoop()) return ns.print('INFO: Interrupting faction work to check on high-level priorities.');
         // Bladeburner yield: if in bladeburner without Simulacrum, stop faction work and
         // sleep for the current BB action duration so bladeburner can use player focus.
-        playerInBladeburner = playerInBladeburner || (playerGang && !hasSimulacrum && await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'));
-        if (playerGang && playerInBladeburner && !hasSimulacrum && !options['no-bladeburner-check']) {
+        // Note: playerGang guard removed — BB should yield focus regardless of gang status.
+        playerInBladeburner = playerInBladeburner || (!hasSimulacrum && !options['no-bladeburner-check'] &&
+            await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'));
+        if (playerInBladeburner && !hasSimulacrum && !options['no-bladeburner-check']) {
             const bbAction = await getNsDataThroughFile(ns, 'ns.bladeburner.getCurrentAction()');
             if (bbAction && bbAction.type && bbAction.type !== 'General') {
                 // Use a unique temp file to avoid colliding with bladeburner.js's getActionTime temp script
@@ -1077,7 +1086,8 @@ export async function workForSingleFaction(ns, factionName, forceUnlockDonations
                 await stop(ns);
                 workAssigned = false;
                 if (lastInterruptionNotice !== 'bb-yield') {
-                    log(ns, `INFO: Gang will give us most augs — pausing faction work for Bladeburner "${bbAction.name}". Sleeping ${formatDuration(bbDone || loopSleepInterval)}.`);
+                    const reason = playerGang ? `Gang will give us most augs — pausing` : `Pausing`;
+                    log(ns, `INFO: ${reason} faction work for Bladeburner "${bbAction.name}". Sleeping ${formatDuration(bbDone || loopSleepInterval)}.`);
                     lastInterruptionNotice = 'bb-yield';
                 }
                 await ns.sleep((bbDone > 0 ? bbDone : loopSleepInterval) + 200);
@@ -1306,9 +1316,10 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
         if (breakToMainLoop()) return ns.print('INFO: Interrupting corporation work to check on high-level priorities.');
         // Bladeburner yield: same as faction work loop — stop company work and sleep
         // for the BB action duration so bladeburner can use player focus.
-        playerInBladeburner = playerInBladeburner || (playerGang && !hasSimulacrum && !options['no-bladeburner-check'] &&
+        // Note: playerGang guard removed — BB should yield focus regardless of gang status.
+        playerInBladeburner = playerInBladeburner || (!hasSimulacrum && !options['no-bladeburner-check'] &&
             await getNsDataThroughFile(ns, 'ns.bladeburner.inBladeburner()'));
-        if (playerGang && playerInBladeburner && !hasSimulacrum && !options['no-bladeburner-check']) {
+        if (playerInBladeburner && !hasSimulacrum && !options['no-bladeburner-check']) {
             const bbAction = await getNsDataThroughFile(ns, 'ns.bladeburner.getCurrentAction()');
             if (bbAction && bbAction.type && bbAction.type !== 'General') {
                 const bbDone = await getNsDataThroughFile(ns,
@@ -1317,7 +1328,8 @@ export async function workForMegacorpFactionInvite(ns, factionName, waitForInvit
                 await stop(ns);
                 isWorking = false;
                 if (lastInterruptionNotice !== 'bb-yield') {
-                    log(ns, `INFO: Gang will give us most augs — pausing company work for Bladeburner "${bbAction.name}". Sleeping ${formatDuration(bbDone || loopSleepInterval)}.`);
+                    const reason = playerGang ? `Gang will give us most augs — pausing` : `Pausing`;
+                    log(ns, `INFO: ${reason} company work for Bladeburner "${bbAction.name}". Sleeping ${formatDuration(bbDone || loopSleepInterval)}.`);
                     lastInterruptionNotice = 'bb-yield';
                 }
                 await ns.sleep((bbDone > 0 ? bbDone : loopSleepInterval) + 200);
