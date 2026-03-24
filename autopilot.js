@@ -853,7 +853,7 @@ export async function main(ns) {
         // Hack: Ignore numeric arguments in the comparison, since we e.g. tweak --recovery-thread-padding over time
         let launchDaemon = !existingDaemon || daemonArgs.some(arg => !existingDaemon.args.includes(arg) && !Number.isFinite(arg)) ||
             // Special cases: We also must relaunch daemon if it is running with certain flags we wish to remove
-            (["--xp-only"].some(arg => !daemonArgs.includes(arg) && existingDaemon.args.includes(arg)))
+            (["--xp-only", "--disable-hacknet"].some(arg => !daemonArgs.includes(arg) && existingDaemon.args.includes(arg)))
         if (launchDaemon) {
             if (existingDaemon) {
                 daemonRelaunchMessage ??= `Relaunching daemon.js with new arguments since the current instance doesn't include all the args we want.`;
