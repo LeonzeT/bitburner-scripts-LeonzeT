@@ -104,7 +104,7 @@ export async function main(ns) {
         return log(ns, 'ERROR: SF2 required for gang access.');
 
     await initialize(ns);
-    log(ns, 'Gang manager starting main loop... [v5: cha<1.005 blocks unconditionally]');
+    log(ns, 'Gang manager starting main loop... [v6: sliding cha guard]');
     while (true) {
         try { await mainLoop(ns); }
         catch (err) {
@@ -803,14 +803,30 @@ async function tryAscendMembers(ns, myGangInfo) {
             continue;
         }
 
-        // ── Gate 2: Cha must gain something ──────────────────────────────
-        // result.cha < 1.005 means this ascension gains effectively zero
-        // cha_asc_points (cha_exp didn't clear the 1000 dead zone).
-        // Block unconditionally — doesn't matter how many cha_asc_points
-        // the member has from past cycles. Every ascension should build cha.
+        // ── Gate 2: Cha co-ascension guard (sliding scale) ─────────────
+        // At low combat asc_points (<10k), cha and combat train at similar
+        // rates. Requiring cha to gain meaningfully each cycle (>1.005)
+        // ensures cha mults get built up properly — only costs a few extra
+        // ticks per cycle.
+        //
+        // At high combat asc_points (>20k), combat reaches threshold in 5-7
+        // ticks. Cha training at low/mid cha mults still needs 4-7 ticks,
+        // meaning the cha requirement pins ascension rate to cha's training
+        // speed and wastes the compound growth advantage of high combat mults.
+        //
+        // Sliding scale:
+        //   <10k pts: chaResult >= 1.005  (strict — build cha mults)
+        //   10k-20k:  chaResult > 1.001   (any measurable gain, minimal drag)
+        //   >20k:     no requirement      (combat compounding is the priority;
+        //             cha was built during the <10k phase and gets incidental
+        //             gains from chaTrainSet between cycles)
         const chaResult = result?.cha ?? 0;
-        if (chaResult < 1.005) {
-            log(ns, `Holding ${m}: cha→×${chaResult.toFixed(3)} (no cha gain). Train cha before ascending.`);
+        let chaFloor;
+        if (maxAscPts < 10000)       chaFloor = 1.005;
+        else if (maxAscPts < 20000)  chaFloor = 1.001;
+        else                         chaFloor = 0; // no requirement
+        if (chaFloor > 0 && chaResult < chaFloor) {
+            log(ns, `Holding ${m}: cha→×${chaResult.toFixed(3)} < ${chaFloor} (pts=${formatNumberShort(maxAscPts)}). Train cha.`);
             continue;
         }
 
