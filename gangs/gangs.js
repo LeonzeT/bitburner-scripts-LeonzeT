@@ -104,7 +104,7 @@ export async function main(ns) {
         return log(ns, 'ERROR: SF2 required for gang access.');
 
     await initialize(ns);
-    log(ns, 'Gang manager starting main loop... [v6: sliding cha guard]');
+    log(ns, 'Gang manager starting main loop... [v7: threshold decay at high pts]');
     while (true) {
         try { await mainLoop(ns); }
         catch (err) {
@@ -734,30 +734,32 @@ async function doRecruitMember(ns) {
  * From the game source (formulas.ts + GangMember.ts):
  *   ascMult(p)  = sqrt(p / 2000)        — square-root scaling
  *   ascGain(e)  = max(e - 1000, 0)      — 1000 exp dead zone per cycle
- *   expRate     ∝ ascMult                — higher mult = faster exp gain
- *   On ascend: all exp → 0, non-aug equipment stripped, earnedRespect deducted
+ *   result(s)   = sqrt(1 + gain/pts)    — ratio of new mult to old
  *
- * The theoretical optimal mult-ratio for sqrt is √3.513 ≈ 1.874 — but that's
- * ONLY optimal for maximizing mult growth rate during pure training.
+ * The cost of each 1% gain scales linearly with asc_points:
+ *   gain_needed = (threshold² - 1) × pts
+ * At 10k pts, 1.07 needs 1,449 exp. At 3M pts, 1.07 needs 434,700 exp.
+ * At 3M pts, 1.10 needs 630,000 exp — over an hour of training.
  *
- * Gang members spend most of their time doing crime, not training. For crime:
- *   - Even a 5% permanent mult boost is worth taking (compounds forever)
- *   - High asc_mult means fast retraining → short downtime
- *   - Members produce money/respect during the accumulation phase anyway
- *   - At 200k+ asc_points, reaching ratio 1.85 would take hours of real time
- *     because sqrt scaling gives heavily diminishing returns
- *
- * Practical thresholds:
- *   points < 1k   → 1.05  (first ascension — any meaningful gain is worth it)
- *   points ~ 50k  → 1.07  (moderate, accounts for equipment-strip cost)
- *   points > 500k → 1.10  (high-level, still ascends every ~20-30 min of play)
+ * Curve:
+ *   <1k pts:     1.05   (first ascension — any gain counts)
+ *   1k → 100k:   ramps up to 1.08 (building phase, equipment-strip cost matters)
+ *   100k → 1M:   1.08 plateau (mature members, healthy balance)
+ *   >1M:         decays toward 1.04 (diminishing sqrt returns make each %
+ *                exponentially more expensive; frequent small ascensions beat
+ *                rare large ones at this scale)
  */
 function optimalAscendThreshold(maxAscPoints) {
     if (maxAscPoints < 1000) return 1.05;
-    const lo = 1.05, hi = 1.10;
-    // Gentle ramp: 0 at 1k, 1 at ~1M (log10(1k)=3, log10(1M)=6)
-    const t = Math.min(1, Math.max(0, (Math.log10(Math.max(1, maxAscPoints)) - 3) / 3));
-    return lo + (hi - lo) * t;
+    const floor = 1.05, peak = 1.10;
+    // Ramp up: 1k → 100k
+    if (maxAscPoints <= 100000) {
+        const t = (Math.log10(maxAscPoints) - 3) / 2; // 0 at 1k, 1 at 100k
+        return floor + (peak - floor) * t;
+    }
+    // Ramp down: 100k → 2M
+    const t = Math.min(1, (Math.log10(maxAscPoints) - 5) / 1.3); // 0 at 100k, 1 at 2M
+    return peak - (peak - floor) * t;
 }
 
 /**
