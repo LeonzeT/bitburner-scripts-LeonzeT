@@ -118,6 +118,7 @@ export async function main(ns) {
     let bnCompletionSuppressed = false; // Flag if we've detected that we've won the BN, but are suppressing a restart
     let sleevesMaxedOut = false; // Flag used only when the player is replaying BN 10 with all sleeves but has suppressed auto-destroying the BN, to allow continued auto-installs
     let loggedBnCompletion = false; // Flag set to ensure that if we choose to stay in the BN, we only log the "BN completed" message once per reset.
+    let loggedLateGameMilestone = false; // Flag to ensure the "Entering late-game phase" message only fires once per aug install.
     // ── Infiltration state ────────────────────────────────────────────────────────
     // autoinfil.js is launched automatically by autopilot.
     // Phase 1 (early): only run infil until INFIL_CASINO_SEED is earned — no heavy
@@ -1523,13 +1524,15 @@ export async function main(ns) {
         // and the BN is in full-speed mode (Daedalus / gang prep can begin).
         const INFIL_RAM_TB   = 4 * 1024; // 4 TB
         const INFIL_WEALTH   = 20e9;     // $20 B
-        if (homeRam >= INFIL_RAM_TB) {
+        if (!loggedLateGameMilestone && homeRam >= INFIL_RAM_TB) {
             let totalWealth = player.money;
             try { totalWealth += await getStocksValue(ns); } catch {}
-            if (totalWealth >= INFIL_WEALTH)
-                log_once(ns, `INFO: Milestone reached — home RAM ${homeRam} GB ≥ 4 TB ` +
+            if (totalWealth >= INFIL_WEALTH) {
+                loggedLateGameMilestone = true;
+                log(ns, `INFO: Milestone reached — home RAM ${homeRam} GB ≥ 4 TB ` +
                     `and total wealth ${formatMoney(totalWealth)} ≥ $20B. ` +
                     `Entering late-game phase (Daedalus / gang aug grind).`, true, 'success');
+            }
         }
     }
     /** Get the source of the player's earnings by category.
