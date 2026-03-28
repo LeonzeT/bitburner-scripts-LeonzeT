@@ -122,12 +122,22 @@ export async function main(ns) {
     function getHosts() {
         const hosts = ['home'];
 
-        // Purchased servers
+        // Purchased servers — read from manager's PSERV cache file (free) instead of
+        // ns.cloud.getServerNames() (0.4 GB). Falls back to exec-hosts file.
+        // If neither file exists (standalone, very start of BN), purchased servers
+        // are skipped and only home + world servers are used.
         try {
-            for (const h of ns.cloud.getServerNames()) {
-                if (!hosts.includes(h)) hosts.push(h);
+            const pservRaw = ns.read('/Temp/pserv-list.txt');
+            const pservHosts = pservRaw && pservRaw !== '' ? JSON.parse(pservRaw) : [];
+            if (pservHosts.length > 0) {
+                for (const h of pservHosts) if (!hosts.includes(h)) hosts.push(h);
+            } else {
+                // Fallback: exec-hosts file written by manager
+                const ehRaw = ns.read('/Temp/hwgw-exec-hosts.txt');
+                const ehHosts = ehRaw && ehRaw !== '' ? JSON.parse(ehRaw) : [];
+                for (const h of ehHosts) if (!hosts.includes(h)) hosts.push(h);
             }
-        } catch { /* API might not be available */ }
+        } catch {}
 
         // World servers (optional)
         if (includeWorld) {
@@ -149,18 +159,31 @@ export async function main(ns) {
                 }
             }
         }
-
+        await(2000);
         return hosts;
     }
 
-    // ── Clean up workers and status file when this script exits ─────────────
+    // ── Clean up workers when this script exits ─────────────────────────────
+    // Fire-and-forget temp script handles ps+kill to avoid ns.ps(0.2GB)+ns.kill(0.5GB)
+    // in xp-grind's static RAM cost. Status file is cleared directly (ns.write = free).
     ns.atExit(() => {
-        for (const host of getHosts()) {
-            for (const proc of ns.ps(host)) {
-                if (proc.filename === WORKER) ns.kill(proc.pid);
-            }
-        }
-        try { ns.write(STATUS_FILE, '', 'w'); } catch { /* non-critical */ }
+        ns.write(STATUS_FILE, '', 'w');
+        // Write and exec cleanup temp — it bears ps+kill RAM cost for its brief lifetime.
+        ns.write('/Temp/xp-cleanup.js', [
+            'export async function main(ns) {',
+            `  const WORKER = ${JSON.stringify(WORKER)};`,
+            '  const visited = new Set(), queue = ["home"], hosts = [];',
+            '  while (queue.length) {',
+            '    const h = queue.shift(); if (visited.has(h)) continue; visited.add(h);',
+            '    if (!h.startsWith("hacknet-") && (h==="home"||ns.hasRootAccess(h))) hosts.push(h);',
+            '    for (const n of ns.scan(h)) if (!visited.has(n)) queue.push(n);',
+            '  }',
+            '  for (const host of hosts)',
+            '    for (const proc of ns.ps(host))',
+            '      if (proc.filename === WORKER) ns.kill(proc.pid);',
+            '}',
+        ].join('\n'), 'w');
+        ns.exec('/Temp/xp-cleanup.js', 'home');
     });
 
     // ── Deploy workers ───────────────────────────────────────────────────────
@@ -168,12 +191,38 @@ export async function main(ns) {
     const hosts = getHosts();
 
     for (const host of hosts) {
-        // Copy worker to remote hosts
-        if (host !== 'home') ns.scp(WORKER, host, 'home');
-
-        // Kill any leftover workers from a previous run on this host
-        for (const proc of ns.ps(host)) {
-            if (proc.filename === WORKER) ns.kill(proc.pid);
+        await(2000);
+        // Copy worker + kill stale workers via temp (removes ns.scp+ns.kill+ns.ps from static RAM).
+        if (host !== 'home') {
+            ns.write('/Temp/xp-init-host.js', [
+                'export async function main(ns) {',
+                `  const WORKER = ${JSON.stringify(WORKER)};`,
+                '  const host = ns.args[0];',
+                '  if (!ns.fileExists(WORKER, host)) ns.scp(WORKER, host, "home");',
+                '  for (const proc of ns.ps(host))',
+                '    if (proc.filename === WORKER) ns.kill(proc.pid);',
+                '}',
+            ].join('\n'), 'w');
+            const initPid = ns.exec('/Temp/xp-init-host.js', 'home', 1, host);
+            if (initPid) {
+                const dl = Date.now() + 3000;
+                while (ns.isRunning(initPid) && Date.now() < dl) await ns.sleep(50);
+            }
+        } else {
+            // Home: kill stale workers directly (home ps is cheap — we already pay exec RAM)
+            // Actually also do via temp to keep ns.ps+ns.kill out of static cost.
+            ns.write('/Temp/xp-init-home.js', [
+                'export async function main(ns) {',
+                `  const WORKER = ${JSON.stringify(WORKER)};`,
+                '  for (const proc of ns.ps("home"))',
+                '    if (proc.filename === WORKER) ns.kill(proc.pid);',
+                '}',
+            ].join('\n'), 'w');
+            const homePid = ns.exec('/Temp/xp-init-home.js', 'home');
+            if (homePid) {
+                const dl = Date.now() + 3000;
+                while (ns.isRunning(homePid) && Date.now() < dl) await ns.sleep(50);
+            }
         }
 
         const maxRam   = ns.getServerMaxRam(host);

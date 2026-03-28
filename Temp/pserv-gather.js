@@ -1,0 +1,1 @@
+export async function main(ns) { ns.write("/Temp/pserv-list.txt", JSON.stringify(ns.cloud.getServerNames()), "w"); }

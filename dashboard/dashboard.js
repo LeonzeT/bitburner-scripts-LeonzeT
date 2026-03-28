@@ -1021,11 +1021,63 @@ export async function main(ns) {
         const { homeRamCost, homeCoresCost, homeMaxRam, homeCores,
                 pendingAugs, darkwebPrograms, player,
                 hasTor, hasWse, hasTix, has4SData, has4SApi, stockCosts,
-                shortcutsLoaded } = data;
+                shortcutsLoaded,
+                infilLocations, infilRunning, infilMode,
+                infilBestMoney, infilBestRep,
+                infilCompany: activeCompany, infilCity: activeCity,
+                infilReward: activeReward, infilFaction: activeFaction } = data;
         const money = player?.money ?? 0, sc = stockCosts ?? {};
         const loading = !shortcutsLoaded
             ? h('div', { style:{ color:'#2d5a2d', fontSize:11, marginBottom:6 } }, 'Loading...')
             : null;
+
+        // ── Infiltration dropdown state ────────────────────────────────────────
+        const [infilCity,    setInfilCity]    = React.useState(activeCity    ?? '');
+        const [infilCompany, setInfilCompany] = React.useState(activeCompany ?? '');
+        const [infilReward,  setInfilReward]  = React.useState('money');
+        const [infilFaction, setInfilFaction] = React.useState('');
+
+        React.useEffect(() => {
+            if (infilRunning) {
+                if (activeCity    && !infilCity)    setInfilCity(activeCity);
+                if (activeCompany && !infilCompany) setInfilCompany(activeCompany);
+                // Always sync reward + faction from the running process — these
+                // can't be changed while running anyway, and the dropdowns need
+                // to reflect the actual launched args (not their default state).
+                if (activeReward)  setInfilReward(activeReward);
+                if (activeFaction) setInfilFaction(activeFaction);
+            } else if (activeCity == null) {
+                setInfilCity(''); setInfilCompany('');
+            }
+        }, [infilRunning, activeCity, activeCompany, activeReward, activeFaction]);
+
+        const locs            = infilLocations ?? [];
+        const cities          = [...new Set(locs.map(l => l.city))];
+        const companiesInCity = locs.filter(l => l.city === infilCity);
+        const selectedLoc     = companiesInCity.find(l => l.name === infilCompany) ?? null;
+        const canLaunch       = !infilRunning && !!infilCity && !!infilCompany
+            && (infilReward === 'money' || !!infilFaction);
+
+        function diffColor(d) {
+            if (d == null) return '#7aac7a';
+            if (d >= 57.1) return '#ff3355';
+            if (d >= 42.9) return '#ffd700';
+            return '#33ff33';
+        }
+
+        // Reward summary rows — shown above dropdowns
+        const RewardRow = ({ label, loc, valKey, fmt }) => {
+            if (!loc) return null;
+            const val = loc[valKey];
+            return h('div', { className:'nd-row-ac', style:{ fontSize:11 } },
+                h('span', { className:'nd-lbl', style:{ width:80, flexShrink:0 } }, label),
+                h('span', { className:'nd-hi', style:{ flex:1 } }, fmt(val)),
+                h('span', { style:{ color:'#2d5a2d', fontSize:10 } }, loc.name),
+                h('span', { style:{ color:'#1d3d1d', fontSize:10 } }, '·'),
+                h('span', { style:{ color:'#2d5a2d', fontSize:10 } }, loc.city),
+            );
+        };
+
         return h(React.Fragment, null,
 
             h(Sec, { title:'Home' }),
@@ -1101,6 +1153,129 @@ export async function main(ns) {
                     )
                 )
             ),
+
+            // ── Infiltration ────────────────────────────────────────────────────
+            h(Sec, { title: 'Infiltration' }),
+            locs.length === 0
+                ? h('div', { style:{ color:'#2d5a2d', fontSize:11 } },
+                    shortcutsLoaded ? 'No locations available.' : 'Loading...')
+                : h(React.Fragment, null,
+
+                    // Best reward summary — always visible
+                    h(RewardRow, { label: 'Best $',   loc: infilBestMoney, valKey: 'sellCash', fmt: fm }),
+                    h(RewardRow, { label: 'Best rep', loc: infilBestRep,   valKey: 'tradeRep', fmt: fn }),
+
+                    // City dropdown
+                    h('div', { className:'nd-row-ac', style:{ marginTop:6, marginBottom:4 } },
+                        h('span', { className:'nd-lbl', style:{ width:54, flexShrink:0 } }, 'City'),
+                        h('select', {
+                            className: 'nd-select', style: { flex:1 },
+                            disabled: infilRunning,
+                            value: infilCity,
+                            onChange: e => { setInfilCity(e.target.value); setInfilCompany(''); },
+                        },
+                            h('option', { value:'' }, '— pick city —'),
+                            cities.map(c => h('option', { key:c, value:c }, c)),
+                        ),
+                    ),
+
+                    // Company dropdown — filtered, sorted easiest first, difficulty in label
+                    h('div', { className:'nd-row-ac', style:{ marginBottom:4 } },
+                        h('span', { className:'nd-lbl', style:{ width:54, flexShrink:0 } }, 'Company'),
+                        h('select', {
+                            className: 'nd-select', style: { flex:1 },
+                            disabled: infilRunning || !infilCity,
+                            value: infilCompany,
+                            onChange: e => setInfilCompany(e.target.value),
+                        },
+                            h('option', { value:'' }, infilCity ? '— pick company —' : '— pick city first —'),
+                            companiesInCity.map(l => {
+                                const d = l.displayDiff;
+                                const label = d != null
+                                    ? l.name + '  [' + d.toFixed(1) + '/100]'
+                                    : l.name;
+                                return h('option', { key: l.name, value: l.name }, label);
+                            }),
+                        ),
+                    ),
+
+                    // Selected company: difficulty badge + reward preview
+                    selectedLoc && h('div', { style:{ display:'flex', gap:14, fontSize:11,
+                            padding:'2px 0 4px', flexWrap:'wrap' } },
+                        selectedLoc.displayDiff != null && h('span', null,
+                            h('span', { style:{ color:'#2d5a2d' } }, 'Difficulty  '),
+                            h('span', { style:{ color: diffColor(selectedLoc.displayDiff) } },
+                                selectedLoc.displayDiff.toFixed(1) + '/100'),
+                            selectedLoc.displayDiff >= 57.1
+                                ? h('span', { style:{ color:'#ff3355' } }, ' — brutal')
+                                : selectedLoc.displayDiff >= 42.9
+                                ? h('span', { style:{ color:'#ffd700' } }, ' — hard')
+                                : h('span', { style:{ color:'#33ff33' } }, ' — ok'),
+                        ),
+                        selectedLoc.sellCash != null && h('span', null,
+                            h('span', { style:{ color:'#2d5a2d' } }, '$  '),
+                            h('span', { className:'nd-hi' }, fm(selectedLoc.sellCash)),
+                        ),
+                        selectedLoc.tradeRep != null && h('span', null,
+                            h('span', { style:{ color:'#2d5a2d' } }, 'rep  '),
+                            h('span', { style:{ color:'#b8d8b8' } }, fn(selectedLoc.tradeRep)),
+                        ),
+                    ),
+
+                    // Reward selector
+                    h('div', { className: 'nd-row-ac', style: { marginBottom: 4 } },
+                        h('span', { className: 'nd-lbl', style: { width: 54, flexShrink: 0 } }, 'Reward'),
+                        h('select', {
+                            className: 'nd-select',
+                            disabled: infilRunning,
+                            value: infilReward,
+                            onChange: e => {
+                                setInfilReward(e.target.value);
+                                if (e.target.value === 'money') setInfilFaction('');
+                            },
+                        },
+                            h('option', { value: 'money' }, 'Sell for $'),
+                            h('option', { value: 'rep'   }, 'Trade for rep'),
+                        ),
+                    ),
+
+                    // Faction dropdown — visible only when reward=rep, populated from joined factions
+                    infilReward === 'rep' && h('div', { className: 'nd-row-ac', style: { marginBottom: 4 } },
+                        h('span', { className: 'nd-lbl', style: { width: 54, flexShrink: 0 } }, 'Faction'),
+                        h('select', {
+                            className: 'nd-select', style: { flex: 1 },
+                            disabled: infilRunning,
+                            value: infilFaction,
+                            onChange: e => setInfilFaction(e.target.value),
+                        },
+                            h('option', { value: '' }, '— pick faction —'),
+                            (player?.factions ?? []).map(f =>
+                                h('option', { key: f, value: f }, f)
+                            ),
+                        ),
+                    ),
+
+                    // Status row + Launch/Stop
+                    h('div', { className:'nd-row-ac' },
+                        infilRunning
+                            ? h(React.Fragment, null,
+                                h('span', { className:'nd-hi', style:{ flex:1, fontSize:12 } },
+                                    '● Infiltrating' + (infilMode ? '  ·  ' + infilMode : '')),
+                                h(Btn, { sm:true, color:'red', cmd:{ type:'killInfil' } }, 'Stop'),
+                              )
+                            : h(React.Fragment, null,
+                                h('span', { style:{ flex:1 } }),
+                                h(Btn, {
+                                    disabled: !canLaunch,
+                                    title: !infilCity ? 'Select a city first'
+                                        : !infilCompany ? 'Select a company'
+                                        : '',
+                                    cmd: { type: 'launchInfil', company: infilCompany, city: infilCity,
+                                           reward: infilReward, faction: infilFaction || undefined },
+                                }, 'Launch'),
+                              ),
+                    ),
+                ),
         );
     }
 

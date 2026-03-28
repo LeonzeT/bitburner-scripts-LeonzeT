@@ -36,7 +36,12 @@ export async function main(ns) {
     }
     d.sleeves = sleeves;
   } catch (e) { d.sleeves = []; }
-  d._writer = "dashboard-sleeves.js";
+  // Read per-sleeve overrides
+  try {
+    const ov = ns.read("/Temp/sleeve-overrides.txt");
+    d.sleeveOverrides = ov && ov !== "" ? JSON.parse(ov) : {};
+  } catch { d.sleeveOverrides = {}; }
+  d._writer = "dashboard/dashboard-sleeves.js";
   d._ts = Date.now();
   ns.write("/Temp/dash-sleeves-gathered.txt", JSON.stringify(d), "w");
 }

@@ -537,8 +537,17 @@ async function optimizeGangCrime(ns, myGangInfo) {
                 const statsList = [...importantStats, 'cha'];
                 const maxAscPts = Math.max(...statsList.map(s => info?.[s + '_asc_points'] ?? 0));
                 const threshold = optimalAscendThreshold(maxAscPts);
-                // Member needs combat training if NO stat meets the ascension threshold
-                return !statsList.some(s => (result[s] ?? 0) >= threshold);
+                // Case 1: no stat meets threshold — need combat to get there
+                if (!statsList.some(s => (result[s] ?? 0) >= threshold)) return true;
+                // Case 2: cha triggered but combat asc_pts < 2000 — Gate 2b blocks ascension;
+                // route to Train Combat so those points actually accumulate.
+                if (!isHackGang) {
+                    const chaTriggered    = (result['cha'] ?? 0) >= threshold;
+                    const combatTriggered = importantStats.some(s => (result[s] ?? 0) >= threshold);
+                    const maxCombatAscPts = Math.max(...importantStats.map(s => info?.[s + '_asc_points'] ?? 0));
+                    if (chaTriggered && !combatTriggered && maxCombatAscPts < 2000) return true;
+                }
+                return false;
             })
             .sort((a, b) => {
                 // Prioritize members closest to their threshold (highest result/threshold ratio)
@@ -778,7 +787,8 @@ async function tryAscendMembers(ns, myGangInfo) {
     const nextRecruitResp = respectForMember(myGangMembers.length);
     let currentRespect = myGangInfo?.respect ?? Infinity;
     const startRespect = currentRespect;
-    const MAX_RESPECT_LOSS_FRAC = 0.30;
+    const MAX_RESPECT_LOSS_FRAC = 0.15; // was 0.30 — tighter cap prevents large cascades
+    let ascensionCount = 0;
 
     const membersByImpact = [...myGangMembers].sort((a, b) =>
         (memberInfos[a]?.earnedRespect ?? 0) - (memberInfos[b]?.earnedRespect ?? 0));
@@ -832,6 +842,19 @@ async function tryAscendMembers(ns, myGangInfo) {
             continue;
         }
 
+        // ── Gate 2b: Block cha-only ascension before any combat mult exists ─
+        if (!isHackGang) {
+            const chaTriggered    = chaResult >= threshold;
+            const combatTriggered = importantStats.some(s => (result[s] ?? 0) >= threshold);
+            if (chaTriggered && !combatTriggered) {
+                const maxCombatAscPts = Math.max(...importantStats.map(s => info?.[s + '_asc_points'] ?? 0));
+                if (maxCombatAscPts < 2000) {
+                    log(ns, `[asc-dbg] ${m}: cha ready (×${chaResult.toFixed(3)}) but combat asc_pts=${formatNumberShort(maxCombatAscPts)} < 2000. Holding — combatTrainSet routes to Train Combat.`);
+                    continue;
+                }
+            }
+        }
+
         const earnedResp = info?.earnedRespect ?? 0;
 
         // ── Gate 3: Hard respect floor ───────────────────────────────────
@@ -862,6 +885,15 @@ async function tryAscendMembers(ns, myGangInfo) {
             log(ns, `Holding ${m}: would drop respect below recruit floor ${formatNumberShort(nextRecruitResp)}.`);
             continue;
         }
+        // When already below recruit threshold, still cap at 1 ascension per tick.
+        // Without this, all members ascend simultaneously and can crater respect to near zero.
+        if (myGangMembers.length < 12 && !alreadyAboveThreshold && earnedResp > 0) {
+            if (ascensionCount > 0) {
+                log(ns, `[asc-dbg] Deferring ${m}: already ascended 1 member this tick while below recruit threshold.`);
+                continue;
+            }
+            log(ns, `[asc-dbg] ${m}: below recruit threshold ${formatNumberShort(nextRecruitResp)} — ascending anyway (1 per tick cap).`);
+        }
 
         // ── Gate 6: Per-tick cascade limit ───────────────────────────────
         const alreadyLost = startRespect - currentRespect;
@@ -878,6 +910,7 @@ async function tryAscendMembers(ns, myGangInfo) {
                 `(threshold=${threshold.toFixed(3)}, pts=${formatNumberShort(maxAscPts)})`, false, 'success');
             lastMemberReset[m] = Date.now();
             currentRespect -= earnedResp;
+            ascensionCount++;
         } else {
             log(ns, `ERROR: Ascend failed for ${m}`, false, 'error');
         }

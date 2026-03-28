@@ -39,6 +39,9 @@
 
   "force-scp":          "hacking/force-scp.js",
   "xp-grind":           "hacking/xp-grind.js",
+  
+  "autoinfil":           "Infil/autoinfil.js",
+  "infiltrate":          "Infil/infiltrator.js",
 
   "helpers":            "helpers.js",
 

@@ -1,19 +1,16 @@
-// Resolve registered script paths via script-paths.json (0 GB — ns.read only)
-let _scriptPaths = null;
-function resolveScript(ns, key) {
-    if (!_scriptPaths) {
-        _scriptPaths = {};
-        try { const r = ns.read('/script-paths.json'); if (r && r !== '') { _scriptPaths = JSON.parse(r); delete _scriptPaths._comment; } } catch {}
-    }
-    return _scriptPaths[key] ?? (key.endsWith('.js') ? key : key + '.js');
-}
 /**
- * dashboard-stocks.js — on-demand, Stocks tab only (~3 GB)
+ * dashboard-stocks.js — on-demand, Stocks tab only (~3 GB static)
  *
- * Handles per-symbol stock data gathering and buy/sell actions.
- * The always-on data.js retains only the lightweight stock flags
- * (hasWse, hasTix, has4SData, has4SApi, stockCosts) needed by the
- * Shortcuts "Stock Market" section. All per-symbol work lives here.
+ * ALL ns.stock.* calls are delegated to temp scripts via ns.exec.
+ * This script only uses: ns.exec(1.3) + ns.isRunning(0.05) + ns.read/write(0)
+ * = ~3 GB total static RAM.
+ *
+ * Old version: ~26.6 GB (10 unique ns.stock.* API calls held the entire time
+ *   the Stocks tab was open — 10 × 2.5 GB each)
+ * New version: ~3 GB sustained, ~8 GB peak during 1s gather
+ *
+ * Buy/sell commands are also delegated to one-shot temp scripts so this
+ * file never directly references any ns.stock.* function.
  *
  * @param {NS} ns
  */
@@ -22,70 +19,66 @@ const SING_PORT       = 18;
 const STOCKS_FILE     = '/Temp/dashboard-stocks.txt';
 const ACTIVE_TAB_FILE = '/Temp/dashboard-active-tab.txt';
 const MY_TAB          = 'Stocks';
+const GATHER_SCRIPT   = '/Temp/dash-stocks-gather.js';
+const GATHER_OUT      = '/Temp/dash-stocks-gathered.txt';
+const CMD_SCRIPT      = '/Temp/dash-stocks-cmd.js';
 
-async function gatherData(ns) {
+function writeGatherScript(ns) {
+    // All ns.stock.* calls live here. This temp script runs for <1s,
+    // writes results to GATHER_OUT, then exits and frees its ~8 GB.
+    ns.write(GATHER_SCRIPT, `
+export async function main(ns) {
     const d = {}, safe = f => { try { return f(); } catch { return undefined; } };
 
-    // Check TIX access separately from symbol data — don't let one failure kill both.
     let hasTix = false, has4S = false;
-    try { hasTix = ns.stock.hasTixApiAccess(); } catch (e) { ns.print('hasTixApiAccess error: ' + e); }
-    try { has4S = ns.stock.has4SDataTixApi(); } catch (e) { ns.print('has4SDataTixApi error: ' + e); }
-
-    // Also check via the dashboard-data.js cached flags as a fallback.
-    // dashboard-data.js uses a temp-script approach that's more reliable in some BNs.
-    if (!hasTix) {
-        try {
-            const raw = ns.read('/Temp/dashboard-data.txt');
-            if (raw && raw !== '') {
-                const cached = JSON.parse(raw);
-                if (cached.hasTix) hasTix = true;
-                if (cached.has4SApi) has4S = true;
-            }
-        } catch {}
-    }
+    try { hasTix = ns.stock.hasTixApiAccess(); } catch {}
+    try { has4S  = ns.stock.has4SDataTixApi(); } catch {}
 
     if (hasTix) {
         try {
-            const syms = safe(() => ns.stock.getSymbols()) ?? [], allStocks = [];
+            const syms = safe(() => ns.stock.getSymbols()) ?? [];
+            const allStocks = [];
             let tv = 0, tc = 0;
             for (const sym of syms) {
-                const pos      = safe(() => ns.stock.getPosition(sym)) ?? [0,0,0,0];
-                const price    = safe(() => ns.stock.getPrice(sym))    ?? 0;
+                const pos      = safe(() => ns.stock.getPosition(sym))  ?? [0,0,0,0];
+                const price    = safe(() => ns.stock.getPrice(sym))     ?? 0;
                 const maxSh    = safe(() => ns.stock.getMaxShares(sym)) ?? 0;
                 const forecast = has4S ? (safe(() => ns.stock.getForecast(sym)) ?? null) : null;
-                const lv = pos[0]*price, lc = pos[0]*pos[1];
-                tv += pos[0]>0?lv:0; tc += pos[0]>0?lc:0;
-                // Short P&L: profit when price falls below avg short price.
+                const lv = pos[0] * price, lc = pos[0] * pos[1];
+                tv += pos[0] > 0 ? lv : 0; tc += pos[0] > 0 ? lc : 0;
                 const shortPnL = pos[2] > 0 ? (pos[3] - price) * pos[2] : 0;
-                tv += pos[2]>0 ? pos[2]*pos[3] : 0; // sold for avgShortPrice
-                tc += pos[2]>0 ? pos[2]*price  : 0; // costs currentPrice to close
-                allStocks.push({ sym, price, maxSh, forecast, longSh:pos[0], longAvg:pos[1],
-                    longVal:lv, longCost:lc, longPnL:lv-lc,
-                    shortSh:pos[2], shortAvg:pos[3], shortPnL });
+                tv += pos[2] > 0 ? pos[2] * pos[3] : 0;
+                tc += pos[2] > 0 ? pos[2] * price  : 0;
+                allStocks.push({
+                    sym, price, maxSh, forecast,
+                    longSh: pos[0], longAvg: pos[1], longVal: lv, longCost: lc, longPnL: lv - lc,
+                    shortSh: pos[2], shortAvg: pos[3], shortPnL,
+                });
             }
-            allStocks.sort((a,b) => b.longVal-a.longVal || (b.forecast??0.5)-(a.forecast??0.5));
-            d.stocks = { allStocks, has4S, totalVal:tv, totalPnL:tv-tc };
-        } catch (e) {
-            ns.print('Stock data gather error: ' + e);
-            d.stocks = null;
-        }
+            allStocks.sort((a, b) => b.longVal - a.longVal || (b.forecast ?? 0.5) - (a.forecast ?? 0.5));
+            d.stocks = { allStocks, has4S, totalVal: tv, totalPnL: tv - tc };
+        } catch { d.stocks = null; }
     } else {
         d.stocks = null;
     }
     d.stocksLoaded    = true;
     d.stocksTimestamp = Date.now();
-    return d;
+    ns.write("${GATHER_OUT}", JSON.stringify(d), "w");
+}
+`, 'w');
 }
 
-function processCmd(ns, cmd) {
-    try {
-        switch (cmd.type) {
-            case 'buyStock':       ns.stock.buyStock(cmd.sym, cmd.qty);      break;
-            case 'sellStock':      ns.stock.sellStock(cmd.sym, cmd.qty);     break;
-            case 'sellShortStock': ns.stock.sellShort(cmd.sym, cmd.qty);     break;
-            default: break;
-        }
-    } catch (e) { ns.print('STOCKS CMD ERR [' + cmd.type + ']: ' + (e?.message ?? e)); }
+async function runTemp(ns, script, timeout = 5000) {
+    const pid = ns.exec(script, 'home');
+    if (!pid) { ns.print('WARN: could not exec ' + script); return false; }
+    const deadline = Date.now() + timeout;
+    while (ns.isRunning(pid) && Date.now() < deadline) await ns.sleep(50);
+    return !ns.isRunning(pid);
+}
+
+async function runCmd(ns, code) {
+    ns.write(CMD_SCRIPT, `export async function main(ns) { ${code} }`, 'w');
+    return runTemp(ns, CMD_SCRIPT, 3000);
 }
 
 /** @param {NS} ns */
@@ -93,9 +86,8 @@ export async function main(ns) {
     ns.disableLog('ALL');
     const uiScript = ns.getScriptName().replace(/dashboard-stocks\.js$/, 'dashboard.js');
     const singPort = ns.getPortHandle(SING_PORT);
-
-    // Clear stale data when script exits (tab change, UI close, crash)
     ns.atExit(() => ns.write(STOCKS_FILE, '', 'w'));
+    writeGatherScript(ns);
 
     while (true) {
         if (!ns.isRunning(uiScript, 'home')) {
@@ -110,11 +102,29 @@ export async function main(ns) {
         } catch {}
 
         while (!singPort.empty()) {
-            try { processCmd(ns, JSON.parse(singPort.read())); }
-            catch (e) { ns.print('STOCKS port error: ' + (e?.message ?? e)); }
+            try {
+                const cmd = JSON.parse(singPort.read());
+                switch (cmd.type) {
+                    case 'buyStock':
+                        await runCmd(ns, `ns.stock.buyStock(${JSON.stringify(cmd.sym)}, ${cmd.qty})`);
+                        break;
+                    case 'sellStock':
+                        await runCmd(ns, `ns.stock.sellStock(${JSON.stringify(cmd.sym)}, ${cmd.qty})`);
+                        break;
+                    case 'sellShortStock':
+                        await runCmd(ns, `ns.stock.sellShort(${JSON.stringify(cmd.sym)}, ${cmd.qty})`);
+                        break;
+                    default: ns.print(`Ignored cmd: ${cmd.type}`);
+                }
+            } catch (e) { ns.print('STOCKS port error: ' + (e?.message ?? e)); }
         }
-        try { ns.write(STOCKS_FILE, JSON.stringify(await gatherData(ns)), 'w'); }
-        catch (e) { ns.print('gatherData error: ' + (e?.message ?? e)); }
+
+        if (await runTemp(ns, GATHER_SCRIPT)) {
+            try {
+                const raw = ns.read(GATHER_OUT);
+                if (raw) ns.write(STOCKS_FILE, raw, 'w');
+            } catch {}
+        }
 
         await ns.sleep(1000);
     }

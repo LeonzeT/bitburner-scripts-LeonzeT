@@ -1,0 +1,15 @@
+{
+  "timestamp": 1774667525667,
+  "targets": [
+    "foodnstuff"
+  ],
+  "batchers": {},
+  "execHosts": [
+    "daemon"
+  ],
+  "reserveRam": 32,
+  "bnMults": {
+    "ServerWeakenRate": 1,
+    "ServerGrowthRate": 1
+  }
+}

@@ -176,3 +176,85 @@
     Augs: ["SmartSonar Implant", "LuminCloaking-V2 Skin Implant", "Combat Rib I", "Neural Wit Amplifier"]
 2026-03-18T22:30:34   Invoking ascend.js at 12m 50s     since last aug to install: 1 of 68 remaining augmentations + 3 levels of NeuroFlux.
     Augs: ["Magnetism Amplifier", "NeuroFlux Governor (x3)"]
+2026-03-22T20:35:27   Invoking ascend.js at 4h 60s      since last aug to install: 3 of 112 remaining augmentations + 8 levels of NeuroFlux.
+    Augs: ["Nuoptimal Nootropic Injector Implant", "ADR-V1 Pheromone Gene", "Augmented Targeting I", "NeuroFlux Governor (x8)"]
+2026-03-23T00:18:49   Invoking ascend.js at 3h 28m 22s  since last aug to install: 4 of 109 remaining augmentations + 7 levels of NeuroFlux.
+    Augs: ["Cranial Signal Processors - Gen I", "Speech Processor Implant", "Social Negotiation Assistant (S.N.A)", "LuminCloaking-V1 Skin Implant", "NeuroFlux Governor (x7)"]
+2026-03-23T05:52:59   Invoking ascend.js at 5h 34m 5s   since last aug to install: 8 of 105 remaining augmentations.
+    Augs: ["Neuralstimulator", "Nanofiber Weave", "Cranial Signal Processors - Gen II", "HemoRecirculator", "Augmented Targeting II", "LuminCloaking-V2 Skin Implant", "Combat Rib I", "Neural Wit Amplifier"]
+2026-03-23T10:00:06   Invoking ascend.js at 4h 7m       since last aug to install: 8 of 96 remaining augmentations + 2 levels of NeuroFlux.
+    Augs: ["Stanek's Gift - Awakening", "Neuroreceptor Management Implant", "Neural-Retention Enhancement", "Embedded Netburner Module", "CashRoot Starter Kit", "Artificial Synaptic Potentiation", "SmartSonar Implant", "Neurotrainer II", "NeuroFlux Governor (x2)"]
+2026-03-23T14:05:14   Invoking ascend.js at 4h 5m 2s    since last aug to install: 4 of 89 remaining augmentations + 6 levels of NeuroFlux.
+    Augs: ["EMS-4 Recombination", "Power Recirculation Core", "EsperTech Bladeburner Eyewear", "Hacknet Node CPU Architecture Neural-Upload", "NeuroFlux Governor (x6)"]
+2026-03-23T19:25:15   Invoking ascend.js at 5h 19m 55s  since last aug to install: 5 of 85 remaining augmentations + 5 levels of NeuroFlux.
+    Augs: ["Glibness Enhancement", "PCMatrix", "Cranial Signal Processors - Gen III", "Bionic Arms", "CRTX42-AA Gene Modification", "NeuroFlux Governor (x5)"]
+2026-03-23T23:03:46   Invoking ascend.js at 3h 38m 26s  since last aug to install: 10 of 80 remaining augmentations.
+    Augs: ["The Blade's Simulacrum", "BLADE-51b Tesla Armor", "ORION-MKIV Shoulder", "Eloquence Module", "Magnetism Amplifier", "Neurotrainer III", "Augmented Targeting III", "BrachiBlades", "Combat Rib II", "Hacknet Node Kernel Direct-Neural Interface"]
+2026-03-24T01:14:45   Invoking ascend.js at 2h 10m 54s  since last aug to install: 8 of 70 remaining augmentations.
+    Augs: ["The Black Hand", "ADR-V2 Pheromone Gene", "DataJack", "The Shadow's Simulacrum", "Bionic Legs", "Neuregen Gene Modification", "Bionic Spine", "Combat Rib III"]
+2026-03-24T05:32:42   Invoking ascend.js at 4h 17m 52s  since last aug to install: 6 of 62 remaining augmentations + 1 levels of NeuroFlux.
+    Augs: ["Social Dynamics Processor", "Synfibril Muscle", "Cranial Signal Processors - Gen IV", "BLADE-51b Tesla Armor: IPU Upgrade", "FocusWire", "DermaForce Particle Barrier", "NeuroFlux Governor (x1)"]
+2026-03-24T07:38:59   Invoking ascend.js at 2h 6m 12s   since last aug to install: 7 of 56 remaining augmentations + 2 levels of NeuroFlux.
+    Augs: ["Hyperion Plasma Cannon V1", "Graphene BrachiBlades Upgrade", "Embedded Netburner Module Core Implant", "Enhanced Social Interaction Implant", "Enhanced Myelin Sheathing", "INFRARET Enhancement", "NutriGen Implant", "NeuroFlux Governor (x2)"]
+2026-03-24T14:09:42   Invoking ascend.js at 3h 19m 17s  since last aug to install: 7 of 46 remaining augmentations + 3 levels of NeuroFlux.
+    Augs: ["Artificial Bio-neural Network Implant", "Synthetic Heart", "SmartJaw", "HyperSight Corneal Implant", "Cranial Signal Processors - Gen V", "Neural Accelerator", "Neuronal Densification", "NeuroFlux Governor (x3)"]
+2026-03-24T16:23:50   Invoking ascend.js at 2h 13m 55s  since last aug to install: 7 of 39 remaining augmentations + 2 levels of NeuroFlux.
+    Augs: ["BitRunners Neurolink", "Graphene Bone Lacings", "Graphene Bionic Arms Upgrade", "PC Direct-Neural Interface", "The Illustrated Primer", "NEMEAN Subdermal Weave", "nextSENS Gene Modification", "NeuroFlux Governor (x2)"]
+2026-03-24T17:07:24   Invoking ascend.js at 43m 29s     since last aug to install: 7 of 30 remaining augmentations + 3 levels of NeuroFlux.
+    Augs: ["Blade's Runners", "BLADE-51b Tesla Armor: Energy Shielding Upgrade", "I.N.T.E.R.L.I.N.K.E.D", "Embedded Netburner Module Core V2 Upgrade", "Graphene Bionic Legs Upgrade", "PC Direct-Neural Interface Optimization Submodule", "OmniTek InfoLoad", "NeuroFlux Governor (x3)"]
+2026-03-24T18:19:19   Invoking ascend.js at 1h 11m 49s  since last aug to install: 5 of 25 remaining augmentations + 1 levels of NeuroFlux.
+    Augs: ["Embedded Netburner Module Analyze Engine", "ECorp HVMind Implant", "Hyperion Plasma Cannon V2", "Xanipher", "The Red Pill", "NeuroFlux Governor (x1)"]
+2026-03-24T19:12:13 BN 7.1 completed at 52h 55m 14s (bladeburner win condition)
+2026-03-25T03:05:38   Invoking ascend.js at 7h 53m 25s  since last aug to install: 9 of 117 remaining augmentations + 5 levels of NeuroFlux.
+    Augs: ["Cranial Signal Processors - Gen I", "Cranial Signal Processors - Gen II", "Hacknet Node CPU Architecture Neural-Upload", "BitWire", "Synaptic Enhancement Implant", "Hacknet Node Cache Architecture Neural-Upload", "LuminCloaking-V1 Skin Implant", "Hacknet Node NIC Architecture Neural-Upload", "Neurotrainer I", "NeuroFlux Governor (x5)"]
+2026-03-25T05:11:59   Invoking ascend.js at 2h 6m 16s   since last aug to install: 3 of 108 remaining augmentations + 8 levels of NeuroFlux.
+    Augs: ["Speech Processor Implant", "Hacknet Node Kernel Direct-Neural Interface", "Nuoptimal Nootropic Injector Implant", "NeuroFlux Governor (x8)"]
+2026-03-25T09:49:59   Invoking ascend.js at 4h 36m 20s  since last aug to install: 0 of 104 remaining augmentations + 10 levels of NeuroFlux.
+2026-03-25T15:56:25   Invoking ascend.js at 6h 5m 3s    since last aug to install: 2 of 104 remaining augmentations + 7 levels of NeuroFlux.
+    Augs: ["Hacknet Node Core Direct-Neural Interface", "Augmented Targeting I", "NeuroFlux Governor (x7)"]
+2026-03-25T18:27:52   Invoking ascend.js at 2h 31m 22s  since last aug to install: 7 of 102 remaining augmentations + 1 levels of NeuroFlux.
+    Augs: ["EMS-4 Recombination", "EsperTech Bladeburner Eyewear", "Social Negotiation Assistant (S.N.A)", "LuminCloaking-V2 Skin Implant", "ADR-V1 Pheromone Gene", "Speech Enhancement", "Neural Wit Amplifier", "NeuroFlux Governor (x1)"]
+2026-03-26T00:15:56   Invoking ascend.js at 5h 48m      since last aug to install: 7 of 95 remaining augmentations + 1 levels of NeuroFlux.
+    Augs: ["Hyperion Plasma Cannon V1", "BLADE-51b Tesla Armor", "ORION-MKIV Shoulder", "Nanofiber Weave", "CashRoot Starter Kit", "Augmented Targeting II", "Combat Rib I", "NeuroFlux Governor (x1)"]
+2026-03-26T03:20:12   Invoking ascend.js at 3h 4m 11s   since last aug to install: 7 of 88 remaining augmentations + 1 levels of NeuroFlux.
+    Augs: ["Vangelis Virus", "BLADE-51b Tesla Armor: IPU Upgrade", "Embedded Netburner Module", "Artificial Synaptic Potentiation", "SmartSonar Implant", "HemoRecirculator", "Neurotrainer II", "NeuroFlux Governor (x1)"]
+2026-03-26T08:13:33   Invoking ascend.js at 4h 53m 17s  since last aug to install: 6 of 81 remaining augmentations.
+    Augs: ["SoA - phyzical WKS harmonizer", "BLADE-51b Tesla Armor: Power Cells Upgrade", "Glibness Enhancement", "PCMatrix", "Neural-Retention Enhancement", "BrachiBlades"]
+2026-03-26T12:03:50   Invoking ascend.js at 3h 50m 12s  since last aug to install: 9 of 76 remaining augmentations.
+    Augs: ["BLADE-51b Tesla Armor: Energy Shielding Upgrade", "The Shadow's Simulacrum", "Power Recirculation Core", "Bionic Spine", "Combat Rib II", "Combat Rib III", "Augmented Targeting III", "DermaForce Particle Barrier", "Stanek's Gift - Awakening"]
+2026-03-26T14:09:44   Invoking ascend.js at 2h 5m 49s   since last aug to install: 7 of 67 remaining augmentations.
+    Augs: ["Hyperion Plasma Cannon V2", "I.N.T.E.R.L.I.N.K.E.D", "Eloquence Module", "Magnetism Amplifier", "CRTX42-AA Gene Modification", "Neurotrainer III", "NutriGen Implant"]
+2026-03-26T17:34:53   Invoking ascend.js at 3h 25m 5s   since last aug to install: 7 of 60 remaining augmentations + 1 levels of NeuroFlux.
+    Augs: ["FocusWire", "ADR-V2 Pheromone Gene", "Cranial Signal Processors - Gen III", "DataJack", "Bionic Legs", "Bionic Arms", "Golden Tongue Module", "NeuroFlux Governor (x1)"]
+2026-03-26T20:31:34 BN 9.1 completed at 49h 19m 20s (bladeburner win condition)
+2026-03-26T21:35:32   Invoking ascend.js at 1h 3m 58s   since last aug to install: 6 of 118 remaining augmentations + 7 levels of NeuroFlux.
+    Augs: ["Cranial Signal Processors - Gen I", "Speech Processor Implant", "Nuoptimal Nootropic Injector Implant", "BitWire", "Synaptic Enhancement Implant", "Neurotrainer I", "NeuroFlux Governor (x7)"]
+2026-03-26T23:40:39   Invoking ascend.js at 2h 5m 2s    since last aug to install: 0 of 111 remaining augmentations + 11 levels of NeuroFlux.
+2026-03-27T03:03:55   Invoking ascend.js at 3h 23m 10s  since last aug to install: 3 of 110 remaining augmentations + 8 levels of NeuroFlux.
+    Augs: ["Cranial Signal Processors - Gen II", "ADR-V1 Pheromone Gene", "Speech Enhancement", "NeuroFlux Governor (x8)"]
+2026-03-27T07:58:38   Invoking ascend.js at 4h 54m 39s  since last aug to install: 4 of 107 remaining augmentations + 6 levels of NeuroFlux.
+    Augs: ["CashRoot Starter Kit", "Artificial Synaptic Potentiation", "Social Negotiation Assistant (S.N.A)", "LuminCloaking-V1 Skin Implant", "NeuroFlux Governor (x6)"]
+2026-03-27T12:17:52   Invoking ascend.js at 4h 19m 9s   since last aug to install: 6 of 100 remaining augmentations + 4 levels of NeuroFlux.
+    Augs: ["Stanek's Gift - Awakening", "Embedded Netburner Module", "Nanofiber Weave", "Neurotrainer II", "LuminCloaking-V2 Skin Implant", "Neural Wit Amplifier", "NeuroFlux Governor (x4)"]
+2026-03-27T16:11:28   Invoking ascend.js at 3h 53m 32s  since last aug to install: 17 of 95 remaining augmentations.
+    Augs: ["Glibness Enhancement", "Cranial Signal Processors - Gen III", "The Shadow's Simulacrum", "Eloquence Module", "Magnetism Amplifier", "CRTX42-AA Gene Modification", "Power Recirculation Core", "Neurotrainer III", "Bionic Spine", "Combat Rib I", "Combat Rib II", "Combat Rib III", "Augmented Targeting III", "BrachiBlades", "SmartSonar Implant", "HemoRecirculator", "Hacknet Node Cache Architecture Neural-Upload"]
+2026-03-27T17:53:01   Invoking ascend.js at 1h 41m 29s  since last aug to install: 11 of 78 remaining augmentations.
+    Augs: ["The Blade's Simulacrum", "Embedded Netburner Module Core Implant", "Neuronal Densification", "Enhanced Myelin Sheathing", "Cranial Signal Processors - Gen IV", "FocusWire", "ADR-V2 Pheromone Gene", "DataJack", "Bionic Legs", "EsperTech Bladeburner Eyewear", "Golden Tongue Module"]
+2026-03-27T19:01:52   Invoking ascend.js at 1h 8m 46s   since last aug to install: 11 of 67 remaining augmentations + 2 levels of NeuroFlux.
+    Augs: ["NEMEAN Subdermal Weave", "Artificial Bio-neural Network Implant", "Neuralstimulator", "Synthetic Heart", "Neotra", "HyperSight Corneal Implant", "Enhanced Social Interaction Implant", "Social Dynamics Processor", "Synfibril Muscle", "Neuroreceptor Management Implant", "Neural-Retention Enhancement", "NeuroFlux Governor (x2)"]
+2026-03-27T19:48:54   Invoking ascend.js at 46m 56s     since last aug to install: 9 of 56 remaining augmentations.
+    Augs: ["SPTN-97 Gene Modification", "Embedded Netburner Module Core V2 Upgrade", "Graphene Bionic Legs Upgrade", "PC Direct-Neural Interface", "PC Direct-Neural Interface Optimization Submodule", "Graphene Bone Lacings", "The Illustrated Primer", "Bionic Arms", "EMS-4 Recombination"]
+2026-03-27T20:53:49   Invoking ascend.js at 1h 4m 49s   since last aug to install: 7 of 47 remaining augmentations + 6 levels of NeuroFlux.
+    Augs: ["Embedded Netburner Module Core V3 Upgrade", "Embedded Netburner Module Direct Memory Access Upgrade", "Graphene Bionic Spine Upgrade", "Embedded Netburner Module Analyze Engine", "ECorp HVMind Implant", "PCMatrix", "ORION-MKIV Shoulder", "NeuroFlux Governor (x6)"]
+2026-03-27T22:07:54   Invoking ascend.js at 1h 13m 60s  since last aug to install: 11 of 40 remaining augmentations + 3 levels of NeuroFlux.
+    Augs: ["BLADE-51b Tesla Armor", "BLADE-51b Tesla Armor: Unibeam Upgrade", "GOLEM Serum", "Blade's Runners", "Hyperion Plasma Cannon V1", "Hyperion Plasma Cannon V2", "I.N.T.E.R.L.I.N.K.E.D", "BLADE-51b Tesla Armor: Energy Shielding Upgrade", "BLADE-51b Tesla Armor: Power Cells Upgrade", "Vangelis Virus", "BLADE-51b Tesla Armor: IPU Upgrade", "NeuroFlux Governor (x3)"]
+2026-03-27T22:47:58   Invoking ascend.js at 39m 59s     since last aug to install: 0 of 29 remaining augmentations + 1 levels of NeuroFlux.
+2026-03-27T23:40:55   Invoking ascend.js at 52m 53s     since last aug to install: 6 of 29 remaining augmentations + 4 levels of NeuroFlux.
+    Augs: ["BLADE-51b Tesla Armor: Omnibeam Upgrade", "Vangelis Virus 3.0", "SmartJaw", "The Black Hand", "DermaForce Particle Barrier", "The Red Pill", "NeuroFlux Governor (x4)"]
+2026-03-28T00:29:39   Invoking ascend.js at 48m 39s     since last aug to install: 3 of 23 remaining augmentations + 11 levels of NeuroFlux.
+    Augs: ["Neuregen Gene Modification", "INFRARET Enhancement", "NutriGen Implant", "NeuroFlux Governor (x11)"]
+2026-03-28T01:17:59   Invoking ascend.js at 48m 15s     since last aug to install: 4 of 20 remaining augmentations + 8 levels of NeuroFlux.
+    Augs: ["BitRunners Neurolink", "Cranial Signal Processors - Gen V", "Neural Accelerator", "Stanek's Gift - Serenity", "NeuroFlux Governor (x8)"]
+2026-03-28T02:00:02   Invoking ascend.js at 41m 59s     since last aug to install: 2 of 16 remaining augmentations + 11 levels of NeuroFlux.
+    Augs: ["Graphene Bionic Arms Upgrade", "nextSENS Gene Modification", "NeuroFlux Governor (x11)"]
+2026-03-28T02:39:16 BN 14.1 completed at 30h 7m 42s (hack (15000) win condition)

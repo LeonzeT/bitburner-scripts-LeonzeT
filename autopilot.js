@@ -117,6 +117,19 @@ export async function main(ns) {
     let bnCompletionSuppressed = false; // Flag if we've detected that we've won the BN, but are suppressing a restart
     let sleevesMaxedOut = false; // Flag used only when the player is replaying BN 10 with all sleeves but has suppressed auto-destroying the BN, to allow continued auto-installs
     let loggedBnCompletion = false; // Flag set to ensure that if we choose to stay in the BN, we only log the "BN completed" message once per reset.
+    // ── Infiltration state ────────────────────────────────────────────────────────
+    // autoinfil.js is launched automatically by autopilot.
+    // Phase 1 (early): only run infil until INFIL_CASINO_SEED is earned — no heavy
+    //                   scripts yet. This seeds the casino run.
+    // Phase 2 (main):  infil runs in money mode alongside all other scripts.
+    //                   Location is re-evaluated every INFIL_RECHECK_MS as stats grow.
+    // Paused during:   Daedalus rep grind (work focus matters more than infil cash).
+    const INFIL_CASINO_SEED  = 300000;          // Earn this before allowing casino run
+    const INFIL_RECHECK_MS   = 3 * 60 * 1000;  // Re-evaluate best target every 3 min
+    let   infilCurrentCompany = null;            // Company autoinfil.js is targeting
+    let   infilCurrentCity    = null;            // City of current target
+    let   infilLastRecheck    = 0;               // Timestamp of last target evaluation
+    let   infilUserStopped    = false;           // Set when user kills infil externally — suppresses relaunch until aug install (resets on restart)
     let have4STixApi = false; // Whether we have access to the 4S (stockmarket) API. Once confirmed true, we can stop checking.
     let have4SData = false; // Whether we have access to 4S (stockmarket) data. Once confirmed true, we can stop checking.
     // Local script-paths.json cache — populated in main_start(), used by resolveScript()
@@ -136,6 +149,152 @@ export async function main(ns) {
     }
     // Replacements for player properties deprecated since 2.3.0
     function getTimeInAug() { return Date.now() - resetInfo.lastAugReset; }
+
+    // ── Infiltration location data ────────────────────────────────────────────
+    // Starting security levels (ssl) per location.
+    // Source: game's Locations/data/LocationsMetadata.ts, mirrored in dashboard-shortcuts.js.
+    const INFIL_SSL = {
+        'Aevum':     { 'AeroCorp': 8.18, 'Bachman & Associates': 8.19, 'Clarke Incorporated': 9.55,
+                       'ECorp': 17.02, 'Fulcrum Technologies': 15.54, 'Galactic Cybersystems': 7.89,
+                       'NetLink Technologies': 3.29, 'Aevum Police Headquarters': 5.35,
+                       'Rho Construction': 5.02, 'Watchdog Security': 5.85 },
+        'Chongqing': { 'KuaiGong International': 16.25, 'Solaris Space Systems': 12.59 },
+        'Ishima':    { 'Nova Medical': 5.02, 'Omega Software': 3.20, 'Storm Technologies': 5.38 },
+        'New Tokyo': { 'DefComm': 7.18, 'Global Pharmaceuticals': 5.90, 'Noodle Bar': 2.50, 'VitaLife': 5.52 },
+        'Sector-12': { 'Alpha Enterprises': 3.62, 'Blade Industries': 10.59, 'Carmichael Security': 4.66,
+                       'DeltaOne': 5.90, 'Four Sigma': 8.18, 'Icarus Microsystems': 6.02,
+                       "Joe's Guns": 3.13, 'MegaCorp': 16.36, 'Universal Energy': 5.90 },
+        'Volhaven':  { 'CompuTek': 3.59, 'Helios Labs': 7.28, 'LexoCorp': 4.35, 'NWO': 8.53,
+                       'OmniTek Incorporated': 7.74, 'Omnia Cybersystems': 6.00, 'SysCore Securities': 4.77 },
+    };
+
+    /** Pick the infiltration target with the highest sell-for-cash reward that is
+     * achievable given current player stats.
+     *
+     * Difficulty formula (from game source Infiltration/formulas/game.ts):
+     *   totalStats = str + def + dex + agi + cha
+     *   diff = max(0, ssl - (totalStats^0.9 / 250) - (int / 1600))
+     *   MAX_DIFF = 3.5  (anything at or above this is unbeatable)
+     *
+     * Both ns.infiltration.* calls cost 0 GB — safe to call directly in the main loop.
+     *
+     * @param {Player} player
+     * @returns {{ company: string, city: string, sellCash: number, diff: number } | null} */
+    function getBestInfilTarget(player) {
+        const MAX_DIFF = 3.5;
+        const s = player.skills ?? {};
+        const totalStats = (s.strength   ?? 0) + (s.defense    ?? 0)
+                         + (s.dexterity  ?? 0) + (s.agility    ?? 0)
+                         + (s.charisma   ?? 0);
+        const statBonus = Math.pow(Math.max(0, totalStats), 0.9) / 250;
+        const intBonus  = (s.intelligence ?? 0) / 1600;
+
+        // Use the API location list when available (0 GB), fall back to the hardcoded table.
+        let rawLocs = [];
+        try {
+            const apiLocs = ns.infiltration.getPossibleLocations();
+            if (Array.isArray(apiLocs) && apiLocs.length > 0)
+                rawLocs = apiLocs.map(l => ({ city: l.city, name: l.name }));
+        } catch {}
+        if (rawLocs.length === 0) {
+            for (const [city, companies] of Object.entries(INFIL_SSL))
+                for (const name of Object.keys(companies))
+                    rawLocs.push({ city, name });
+        }
+
+        let best = null;
+        for (const { city, name } of rawLocs) {
+            const ssl = INFIL_SSL[city]?.[name] ?? null;
+            if (ssl === null) continue;
+            const diff = Math.max(0, ssl - statBonus - intBonus);
+            if (diff >= MAX_DIFF) continue; // impossible for current stats
+
+            let sellCash = null;
+            try { sellCash = ns.infiltration.getInfiltration(name)?.reward?.sellCash ?? null; } catch {}
+            if (sellCash == null) continue;
+
+            // Primary: highest cash reward. Tiebreak: easiest location (more runs/hr).
+            if (!best || sellCash > best.sellCash ||
+                (sellCash === best.sellCash && diff < best.diff))
+                best = { company: name, city, sellCash, diff };
+        }
+        return best;
+    }
+
+    /** Manage the autoinfil.js process lifecycle.
+     * - Picks the best available infiltration location using current player stats.
+     * - Launches autoinfil.js if it is not running.
+     * - Kills and restarts with the new location if a better target becomes available.
+     * - Rate-limited to re-evaluate every INFIL_RECHECK_MS to avoid churn.
+     *
+     * @param {Player} player
+     * @param {ProcessInfo[]} runningScripts */
+    async function manageInfiltration(player, runningScripts) {
+        const autoInfilPath = resolveScript('autoinfil');
+        const infilProc     = findScriptHelper('autoinfil', runningScripts);
+        const now           = Date.now();
+
+        // ── Ghost detection: externally stopped ───────────────────────────────
+        // If autopilot thinks infil should be running (infilCurrentCompany is set)
+        // but the process is gone, the user killed it externally — via dashboard's
+        // Stop button, ns.kill, or `run autoinfil.js --stop` from the terminal.
+        // Respect the intent: set infilUserStopped so we never relaunch this run.
+        // (infilCurrentCompany is always cleared by autopilot before it kills infil
+        //  itself, so a set company + no process == external kill, unambiguously.)
+        if (infilCurrentCompany && !infilProc) {
+            log(ns, `INFO: autoinfil.js stopped externally (dashboard / kill / --stop). ` +
+                `Suppressing relaunch for the rest of this aug cycle.`, true, 'info');
+            infilCurrentCompany = null;
+            infilCurrentCity    = null;
+            infilUserStopped    = true;
+            return;
+        }
+
+        // Respect a prior manual stop — don't relaunch until the next aug install.
+        if (infilUserStopped) return;
+
+        // Rate-limit: only re-evaluate when the interval has elapsed, unless not running at all.
+        if (infilProc && now - infilLastRecheck < INFIL_RECHECK_MS) return;
+        infilLastRecheck = now;
+
+        const best = getBestInfilTarget(player);
+
+        if (!best) {
+            if (infilProc) {
+                log(ns, `INFO: No viable infil target for current stats. Stopping autoinfil.`, false, 'info');
+                await killScript(ns, 'autoinfil', runningScripts, infilProc);
+                infilCurrentCompany = null;
+                infilCurrentCity    = null;
+            }
+            return;
+        }
+
+        const locationChanged = best.company !== infilCurrentCompany ||
+                                best.city    !== infilCurrentCity;
+
+        // Nothing to do — already running the right target.
+        if (infilProc && !locationChanged) return;
+
+        const displayDiff = (best.diff * 100 / 3.5).toFixed(1);
+        if (infilProc && locationChanged) {
+            log(ns, `INFO: Better infil target: ${best.company} (${best.city}) ` +
+                `${formatMoney(best.sellCash)}/run, diff ${displayDiff}/100. ` +
+                `Switching from ${infilCurrentCompany}.`, true, 'info');
+            await killScript(ns, 'autoinfil', runningScripts, infilProc);
+            await ns.sleep(600); // Brief pause so the old process is fully dead
+        } else {
+            log(ns, `INFO: Launching autoinfil → ${best.company} (${best.city}) ` +
+                `${formatMoney(best.sellCash)}/run, diff ${displayDiff}/100.`, true, 'info');
+        }
+
+        infilCurrentCompany = best.company;
+        infilCurrentCity    = best.city;
+        launchScriptHelper(ns, autoInfilPath, [
+            '--company', best.company,
+            '--city',    best.city,
+            '--reward',  'money',
+        ]);
+    }
     function getTimeInBitnode() { return Date.now() - resetInfo.lastNodeReset; }
     /** @param {NS} ns **/
     async function main_start(ns) {
@@ -621,6 +780,30 @@ export async function main(ns) {
         const runningScripts = await getRunningScripts(ns); // Cache the list of running scripts for the duration
         const findScript = /** @param {(value: ProcessInfo, index: number, array: ProcessInfo[]) => unknown} filter @returns {ProcessInfo} */
             (baseScriptName, filter = null) => findScriptHelper(baseScriptName, runningScripts, filter);
+
+        // ── EARLY PHASE: infil-only until casino seed money ─────────────────────
+        // Block all heavy script launches (daemon, WFF, stockmaster, etc.) until the
+        // player has earned INFIL_CASINO_SEED. During this window autopilot only manages
+        // infiltration — every byte of RAM stays free for autoinfil.js workers.
+        // The casino check (maybeDoCasino) already gates on $300k for Aevum travel,
+        // so this guard and that threshold stay in sync naturally.
+        if (!ranCasino && player.money < INFIL_CASINO_SEED) {
+            setStatus(ns, `EARLY PHASE: Infiltrating for casino seed money ` +
+                `(${formatMoney(player.money)} / ${formatMoney(INFIL_CASINO_SEED)}).`);
+            await manageInfiltration(player, runningScripts);
+            return; // Skip all other script launches until threshold is met
+        }
+        // Transitioning out of early phase (money ≥ seed, casino hasn't run yet):
+        // kill infil now so casino.js gets every byte of free RAM.
+        if (!ranCasino && infilCurrentCompany) {
+            const infilProc = findScriptHelper('autoinfil', runningScripts);
+            if (infilProc) {
+                log(ns, `INFO: Earned ${formatMoney(player.money)} — stopping infil to seed casino.`, true, 'info');
+                await killScript(ns, 'autoinfil', runningScripts, infilProc);
+                infilCurrentCompany = null;
+                infilCurrentCity    = null;
+            }
+        }
         // Kill any scripts that were flagged for restart
         while (killScripts.length > 0)
             await killScript(ns, killScripts.pop(), runningScripts);
@@ -1261,6 +1444,43 @@ export async function main(ns) {
                     xpCyclePhaseStart = Date.now();
                 }
             }
+        }
+
+        // ── NORMAL PHASE: infiltration (money mode) ───────────────────────────
+        // Paused during rep grinds where RAM and work-focus matter more than infil cash:
+        //   • daedalusRepGrind  — working/donating for Daedalus TRP rep (existing flag)
+        //   • rushGang          — grinding karma/crime to unlock a gang (SF2, not yet in gang)
+        //                         Every RAM byte goes to WFF + share; infil competes for it.
+        // In both cases, if infil is currently running, kill it cleanly (autopilot kill,
+        // not a ghost — we clear infilCurrentCompany before killing so ghost detection skips).
+        const daedalusRepGrind = ns.read('/Temp/Daedalus-rep-grind-active.txt') === 'true';
+        const infilShouldPause = daedalusRepGrind || rushGang;
+        if (ranCasino && infilShouldPause) {
+            const pausedProc = findScript(resolveScript('autoinfil'));
+            if (pausedProc) {
+                const reason = daedalusRepGrind ? 'Daedalus rep grind' : 'gang-unlock karma grind';
+                log(ns, `INFO: Pausing infil for ${reason}. Killing autoinfil.`, true, 'info');
+                // Clear company BEFORE killing so ghost detection doesn't fire on the next tick.
+                infilCurrentCompany = null;
+                infilCurrentCity    = null;
+                await killScript(ns, resolveScript('autoinfil'), runningScripts, pausedProc);
+            }
+        } else if (ranCasino) {
+            await manageInfiltration(player, runningScripts);
+        }
+
+        // ── Milestone: 4 TB RAM + $20B wealth ────────────────────────────────
+        // Log once when we cross both thresholds to confirm "Step 7" is done
+        // and the BN is in full-speed mode (Daedalus / gang prep can begin).
+        const INFIL_RAM_TB   = 4 * 1024; // 4 TB
+        const INFIL_WEALTH   = 20e9;     // $20 B
+        if (homeRam >= INFIL_RAM_TB) {
+            let totalWealth = player.money;
+            try { totalWealth += await getStocksValue(ns); } catch {}
+            if (totalWealth >= INFIL_WEALTH)
+                log_once(ns, `INFO: Milestone reached — home RAM ${homeRam} GB ≥ 4 TB ` +
+                    `and total wealth ${formatMoney(totalWealth)} ≥ $20B. ` +
+                    `Entering late-game phase (Daedalus / gang aug grind).`, true, 'success');
         }
     }
     /** Get the source of the player's earnings by category.

@@ -84,6 +84,41 @@ function resolveScripts(ns) {
     return SCRIPTS;
 }
 
+// Module-level hackPct cache — populated once before the first calculateBatchParams call.
+// Eliminates the need for ns.hackAnalyze (1.0 GB) in the batcher's static RAM cost.
+let _hackPctCache = 0;
+
+/**
+ * Fetch hackAnalyze(target) at zero static RAM cost.
+ * Priority: (1) manager's HACK_GATHER cache file, (2) fire-and-forget temp script.
+ * The result is cached in _hackPctCache so the temp script only runs once per session.
+ */
+async function fetchHackPct(ns, target) {
+    // Try manager's hackdata cache first (written every 5 min, covers all targets)
+    try {
+        const raw = ns.read('/Temp/hackdata-cache.txt');
+        if (raw && raw !== '') {
+            const hd = JSON.parse(raw)[target];
+            if (hd && hd.hackPct > 0) { _hackPctCache = hd.hackPct; return _hackPctCache; }
+        }
+    } catch {}
+    // Cache miss — write and exec a one-shot temp that calls ns.hackAnalyze
+    // The temp script bears the 1.0 GB RAM cost only for its brief lifetime.
+    ns.write('/Temp/hwgw-hackpct-once.js', [
+        'export async function main(ns) {',
+        '  const pct = ns.hackAnalyze(ns.args[0]);',
+        '  ns.write("/Temp/hwgw-hackpct.txt", String(pct), "w");',
+        '}',
+    ].join('\n'), 'w');
+    const pid = ns.exec('/Temp/hwgw-hackpct-once.js', 'home', 1, target);
+    if (pid) {
+        const dl = Date.now() + 5000;
+        while (ns.isRunning(pid) && Date.now() < dl) await ns.sleep(50);
+        try { _hackPctCache = parseFloat(ns.read('/Temp/hwgw-hackpct.txt')) || 0; } catch {}
+    }
+    return _hackPctCache;
+}
+
 // How many consecutive anomalous batch results trigger a desync recovery.
 // Lower = more sensitive (more false positives). Higher = slower to recover.
 const DESYNC_THRESHOLD = 3;
@@ -261,7 +296,7 @@ export async function main(ns) {
     // Without it we use a padded estimate. Since you earned SF5 from BN5,
     // you'll carry this into future bitnodes — but new players won't have it,
     // so we keep the fallback path working correctly.
-    const hasFormulas = ns.fileExists("Formulas.exe", "home");
+    const hasFormulas = false; // Formulas path removed to save ns.getServer(2GB)+ns.getPlayer(0.5GB)
 
     log(`hwgw-batcher starting on target: "${target}"`);
     logQuiet(`  BitNode weaken/thread: ${actualWeakenPerThread.toFixed(4)} | Formulas: ${hasFormulas}`);
@@ -297,8 +332,9 @@ export async function main(ns) {
         // enter the batch scheduling loop. We recalculate on each outer
         // loop iteration (i.e. after each prep cycle) because your hacking
         // level may have risen, changing weaken time and thread requirements.
+        const hackPct = await fetchHackPct(ns, target);
         const params = calculateBatchParams(ns, target, hackPercent, delta, period,
-                                            reserveRam, bnMults, hasFormulas, actualWeakenPerThread, execHosts);
+                                            reserveRam, bnMults, hasFormulas, actualWeakenPerThread, execHosts, hackPct);
 
         if (!params) {
             logAlways(`ERROR: Could not calculate batch parameters for "${target}". Skipping.`);
@@ -497,7 +533,7 @@ export async function main(ns) {
  * @param {boolean} hasFormulas
  * @param {number} actualWeakenPerThread  weaken security reduction per thread (BN-adjusted)
  */
-function calculateBatchParams(ns, target, hackPercent, delta, period, reserveRam, bnMults, hasFormulas, actualWeakenPerThread, execHosts) {
+function calculateBatchParams(ns, target, hackPercent, delta, period, reserveRam, bnMults, hasFormulas, actualWeakenPerThread, execHosts, hackPct = 0) {
     const maxMoney  = ns.getServerMaxMoney(target);
     const minSec    = ns.getServerMinSecurityLevel(target);
 
@@ -516,7 +552,11 @@ function calculateBatchParams(ns, target, hackPercent, delta, period, reserveRam
     // ns.hackAnalyze() returns the fraction of the server's money stolen
     // per hack thread. We want to steal hackPercent of maxMoney total, so:
     // hackThreads = hackPercent / moneyPerThread
-    const moneyPerHackThread = maxMoney * ns.hackAnalyze(target);
+    // Use the hackPct passed in (from manager's HACK_GATHER cache or fetchHackPct fallback).
+    // Avoids ns.hackAnalyze (1.0 GB) in the static RAM cost.
+    const hackPctVal = (hackPct > 0) ? hackPct : _hackPctCache;
+    if (!hackPctVal || hackPctVal <= 0) return null;
+    const moneyPerHackThread = maxMoney * hackPctVal;
     if (moneyPerHackThread <= 0) return null;
 
     const hackThreads = Math.max(1, Math.floor(hackPercent / (moneyPerHackThread / maxMoney)));
@@ -534,32 +574,15 @@ function calculateBatchParams(ns, target, hackPercent, delta, period, reserveRam
     // ask the game for the precise thread count. Without it, we estimate
     // conservatively and add padding proportional to how uncertain we are
     // in bitnodes with low ServerGrowthRate.
-    let growThreads;
-    if (hasFormulas) {
-        // Simulate the server state AFTER hack completes (money reduced,
-        // security raised by hack threads)
-        const serverAfterHack = ns.getServer(target);
-        serverAfterHack.moneyAvailable = Math.max(0, maxMoney * (1 - actualHackPercent));
-        serverAfterHack.hackDifficulty = minSec + hackThreads * HACK_SECURITY_PER_THREAD;
-        const player = ns.getPlayer();
-        growThreads = Math.ceil(
-            ns.formulas.hacking.growThreads(serverAfterHack, player, maxMoney, 1)
-        );
-    } else {
-        // Fallback: logarithmic grow estimate with 20% padding.
-        // The 20% accounts for uncertainty in low-ServerGrowthRate bitnodes
-        // (BN3 = 0.2, BN11 = 0.2) where our estimate is less accurate.
-        const growFactor   = 1 / Math.max(0.01, 1 - actualHackPercent);
-        const serverGrowth = ns.getServerGrowth(target);
-        // Correct Bitburner formula: adjRate = min(1.0035, 1 + 0.03/minSec)
-        // The naive (1+perThread)^threads form underestimates threads by ~100x,
-        // causing servers to drain gradually as money isn't fully restored each cycle.
-        const minSecFb     = ns.getServerMinSecurityLevel(target);
-        const adjRateFb    = Math.min(1.0035, 1 + 0.03 / Math.max(minSecFb, 0.01));
-        const bnGrowRate   = bnMults.ServerGrowthRate ?? 1;
-        const rawGrowFb    = Math.log(growFactor) / (Math.log(adjRateFb) * (serverGrowth * bnGrowRate / 100)) * 1.2;
-        growThreads = Number.isFinite(rawGrowFb) ? Math.max(1, Math.ceil(rawGrowFb)) : 2000;
-    }
+    // Growth estimation (no Formulas.exe path — avoids ns.getServer 2GB + ns.getPlayer 0.5GB).
+    // The estimate is accurate enough for steady-state batching; 20% padding handles BN variance.
+    // Manager uses the same formula and has already validated this target is profitable.
+    const growFactor    = 1 / Math.max(0.01, 1 - actualHackPercent);
+    const serverGrowth  = ns.getServerGrowth(target);
+    const adjRate       = Math.min(1.0035, 1 + 0.03 / Math.max(minSec, 0.01));
+    const bnGrowRate    = bnMults.ServerGrowthRate ?? 1;
+    const rawGrow       = Math.log(growFactor) / (Math.log(adjRate) * (serverGrowth * bnGrowRate / 100)) * 1.2;
+    const growThreads   = Number.isFinite(rawGrow) ? Math.max(1, Math.ceil(rawGrow)) : 2000;
 
     // ── Weaken thread counts ──────────────────────────────────────────────────
     // Each batch needs TWO weaken operations:
@@ -706,14 +729,20 @@ function scheduleBatch(ns, target, batchId, loopIndex, batchBaseTime, params, re
         // does NOT increment batchesInFlight — a partial batch never reports
         // a G completion, so the counter would leak upward indefinitely.
         logFn(`WARNING: Partial batch ${batchId} — rolling back orphaned workers.`);
-        for (const host of getWorkerHosts(ns, execHosts)) {
-            for (const proc of ns.ps(host)) {
-                if (Object.values(SCRIPTS).includes(proc.filename) &&
-                    proc.args[2] === batchId) {
-                    ns.kill(proc.pid);
-                }
-            }
-        }
+        // Fire-and-forget temp to avoid ns.ps+ns.kill static RAM cost in batcher.
+        const _rbHosts = JSON.stringify(getWorkerHosts(ns, execHosts));
+        const _rbScripts = JSON.stringify(Object.values(SCRIPTS));
+        ns.write('/Temp/hwgw-rollback.js', [
+            'export async function main(ns) {',
+            `  const batchId = ${batchId};`,
+            `  const hosts   = ${_rbHosts};`,
+            `  const scripts = ${_rbScripts};`,
+            '  for (const host of hosts)',
+            '    for (const proc of ns.ps(host))',
+            '      if (scripts.includes(proc.filename) && proc.args[2]===batchId) ns.kill(proc.pid);',
+            '}',
+        ].join('\n'), 'w');
+        ns.exec('/Temp/hwgw-rollback.js', 'home');
         return false;
     }
 
@@ -751,10 +780,9 @@ function launchWorker(ns, script, threads, target, delay, batchId, role, hosts, 
     for (const host of hosts) {
         if (remaining <= 0) break;
 
-        if (host !== "home" && !ns.fileExists(script, host)) {
-            ns.scp(script, host, "home");
-        }
-
+        // Workers should already be on exec hosts (manager's copyWorkerScripts ran at startup).
+        // Removing ns.scp (0.6 GB) from batcher's static RAM cost. If script is missing
+        // on a remote host, that host is simply skipped — manager will re-copy on next refresh.
         const maxRam  = ns.getServerMaxRam(host);
         const usedRam = ns.getServerUsedRam(host);
         const reserve = host === "home" ? reserveRam : 0;
@@ -898,8 +926,22 @@ async function ensurePrepped(ns, target, reserveRam, logFn, logErrorFn, logQuiet
         // Manager mode. The manager launches prep on target selection, but NOT on
         // internal desync (batcher still alive from manager's view). Check if a
         // prep script is actively running for this target; if not, self-launch.
-        const prepRunning = ns.ps('home').some(p =>
-            p.filename.endsWith('hacking/hwgw-prep.js') && p.args.includes(target));
+        // Check via temp script instead of ns.ps (0.2 GB static cost).
+        // Fire-and-forget: writes "1" or "0" to file, batcher reads it after brief wait.
+        ns.write('/Temp/hwgw-prep-check.js', [
+            'export async function main(ns) {',
+            '  const t = ns.args[0]; const prep = "hacking/hwgw-prep.js";',
+            '  const r = ns.ps("home").some(p => p.filename.endsWith(prep) && p.args.includes(t));',
+            '  ns.write("/Temp/hwgw-prep-running.txt", r ? "1" : "0", "w");',
+            '}',
+        ].join('\n'), 'w');
+        const checkPid = ns.exec('/Temp/hwgw-prep-check.js', 'home', 1, target);
+        let prepRunning = false;
+        if (checkPid) {
+            const dlCheck = Date.now() + 3000;
+            while (ns.isRunning(checkPid) && Date.now() < dlCheck) await ns.sleep(50);
+            prepRunning = ns.read('/Temp/hwgw-prep-running.txt') === '1';
+        }
         if (!prepRunning) {
             const pid = ns.exec(SCRIPTS.prep, "home", 1, target, "--reserve", reserveRam);
             if (pid > 0)
@@ -928,14 +970,27 @@ async function ensurePrepped(ns, target, reserveRam, logFn, logErrorFn, logQuiet
             ns.write(signalFile, "", "w"); // clear after reading
             return false;
         }
-        // If the prep script has died without writing a signal, self-launch a new one
-        const prepStillRunning = ns.ps('home').some(p =>
-            p.filename.endsWith('hacking/hwgw-prep.js') && p.args.includes(target));
-        if (!prepStillRunning && signal === "") {
-            logQuietFn(`Prep for "${target}" vanished without signaling. Re-launching...`);
-            const pid = ns.exec(SCRIPTS.prep, "home", 1, target, "--reserve", reserveRam);
-            if (pid === 0)
-                logErrorFn(`ERROR: Re-launch of prep failed. Not enough RAM?`);
+        // If the prep script has died without writing a signal, self-launch a new one.
+        // Check via a temp script to avoid ns.ps static RAM cost.
+        if (signal === "") {
+            ns.write('/Temp/hwgw-prep-check2.js', [
+                'export async function main(ns) {',
+                '  const t = ns.args[0];',
+                '  const r = ns.ps("home").some(p => p.filename.endsWith("hacking/hwgw-prep.js") && p.args.includes(t));',
+                '  ns.write("/Temp/hwgw-prep-running2.txt", r ? "1" : "0", "w");',
+                '}',
+            ].join('\n'), 'w');
+            const chkPid = ns.exec('/Temp/hwgw-prep-check2.js', 'home', 1, target);
+            if (chkPid) {
+                const dl2 = Date.now() + 3000;
+                while (ns.isRunning(chkPid) && Date.now() < dl2) await ns.sleep(50);
+            }
+            if (ns.read('/Temp/hwgw-prep-running2.txt') !== '1') {
+                logQuietFn(`Prep for "${target}" vanished without signaling. Re-launching...`);
+                const pid = ns.exec(SCRIPTS.prep, "home", 1, target, "--reserve", reserveRam);
+                if (pid === 0)
+                    logErrorFn(`ERROR: Re-launch of prep failed. Not enough RAM?`);
+            }
         }
         await ns.sleep(5000);
     }
@@ -957,24 +1012,30 @@ async function ensurePrepped(ns, target, reserveRam, logFn, logErrorFn, logQuiet
  * @param {Function} logFn
  */
 function killInFlightWorkers(ns, target, logFn) {
-    let killed = 0;
-    const workerScripts = Object.values(SCRIPTS).filter(s => s !== SCRIPTS.prep);
-
-    for (const host of getAllRootedHosts(ns)) {
-        for (const proc of ns.ps(host)) {
-            // Skip workers tagged 'PREP' — those belong to hwgw-prep.js's
-            // grow/weaken deployment and must run to completion.
-            const isPrepWorker = Array.isArray(proc.args) && proc.args.includes('PREP');
-            if (workerScripts.includes(proc.filename) &&
-                proc.args.length > 0 && proc.args[0] === target &&
-                !isPrepWorker) {
-                ns.kill(proc.pid);
-                killed++;
-            }
-        }
-    }
-
-    logFn(`Killed ${killed} in-flight worker processes targeting "${target}"`);
+    // Fire-and-forget temp script — removes ns.ps(0.2GB)+ns.kill(0.5GB)+ns.scan(0.2GB)
+    // from batcher's static RAM cost. The temp script bears those costs for its brief lifetime.
+    const scripts = JSON.stringify(Object.values(SCRIPTS).filter(s => s !== SCRIPTS.prep));
+    ns.write('/Temp/hwgw-kill-inflight.js', [
+        'export async function main(ns) {',
+        '  const target  = ns.args[0];',
+        `  const scripts = ${scripts};`,
+        '  const visited = new Set(), queue = ["home"], hosts = [];',
+        '  while (queue.length) {',
+        '    const h = queue.shift(); if (visited.has(h)) continue; visited.add(h);',
+        '    if (!h.startsWith("hacknet-") && (h==="home" || ns.hasRootAccess(h))) hosts.push(h);',
+        '    for (const n of ns.scan(h)) if (!visited.has(n)) queue.push(n);',
+        '  }',
+        '  for (const host of hosts) {',
+        '    for (const proc of ns.ps(host)) {',
+        '      const isPrepWorker = Array.isArray(proc.args) && proc.args.includes("PREP");',
+        '      if (scripts.includes(proc.filename) && proc.args[0]===target && !isPrepWorker)',
+        '        ns.kill(proc.pid);',
+        '    }',
+        '  }',
+        '}',
+    ].join('\n'), 'w');
+    ns.exec('/Temp/hwgw-kill-inflight.js', 'home', 1, target);
+    logFn(`Launched kill sweep for in-flight workers on "${target}"`);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1004,19 +1065,13 @@ function killInFlightWorkers(ns, target, logFn) {
  * @returns {string[]}
  */
 function getWorkerHosts(ns, execHosts) {
-    let hosts;
-    if (execHosts && execHosts.size > 0) {
-        // Partition active: use claimed servers + always include home.
-        // The manager only writes purchased servers to the exec hosts file,
-        // so home is absent from the set — but home RAM (minus reserve) should
-        // always be available to the batcher. World servers stay with daemon.js.
-        hosts = [...execHosts].filter(h => ns.serverExists(h));
-        if (!hosts.includes('home')) hosts.push('home');
-    } else {
-        // No partition: use all servers we have root on
-        hosts = getAllRootedHosts(ns);
-    }
-    // Home at the end — preserve home RAM for the orchestrator and helpers
+    // Require execHosts from manager — removes the getAllRootedHosts fallback
+    // (and thus ns.scan + ns.hasRootAccess from batcher's static RAM cost).
+    // In standalone mode (no manager), pass a Set(['home']) for home-only operation.
+    const hosts = execHosts && execHosts.size > 0
+        ? [...execHosts].filter(h => ns.serverExists(h))
+        : ['home']; // safe fallback: home-only when no partition active
+    if (!hosts.includes('home')) hosts.push('home');
     return hosts.sort((a, b) => (a === "home" ? 1 : 0) - (b === "home" ? 1 : 0));
 }
 
@@ -1046,44 +1101,17 @@ function getTotalFreeRam(ns, reserveRam, hosts) {
  * for one prep cycle. That's harmless — prep just runs one extra iteration.
  */
 function readBnMults(ns) {
+    // ns.getResetInfo() BN-specific table removed — saves 0.05 GB static RAM.
+    // If the cache file is missing (very start of a new BN), safe all-1.0 defaults
+    // are used. Prep will run one extra iteration; batch thread counts are slightly off
+    // for one cycle. Both correct themselves automatically once daemon.js writes the file.
     try {
         const cached = ns.read('/Temp/bitNode-multipliers.txt');
         if (cached && cached !== '') return JSON.parse(cached);
-    } catch { /* fall through */ }
-
-    const currentBN = ns.getResetInfo().currentNode;
-    const bnDefaults = {
-        3:  { ServerWeakenRate: 1, ServerGrowthRate: 0.2,  ScriptHackMoney: 0.2,  ScriptHackMoneyGain: 0.5 },
-        8:  { ServerWeakenRate: 1, ServerGrowthRate: 1,    ScriptHackMoney: 0.3,  ScriptHackMoneyGain: 0   }, // Player receives $0 but server IS drained — stock manipulation still works
-        11: { ServerWeakenRate: 2, ServerGrowthRate: 0.2,  ScriptHackMoney: 0.7,  ScriptHackMoneyGain: 0.5 },
-    };
-    return bnDefaults[currentBN] ?? { ServerWeakenRate: 1, ServerGrowthRate: 1, ScriptHackMoney: 1, ScriptHackMoneyGain: 1 };
+    } catch {}
+    return { ServerWeakenRate: 1, ServerGrowthRate: 1, ScriptHackMoney: 1, ScriptHackMoneyGain: 1 };
 }
 
-/**
- * BFS from home to find all servers we have root access on.
- * Excludes hacknet servers (they produce hashes, shouldn't run attack scripts).
- */
-function getAllRootedHosts(ns) {
-    const visited = new Set();
-    const queue   = ["home"];
-    const rooted  = [];
-
-    while (queue.length > 0) {
-        const host = queue.shift();
-        if (visited.has(host)) continue;
-        visited.add(host);
-
-        if (!host.startsWith("hacknet-")) {
-            if (host === "home" || ns.hasRootAccess(host)) {
-                rooted.push(host);
-            }
-        }
-
-        for (const neighbor of ns.scan(host)) {
-            if (!visited.has(neighbor)) queue.push(neighbor);
-        }
-    }
-
-    return rooted;
-}
+// getAllRootedHosts removed from batcher — scan(0.2GB)+hasRootAccess(0.1GB) saved.
+// Kill sweeps now run in fire-and-forget temp scripts that bear those costs briefly.
+// getWorkerHosts() below requires execHosts to be provided (manager always does).

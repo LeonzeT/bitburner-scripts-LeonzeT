@@ -24,6 +24,11 @@ function resolveScript(ns, key) {
  *   Port 17 ← dashboard.js (React button presses)
  *   Port 18 → active on-demand tab script (forwarded commands)
  *
+ * Shortcuts tab commands (upgradeRam, upgradeCores, buyProgram, purchaseTor,
+ * purchaseWse/Tix/4S, installAugs) are handled locally via a temp singularity
+ * script — dashboard-shortcuts.js is gather-only and never reads port 18.
+ * launchManager, launchCrawler, launchBackdoor are also local (exec only).
+ *
  * @param {NS} ns
  */
 
@@ -33,28 +38,85 @@ const DATA_FILE       = '/Temp/dashboard-data.txt';
 const ACTIVE_TAB_FILE = '/Temp/dashboard-active-tab.txt';
 const GATHER_SCRIPT   = '/Temp/dash-data-gather.js';
 const KILL_SCRIPT     = '/Temp/dash-data-kill.js';
+const ACTION_SCRIPT   = '/Temp/dash-data-action.js';
 
-// Commands that require expensive ns.* calls — forwarded to the active tab script
-// which either handles them directly or delegates to temp scripts.
+// Commands forwarded to the active on-demand tab script via port 18.
+// ONLY include commands whose tab companion script actually reads port 18:
+//   factions → workForFaction, donateToFaction, buyAug
+//   servers  → upgradeServer, deleteServer, purchaseServer
+//   stocks   → buyStock, sellStock
+//   gang     → ascendMember
+//   sleeves  → setSleeveTask, clearSleeveOverride, clearAllSleeveOverrides
+//
+// Shortcuts tab commands and launch/kill commands are handled locally below.
 const FORWARD_CMDS = new Set([
-    'upgradeRam','upgradeCores','installAugs','buyAug','buyProgram',
-    'workForFaction','donateToFaction','purchaseTor',
+    'buyAug',
+    'workForFaction','donateToFaction',
     'upgradeServer','deleteServer','purchaseServer',
-    'launchCrawler','launchManager','launchBackdoor',
     'buyStock','sellStock',
     'ascendMember',
-    'purchaseWse','purchaseTix','purchase4SData','purchase4SApi',
     'setSleeveTask','clearSleeveOverride','clearAllSleeveOverrides',
+]);
+
+// Singularity-based commands from the Shortcuts tab.
+// Handled by a temp script so this file never pays singularity RAM.
+const SINGULARITY_CMDS = new Set([
+    'upgradeRam','upgradeCores','installAugs','buyProgram','purchaseTor',
+    'purchaseWse','purchaseTix','purchase4SData','purchase4SApi',
 ]);
 
 // Commands handled locally — only needs ns.write (0 GB) and ns.exec (already paid)
 const LOCAL_CMDS = {
-    setActiveTab:   (ns, cmd) => ns.write(ACTIVE_TAB_FILE, cmd.tab ?? '', 'w'),
-    setForceTarget: (ns, cmd) => ns.write('/Temp/hwgw-force-target.txt', cmd.target ?? '', 'w'),
+    setActiveTab:     (ns, cmd) => ns.write(ACTIVE_TAB_FILE, cmd.tab ?? '', 'w'),
+    setForceTarget:   (ns, cmd) => ns.write('/Temp/hwgw-force-target.txt', cmd.target ?? '', 'w'),
     // Kill by PID — delegated to temp script so dashboard-data.js avoids ns.ps (0.2 GB) + ns.kill (0.5 GB)
-    killManager:    (ns) => killByName(ns, 'hacking/hwgw-manager.js'),
-    killCrawler:        (ns) => killByName(ns, 'darknet/darknet-crawler.js'),
-    clearWffOverride:   (ns) => ns.write('/Temp/wff-override.txt', '', 'w'),
+    killManager:      (ns) => killByName(ns, 'hacking/hwgw-manager.js'),
+    killCrawler:      (ns) => killByName(ns, 'darknet/darknet-crawler.js'),
+    clearWffOverride: (ns) => ns.write('/Temp/wff-override.txt', '', 'w'),
+    // Launch commands — exec only, no singularity RAM needed
+    launchManager:    (ns, cmd) => {
+        const s = resolveScript(ns, 'hacking/hwgw-manager.js');
+        if (!ns.isRunning(s, 'home')) ns.exec(s, 'home', 1, ...(cmd.args ?? []));
+    },
+    launchCrawler:    (ns, cmd) => {
+        const s = resolveScript(ns, 'darknet/darknet-crawler.js');
+        if (!ns.isRunning(s, 'home')) ns.exec(s, 'home', 1, ...(cmd.args ?? []));
+    },
+    launchBackdoor:   (ns) => {
+        const s = resolveScript(ns, 'Tasks/backdoor-all-servers.js');
+        if (!ns.isRunning(s, 'home')) ns.exec(s, 'home');
+    },
+
+    // ── Infiltration ─────────────────────────────────────────────────────────
+    // autoinfil.js uses ns.flags() — args must be named flags, not positional.
+    // It stays alive as a nav-monitor loop; infiltrator.js runs its automation
+    // via window.setInterval independently. killInfil must kill both scripts.
+    launchInfil: (ns, cmd) => {
+        const s = resolveScript(ns, 'autoinfil');
+        const args = [
+            '--company', cmd.company,
+            '--city',    cmd.city,
+            '--reward',  cmd.reward ?? 'money',
+        ];
+        if (cmd.faction) args.push('--faction', cmd.faction);
+        if (cmd.port)    args.push('--port',    cmd.port);
+        ns.exec(s, 'home', 1, ...args);
+    },
+    killInfil: (ns) => {
+        // Kills both autoinfil.js (nav monitor) and infiltrator.js (setInterval loop).
+        // Written fresh each time so it doesn't race with killByName writing KILL_SCRIPT.
+        ns.write(KILL_SCRIPT, [
+            'export async function main(ns) {',
+            '  for (const p of ns.ps("home")) {',
+            '    if (p.filename.endsWith("autoinfil.js") ||',
+            '        p.filename.endsWith("infiltrator.js")) {',
+            '      ns.kill(p.pid);',
+            '    }',
+            '  }',
+            '}',
+        ].join('\n'), 'w');
+        ns.exec(KILL_SCRIPT, 'home');
+    },
 };
 
 function killByName(ns, suffix) {
@@ -67,23 +129,72 @@ function killByName(ns, suffix) {
     ns.exec(KILL_SCRIPT, 'home');
 }
 
+// Handles Shortcuts tab singularity actions via a temp script.
+// Singularity RAM (which scales with SF4 level) is only held for <1s.
+function runSingularityAction(ns, cmd) {
+    let line;
+    switch (cmd.type) {
+        case 'upgradeRam':     line = `ns.singularity.upgradeHomeRam();`;                                   break;
+        case 'upgradeCores':   line = `ns.singularity.upgradeHomeCores();`;                                 break;
+        case 'installAugs':    line = `ns.singularity.installAugmentations(${
+                                        // ── Replace this with your actual post-install restart script ──
+                                        JSON.stringify(resolveScript(ns, 'startup.js'))
+                                      });`;                                                                 break;
+        case 'buyProgram':     line = `ns.singularity.purchaseProgram(${JSON.stringify(cmd.program)});`;    break;
+        case 'purchaseTor':    line = `ns.singularity.purchaseTor();`;                                      break;
+        case 'purchaseWse':    line = `ns.stock.purchaseWseAccount();`;                                     break;
+        case 'purchaseTix':    line = `ns.stock.purchaseTixApi();`;                                         break;
+        case 'purchase4SData': line = `ns.stock.purchase4SMarketData();`;                                   break;
+        case 'purchase4SApi':  line = `ns.stock.purchase4SMarketDataTixApi();`;                             break;
+        default: ns.print('WARN: unknown singularity action: ' + cmd.type); return;
+    }
+    ns.write(ACTION_SCRIPT, `export async function main(ns) { ${line} }`, 'w');
+    ns.exec(ACTION_SCRIPT, 'home');
+}
+
 function writeGatherScript(ns) {
     // This temp script contains ALL the expensive ns.* calls.
-    // It runs for <1s, writes results to DATA_FILE, then exits and frees its ~9 GB.
+    // It runs for <1s, writes results to DATA_FILE, then exits and frees its RAM.
+    //
+    // RAM savings vs original:
+    //   Removed ns.sleeve.getNumSleeves()  (-4 GB) → derived from sleeves file
+    //   Removed ns.gang.inGang()           (-4 GB) → derived from gangs file
+    //   Removed ns.heart.break()           (-2 GB) → no longer needed
+    //   Removed 5 ns.stock.* calls        (-12.5 GB) → provided by shortcuts/stocks gather
+    //   Total temp script savings: ~22.5 GB
     ns.write(GATHER_SCRIPT, `export async function main(ns) {
   const safe = f => { try { return f(); } catch { return undefined; } };
   const d = {};
 
   d.player = safe(() => ns.getPlayer());
-  d.sleevesUnlocked = safe(() => {
-    try { ns.sleeve.getNumSleeves(); return true; } catch { return false; }
-  }) ?? false;
+
+  // Derive sleeves-unlocked from the sleeves data file (0 GB — just ns.read).
+  // dashboard-sleeves.js writes this file when the Sleeves tab is active;
+  // if it's empty, sleeves haven't been confirmed unlocked yet this session.
+  d.sleevesUnlocked = (() => {
+    try {
+      const r = ns.read("/Temp/dashboard-sleeves.txt");
+      if (!r || r === "") return false;
+      const sd = JSON.parse(r);
+      return (sd.sleeves?.length ?? 0) > 0;
+    } catch { return false; }
+  })();
+
   d.corpExists = safe(() => {
     try { return ns.corporation.hasCorporation(); } catch { return false; }
   }) ?? false;
-  d.gangAvailable = safe(() => {
-    try { return ns.gang.inGang() || ns.heart.break() <= -54000; } catch { return false; }
-  }) ?? false;
+
+  // Derive gang-available from the gangs data file (0 GB — just ns.read).
+  // gangs.js writes inGang to this file when it's running. If the file is
+  // empty (gang tab not open), we default to false — the Gang tab itself
+  // will show the correct state once its companion script starts.
+  d.gangAvailable = (() => {
+    try {
+      const r = ns.read("/Temp/dashboard-gangs.txt");
+      if (!r || r === "") return false;
+      return JSON.parse(r).inGang ?? false;
+    } catch { return false; }
+  })();
 
   // Write player snapshot — other scripts read this for free
   if (d.player) try { ns.write("/Temp/dashboard-player.txt", JSON.stringify(d.player), "w"); } catch {}
@@ -156,19 +267,13 @@ function writeGatherScript(ns) {
   try { const r = ns.read("/Temp/hwgw-force-target.txt"); d.forceTarget = r.trim() || null; } catch {}
   try { const r = ns.read("/Temp/dnet-passwords.txt"); if (r && r !== "") d.dnet = JSON.parse(r); } catch {}
 
-  // Lightweight stock flags (0.05 GB each)
-  try {
-    d.hasWse    = safe(() => ns.stock.hasWseAccount())   ?? false;
-    d.hasTix    = safe(() => ns.stock.hasTixApiAccess()) ?? false;
-    d.has4SData = safe(() => ns.stock.has4SData())       ?? false;
-    d.has4SApi  = safe(() => ns.stock.has4SDataTixApi()) ?? false;
-    const sc = ns.stock.getConstants(), bn = d.bnMults ?? {};
-    d.stockCosts = {
-      wse: sc.WseAccountCost, tix: sc.TixApiCost,
-      s4d: sc.MarketData4SCost       * (bn.FourSigmaMarketDataCost    ?? 1),
-      s4a: sc.MarketDataTixApi4SCost * (bn.FourSigmaMarketDataApiCost ?? 1),
-    };
-  } catch { d.stockCosts = {}; }
+  // Stock flags (hasWse, hasTix, has4SData, has4SApi, stockCosts) are no longer
+  // fetched here. They cost ~12.5 GB (5 ns.stock.* calls × 2.5 GB each) in this
+  // temp script and were only used by the Shortcuts and Stocks tabs.
+  // dashboard-shortcuts.js gather provides them when on Shortcuts tab.
+  // dashboard-stocks.js gather provides them when on Stocks tab.
+  // The merged data object in dashboard.js combines all three files, so the
+  // flags will be present whenever the relevant tab is active.
 
   try { d.hasTor = ns.serverExists("darkweb"); } catch { d.hasTor = false; }
   d.darknetAvailable = d.hasTor;
@@ -231,6 +336,8 @@ export async function main(ns) {
                         ns.print('WARN: fwd port full: ' + cmd.type);
                 } else if (LOCAL_CMDS[cmd.type]) {
                     LOCAL_CMDS[cmd.type](ns, cmd);
+                } else if (SINGULARITY_CMDS.has(cmd.type)) {
+                    runSingularityAction(ns, cmd);
                 } else {
                     ns.print('Unknown cmd: ' + cmd.type);
                 }

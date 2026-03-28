@@ -1,1 +1,1 @@
-{"type":"COMPANY","cyclesWorked":899,"companyName":"Bachman & Associates"}
+{"type":"CRIME","cyclesWorked":2512,"crimeType":"Homicide"}

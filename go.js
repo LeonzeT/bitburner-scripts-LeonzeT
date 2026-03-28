@@ -84,8 +84,8 @@ export async function main(ns) {
     //const opponent = ["Slum Snakes", "Tetrads", "Daedalus", "Illuminati"]
     //const opponent2 = ["????????????"]
     // Original
-    const opponent = ["Slum Snakes", "Tetrads", "The Black Hand", "Daedalus", "Illuminati"];
-    const opponent2 = ["Slum Snakes", "Tetrads","The Black Hand", "Daedalus", "Illuminati", "????????????"];
+    const opponent = ["Slum Snakes", "Netburners", "Tetrads", "The Black Hand", "Daedalus", "Illuminati"];
+    const opponent2 = ["Slum Snakes", "Netburners", "Tetrads","The Black Hand", "Daedalus", "Illuminati", "????????????"];
 
     await start();
 

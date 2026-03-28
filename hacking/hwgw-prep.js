@@ -107,6 +107,9 @@ export async function main(ns) {
     // We intentionally do NOT use the per-target slice file here — prep benefits
     // from using all available RAM to complete as fast as possible.
     function getWorkerHosts() {
+        // BFS fallback removed — saves ns.scan(0.2GB) + ns.hasRootAccess(0.1GB).
+        // Manager writes /Temp/hwgw-exec-hosts.txt before launching prep.
+        // Standalone fallback: home-only (safe, just slower prep).
         try {
             const raw = ns.read('/Temp/hwgw-exec-hosts.txt');
             if (raw && raw !== '') {
@@ -117,18 +120,7 @@ export async function main(ns) {
                 }
             }
         } catch {}
-        // Standalone / fallback: all rooted servers
-        const all = [];
-        const visited = new Set();
-        const queue = ['home'];
-        while (queue.length) {
-            const h = queue.shift();
-            if (visited.has(h)) continue;
-            visited.add(h);
-            if (ns.hasRootAccess(h) && !h.startsWith('hacknet-')) all.push(h);
-            for (const n of ns.scan(h)) if (!visited.has(n)) queue.push(n);
-        }
-        return all.sort((a, b) => (a === 'home' ? 1 : 0) - (b === 'home' ? 1 : 0));
+        return ['home']; // standalone fallback
     }
 
     function getTotalFreeRam(hosts) {
@@ -138,31 +130,35 @@ export async function main(ns) {
         }, 0);
     }
 
-    // ── Adaptive RAM fraction ──────────────────────────────────────────────
-    // If batcher workers (non-PREP) are currently running on any exec host,
-    // we share nicely and only consume half the free RAM per wave.
-    // If we're the only thing running (fresh BN, first target), take up to
-    // 90% so prep completes in as few iterations as possible.
-    function getPrepRamFraction(hosts) {
-        const batcherWorkerRunning = hosts.some(h =>
-            ns.ps(h).some(p =>
-                (p.filename === WEAKEN || p.filename === GROW) &&
-                Array.isArray(p.args) && p.args[3] !== 'PREP'
-            )
-        );
-        return batcherWorkerRunning ? 0.50 : 0.90;
+    // getPrepRamFraction replaced with fixed constant — removes the last ns.ps call.
+    // 0.5 (50% of free RAM) is conservative and safe in all situations.
+    // The adaptive 90% path (fresh BN, no batchers) means slightly more prep iterations
+    // but is not correctness-critical. RAM saved: 0.2 GB (ps).
+    const PREP_RAM_FRACTION = 0.50;
+
+    // ── Copy workers to all exec hosts via fire-and-forget temp ─────────────
+    // Removes ns.scp (0.6 GB) from prep's static RAM cost.
+    function ensureScriptsCopied(hosts) {
+        const nonHome = hosts.filter(h => h !== 'home');
+        if (!nonHome.length) return;
+        const scripts = JSON.stringify([WEAKEN, GROW]);
+        const hostsJson = JSON.stringify(nonHome);
+        ns.write('/Temp/prep-scp.js', [
+            'export async function main(ns) {',
+            `  const scripts = ${scripts};`,
+            `  const hosts   = ${hostsJson};`,
+            '  for (const host of hosts)',
+            '    for (const script of scripts)',
+            '      if (ns.fileExists(script,"home") && !ns.fileExists(script,host))',
+            '        ns.scp(script, host, "home");',
+            '}',
+        ].join('\n'), 'w');
+        ns.exec('/Temp/prep-scp.js', 'home');
     }
 
-    // ── Copy workers to all exec hosts ─────────────────────────────────────
-    async function ensureScriptsCopied(hosts) {
-        for (const host of hosts) {
-            if (host === 'home') continue;
-            for (const script of [WEAKEN, GROW]) {
-                if (ns.fileExists(script, 'home') && !ns.fileExists(script, host))
-                    ns.scp(script, host, 'home');
-            }
-        }
-    }
+    // ── PID tracking for waitForPids (replaces ns.ps) ──────────────────────
+    // ns.ps (0.2 GB) removed; instead track launched PIDs and poll ns.isRunning.
+    const activePids = [];
 
     // ── Thread dispatch: spread threads across available hosts ─────────────
     // Workers are tagged args[3]='PREP' so they don't signal port 1.
@@ -179,29 +175,22 @@ export async function main(ns) {
             const toRun = Math.min(canRun, remaining);
             // args: [target, delay=0, batchId=-1, role='PREP']
             const pid = ns.exec(script, host, toRun, target, 0, -1, 'PREP');
-            if (pid > 0) remaining -= toRun;
+            if (pid > 0) { remaining -= toRun; activePids.push(pid); }
         }
         return totalThreads - remaining; // threads actually launched
     }
 
-    // ── Wait for all running prep workers on this target to finish ─────────
-    // Accepts the host list computed at the start of the current iteration so
-    // we don't re-run a BFS scan (or re-parse the exec-hosts file) every 500ms
-    // for the entire duration of a weaken or grow wave. The list doesn't change
-    // mid-wave, so computing it once is both correct and cheaper.
-    async function waitForWorkers(hosts) {
-        while (true) {
-            let anyRunning = false;
-            for (const h of hosts) {
-                if (anyRunning) break;
-                anyRunning = ns.ps(h).some(p =>
-                    (p.filename === WEAKEN || p.filename === GROW) &&
-                    Array.isArray(p.args) && p.args[0] === target && p.args[3] === 'PREP'
-                );
-            }
-            if (!anyRunning) break;
+    // ── Wait for all dispatched PREP workers to finish ─────────────────────
+    // Uses PID tracking + ns.isRunning instead of ns.ps (saves 0.2 GB static RAM).
+    // PIDs are pushed into activePids[] by dispatchThreads(); cleared here after wait.
+    async function waitForPids() {
+        while (activePids.some(pid => ns.isRunning(pid))) {
+            // Prune finished PIDs to keep the array small
+            for (let i = activePids.length - 1; i >= 0; i--)
+                if (!ns.isRunning(activePids[i])) activePids.splice(i, 1);
             await ns.sleep(500);
         }
+        activePids.length = 0; // clear for next wave
     }
 
     // ── Grow thread estimate (correct Bitburner formula, see hwgw-notes.txt §1) ──
@@ -238,7 +227,7 @@ export async function main(ns) {
         }
 
         const hosts = getWorkerHosts();
-        await ensureScriptsCopied(hosts);
+        ensureScriptsCopied(hosts);
 
         const weakenRam = fin(ns.getScriptRam(WEAKEN, 'home'), 0);
         const growRam   = fin(ns.getScriptRam(GROW, 'home'),   0);
@@ -249,7 +238,7 @@ export async function main(ns) {
             return;
         }
 
-        const prepRamFraction = getPrepRamFraction(hosts);
+        const prepRamFraction = PREP_RAM_FRACTION;
 
         // ── Phase 1: Weaken if security above minimum ──────────────────────
         if (!secOk) {
@@ -265,7 +254,7 @@ export async function main(ns) {
             } else {
                 ns.print(`[Iter ${iters}] Weaken needed but no RAM (free=${freeRam.toFixed(0)}GB, need ${weakenRam}GB/thread). Waiting...`);
             }
-            await waitForWorkers(hosts);
+            await waitForPids();
             continue; // re-evaluate before growing
         }
 
@@ -282,7 +271,7 @@ export async function main(ns) {
             } else {
                 ns.print(`[Iter ${iters}] Grow needed but no RAM (free=${freeRam.toFixed(0)}GB). Waiting...`);
             }
-            await waitForWorkers(hosts);
+            await waitForPids();
 
             // After growing, security will have risen — loop back to weaken
             continue;

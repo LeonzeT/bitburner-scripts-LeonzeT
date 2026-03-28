@@ -8,17 +8,19 @@ function resolveScript(ns, key) {
     return _scriptPaths[key] ?? (key.endsWith('.js') ? key : key + '.js');
 }
 /**
- * dashboard-gangs.js — on-demand, Gang tab only (~5.6 GB)
+ * dashboard-gangs.js — on-demand, Gang tab only (~3 GB)
  *
- * SLIMMED DOWN: Gang data is now written by gangs.js directly to
- * /Temp/dashboard-gangs.txt every territory tick (~20s). This script
- * no longer makes any ns.gang.* read calls — it just:
- *   1. Copies the data file gangs.js writes (ns.read/write = 0 GB)
- *   2. Handles the ascend button command (ns.gang.ascendMember = 4 GB)
+ * SLIMMED DOWN FURTHER: ns.gang.ascendMember (4 GB) is now delegated
+ * to a one-shot temp script via ns.exec instead of being called directly.
+ * This script now only uses exec + isRunning + read/write = ~3 GB static.
  *
- * Old version: ~17 GB (inGang + getGangInfo + getMemberNames + getMemberInfo
- *              + getOtherGangInfo + canRecruit + getAscensionResult + ascendMember)
- * New version: ~5.6 GB (ascendMember + base)
+ * Old version: ~5.6 GB (ascendMember inlined = 4 GB held entire time Gang tab is open)
+ * New version: ~3 GB sustained, ~5.6 GB peak for <1s during an ascend action
+ *
+ * Gang data is still written by gangs.js directly to /Temp/dashboard-gangs.txt
+ * every territory tick (~20s). This script only:
+ *   1. Handles the ascend button command (delegated to temp script)
+ *   2. Manages its own lifecycle (tab switching, UI close detection)
  *
  * @param {NS} ns
  */
@@ -27,6 +29,22 @@ const SING_PORT       = 18;
 const GANGS_FILE      = '/Temp/dashboard-gangs.txt';
 const ACTIVE_TAB_FILE = '/Temp/dashboard-active-tab.txt';
 const MY_TAB          = 'Gang';
+const CMD_SCRIPT      = '/Temp/dash-gangs-cmd.js';
+
+async function runTemp(ns, script, timeout = 3000) {
+    const pid = ns.exec(script, 'home');
+    if (!pid) { ns.print('WARN: could not exec ' + script); return false; }
+    const deadline = Date.now() + timeout;
+    while (ns.isRunning(pid) && Date.now() < deadline) await ns.sleep(50);
+    return !ns.isRunning(pid);
+}
+
+// Delegate a gang command to a one-shot temp script.
+// ns.gang.ascendMember costs 4 GB — only held during the <1s the temp runs.
+async function runCmd(ns, code) {
+    ns.write(CMD_SCRIPT, `export async function main(ns) { ${code} }`, 'w');
+    return runTemp(ns, CMD_SCRIPT, 3000);
+}
 
 /** @param {NS} ns */
 export async function main(ns) {
@@ -34,8 +52,6 @@ export async function main(ns) {
     const uiScript = ns.getScriptName().replace(/dashboard-gangs\.js$/, 'dashboard.js');
     const singPort = ns.getPortHandle(SING_PORT);
 
-    // Clear stale data whenever this script exits for any reason
-    // (tab change, UI close, or external kill via terminal/crash)
     ns.atExit(() => ns.write(GANGS_FILE, '', 'w'));
 
     while (true) {
@@ -49,27 +65,26 @@ export async function main(ns) {
             }
         } catch {}
 
-        // Process commands from the dashboard (ascend button)
+        // Handle the ascend button command via a temp script.
+        // No ns.gang.* call appears in this file directly.
         while (!singPort.empty()) {
             const raw = singPort.read();
             try {
                 const cmd = JSON.parse(raw);
                 if (cmd.type === 'ascendMember') {
-                    const result = ns.gang.ascendMember(cmd.member);
-                    ns.print(result
-                        ? `Ascended ${cmd.member}`
-                        : `Ascend failed for ${cmd.member}`);
+                    // Delegate to temp script — ns.gang.ascendMember costs 4 GB static.
+                    // Temp script pays that cost for <1s, then exits.
+                    await runCmd(ns, `
+                        const result = ns.gang.ascendMember(${JSON.stringify(cmd.member)});
+                        ns.print(result ? "Ascended ${cmd.member}" : "Ascend failed for ${cmd.member}");
+                    `);
                 }
+                // Other commands can arrive if tabs switch mid-flight — silently ignore.
             } catch (e) { ns.print('CMD error: ' + (e?.message ?? e)); }
         }
 
-        // Data is written by gangs.js — nothing to do here.
+        // Data is written by gangs.js — nothing to read or compute here.
         // The dashboard reads GANGS_FILE directly in its merge loop.
-        // If gangs.js isn't running yet, write an empty-state marker so the
-        // dashboard shows "Loading..." instead of stale data.
-        // If gangs.js hasn't written yet (or just cleared), leave the file
-        // empty so the dashboard shows "Loading..." rather than "Not in a gang".
-        // gangs.js will write real data within ~1s of its main loop running.
 
         await ns.sleep(1000);
     }

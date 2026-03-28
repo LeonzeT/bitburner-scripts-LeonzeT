@@ -189,7 +189,7 @@ export async function main(ns) {
 
   // ── BitNode awareness ─────────────────────────────────────────────────────
   // Crack all reachable servers on startup
-  const initialCracks = crackAllServers(ns);
+  const initialCracks = await crackAllServers(ns);
   if (initialCracks > 0) logAlways(`Cracked ${initialCracks} server(s) on startup.`);
   else logQuiet('Startup crack sweep: no new servers to crack.');
 
@@ -280,7 +280,7 @@ export async function main(ns) {
     // Checked every 60 seconds — infrequent enough to be cheap, frequent enough
     // to pick up new servers before the target eval cycle fires.
     if (now - lastExecHostsRefresh > 60_000) {
-      const newCracks = crackAllServers(ns);
+      const newCracks = await crackAllServers(ns);
       if (newCracks > 0) logAlways(`Cracked ${newCracks} new server(s).`);
       await refreshPurchasedServerCache(ns);
       const freshHosts = getExecHosts(ns, worldMinRam);
@@ -600,18 +600,23 @@ function assignExecSlices(ns, targets, execHosts, period, bnMults, hasFormulas, 
   const assigned = new Map(targets.map(t => [t, []]));
   const usedBy   = new Map();  // server → target
 
+  const totalSortedRam = sorted.reduce((s, h) => s + ns.getServerMaxRam(h), 0);
+  const perTargetFairShare = totalSortedRam / Math.max(1, targets.length);
+
   for (const target of targets) {
     let covered = 0;
     const needed = neededRam.get(target) ?? 0;
+    // If RPB is unknown (needed=0), cap at a fair share so we don't starve others.
+    const cap = needed > 0 ? needed : perTargetFairShare;
     for (const host of sorted) {
-      if (usedBy.has(host)) continue;  // already assigned to another target
-      const ram = ns.getServerMaxRam(host);
-      assigned.get(target).push(host);
-      usedBy.set(host, target);
-      covered += ram;
-      if (needed > 0 && covered >= needed) break;  // quota met
+        if (usedBy.has(host)) continue;
+        const ram = ns.getServerMaxRam(host);
+        assigned.get(target).push(host);
+        usedBy.set(host, target);
+        covered += ram;
+        if (covered >= cap) break;
     }
-  }
+}
 
   // Any unassigned servers (rare: more servers than needed) go to first target
   for (const host of sorted) {
@@ -1247,17 +1252,25 @@ function getExecHosts(ns, worldMinRam) {
   const purchased = getPurchasedServers(ns);
   const purchasedSet = new Set(purchased);
 
-  // Include rooted world servers (not home, not purchased) that meet the RAM threshold.
-  // getAllRootedHosts already excludes hacknet nodes.
-  const worldHosts = worldMinRam < Infinity
-    ? getAllRootedHosts(ns).filter(h =>
-      h !== "home" &&
-      !purchasedSet.has(h) &&
-      ns.getServerMaxRam(h) >= worldMinRam
-    )
-    : [];
+  // worldMinRam <= 0 means caller explicitly wants purchased-only
+  if (worldMinRam <= 0) return purchased;
 
-  return [...purchased, ...worldHosts];
+  // Read from the crack temp's BFS output — already computed, no extra RAM cost.
+  // Falls back gracefully if the file doesn't exist yet (first startup before crack runs).
+  let worldServers = [];
+  try {
+    const raw = ns.read('/Temp/hwgw-rooted-hosts.txt');
+    if (raw && raw !== '') {
+      worldServers = JSON.parse(raw).filter(h =>
+        h !== 'home' &&
+        !h.startsWith('hacknet') &&
+        !purchasedSet.has(h) &&
+        ns.getServerMaxRam(h) >= worldMinRam
+      );
+    }
+  } catch { /* file not written yet — purchased only this startup */ }
+
+  return [...purchased, ...worldServers];
 }
 
 /**
