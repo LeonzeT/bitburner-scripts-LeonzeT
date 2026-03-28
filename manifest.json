@@ -1,7 +1,7 @@
 {
   "analyze-hack.js": "e5bc89c0c72e3cad89cce62052c44425",
   "ascend.js": "689fb1d7afa4cb3a14a61f788da69e2b",
-  "autopilot.js": "88287468113afbcb3e87ad63c40eda0a",
+  "autopilot.js": "a8ecf1a91793788f63475e3b34f5e847",
   "autopilot.js.config.txt": "d751713988987e9331980363e24189ce",
   "bitburner-update.js": "4f914ef831e936721f4dcdea6b0c76db",
   "bladeburner.js": "96c46f4ad06e6f1961570bb27550a863",
@@ -24,7 +24,7 @@
   "helpers.js": "73cf2138e5a90641ceb7fdda0ebdcb95",
   "host-manager.js": "ec3d7645b1b8a5afadfb96d09e7bc907",
   "infiltrator-helper.js": "e87006d1dd835cd58f91fc8273efb10c",
-  "manifest.json": "7761373b10fb821d9e2ad0c1706cf3a2",
+  "manifest.json": "cde65ed544f9f61bd12feac26f16b9c3",
   "manual-hack.js": "78d147a441574a4e610271ebcdd52d4c",
   "meh.js": "47bc653b9c81cede1320ac2c5da78d6d",
   "optimize-stanek.js": "ec389f272fd4baf38be9ba1eec3c9f17",

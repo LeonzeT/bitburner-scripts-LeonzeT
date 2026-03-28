@@ -180,7 +180,7 @@ export async function main(ns) {
      *
      * @param {Player} player
      * @returns {{ company: string, city: string, sellCash: number, diff: number } | null} */
-    function getBestInfilTarget(player) {
+    function getBestInfilTarget(player, cityOnly = null) {
         const MAX_DIFF = 3.5;
         const s = player.skills ?? {};
         const totalStats = (s.strength   ?? 0) + (s.defense    ?? 0)
@@ -204,6 +204,11 @@ export async function main(ns) {
 
         let best = null;
         for (const { city, name } of rawLocs) {
+            // When cityOnly is set (e.g. player can't afford $200k travel), skip
+            // locations in other cities.  This naturally selects Joe's Guns in
+            // Sector-12 for a fresh BN start where the player has no travel money.
+            if (cityOnly && city !== cityOnly) continue;
+
             const ssl = INFIL_SSL[city]?.[name] ?? null;
             if (ssl === null) continue;
             const diff = Math.max(0, ssl - statBonus - intBonus);
@@ -211,7 +216,9 @@ export async function main(ns) {
 
             let sellCash = null;
             try { sellCash = ns.infiltration.getInfiltration(name)?.reward?.sellCash ?? null; } catch {}
-            if (sellCash == null) continue;
+            // Filter zero-cash locations (e.g. BN8 has InfiltrationMoney = 0 — infil
+            // earns nothing there, so don't bother launching at all).
+            if (sellCash == null || sellCash <= 0) continue;
 
             // Primary: highest cash reward. Tiebreak: easiest location (more runs/hr).
             if (!best || sellCash > best.sellCash ||
@@ -253,11 +260,38 @@ export async function main(ns) {
         // Respect a prior manual stop — don't relaunch until the next aug install.
         if (infilUserStopped) return;
 
+        // ── Adopt a manually-launched autoinfil instance ──────────────────────
+        // If autoinfil is running but infilCurrentCompany is null, the user
+        // launched it directly from the terminal (autopilot always sets
+        // infilCurrentCompany before launching and clears it before killing).
+        // Read the process's own --company / --city args and adopt it so that
+        // locationChanged doesn't fire spuriously on the next evaluation.
+        if (infilProc && !infilCurrentCompany) {
+            const args = infilProc.args ?? [];
+            const ci = args.indexOf('--company');
+            const xi = args.indexOf('--city');
+            infilCurrentCompany = ci !== -1 ? String(args[ci + 1]) : null;
+            infilCurrentCity    = xi !== -1 ? String(args[xi + 1]) : null;
+            log(ns, `INFO: Adopting manually-launched autoinfil.js ` +
+                `(${infilCurrentCompany ?? 'unknown'} / ${infilCurrentCity ?? 'unknown'}).`,
+                false, 'info');
+            // Don't return — fall through to rate-limit + target re-evaluation.
+            // If the user picked a suboptimal target, autopilot will still switch
+            // on the next INFIL_RECHECK_MS tick if it finds something better.
+        }
+
         // Rate-limit: only re-evaluate when the interval has elapsed, unless not running at all.
         if (infilProc && now - infilLastRecheck < INFIL_RECHECK_MS) return;
         infilLastRecheck = now;
 
-        const best = getBestInfilTarget(player);
+        // Pre-casino: if the player can't afford the $200k travel fee, restrict the
+        // target search to their current city.  In a fresh BN/aug install the player
+        // starts in Sector-12 with very little cash, so this naturally selects Joe's Guns
+        // (SSL 3.13 — cheapest, no travel needed).  Once the casino runs and the player
+        // has funds, the restriction lifts and the best global target is selected.
+        const TRAVEL_COST = 200000;
+        const cityOnly = (!ranCasino && player.money < TRAVEL_COST) ? player.city : null;
+        const best = getBestInfilTarget(player, cityOnly);
 
         if (!best) {
             if (infilProc) {
@@ -296,6 +330,17 @@ export async function main(ns) {
         ]);
     }
     function getTimeInBitnode() { return Date.now() - resetInfo.lastNodeReset; }
+    /** Build the arg list for hwgw-manager based on current hack level.
+     * --min-money is ALWAYS passed explicitly (even as 0) so the manager never
+     * falls back to its own default — which would filter out low-value servers
+     * that are the only viable targets at the start of a fresh aug install. */
+    function buildHwgwArgs(hackLvl) {
+        const minMoney = hackLvl >= 1000 ? 1e9
+                       : hackLvl >= 500  ? 1e8
+                       : hackLvl >= 100  ? 1e7
+                       : 0;
+        return ['--quiet', '--min-money', minMoney];
+    }
     /** @param {NS} ns **/
     async function main_start(ns) {
         const runOptions = getConfiguration(ns, argsSchema);
@@ -1147,13 +1192,11 @@ export async function main(ns) {
             if (hasExecHosts) {
                 // Scale --min-money with hack level so low-level runs don't get locked out of
                 // weaker servers, while high-level runs ignore junk targets automatically.
+                // Always pass --min-money explicitly (even 0) — omitting it lets hwgw-manager
+                // fall back to its own default, which can filter out the only hackable servers
+                // at the start of a fresh aug install with a very low hack level.
                 const hackLvl = player.skills.hacking;
-                const minMoney = hackLvl >= 1000 ? 1e9
-                               : hackLvl >= 500  ? 1e8
-                               : hackLvl >= 100  ? 1e7
-                               : 0;
-                const hwgwArgs = ['--quiet'];
-                if (minMoney > 0) hwgwArgs.push('--min-money', minMoney);
+                const hwgwArgs = buildHwgwArgs(hackLvl);
                 launchScriptHelper(ns, hwgwScript, hwgwArgs, false);
             }
         }
@@ -1209,11 +1252,8 @@ export async function main(ns) {
             // won't restart on its own until the next checkOnRunningScripts tick.
             if (hwgwViable && ns.fileExists(hwgwScript, 'home') && !findScript(resolveScript('hwgw-manager'))) {
                 const hackLvl = player.skills.hacking;
-                const minMoney = hackLvl >= 1000 ? 1e9 : hackLvl >= 500 ? 1e8 : hackLvl >= 100 ? 1e7 : 0;
-                const hwgwArgs = ['--quiet'];
-                if (minMoney > 0) hwgwArgs.push('--min-money', minMoney);
                 log(ns, `INFO: XP cycle: goal met — launching hwgw-manager.`, false, 'info');
-                launchScriptHelper(ns, hwgwScript, hwgwArgs, false);
+                launchScriptHelper(ns, hwgwScript, buildHwgwArgs(hackLvl), false);
             }
         }
 
@@ -1393,14 +1433,8 @@ export async function main(ns) {
                 // Launching it here is the earliest possible moment: xp-grind is dead, RAM is free.
                 if (hwgwViable && ns.fileExists(hwgwScript, 'home') && !findScript(resolveScript('hwgw-manager'))) {
                     const hackLvl = player.skills.hacking;
-                    const minMoney = hackLvl >= 1000 ? 1e9
-                                   : hackLvl >= 500  ? 1e8
-                                   : hackLvl >= 100  ? 1e7
-                                   : 0;
-                    const hwgwArgs = ['--quiet'];
-                    if (minMoney > 0) hwgwArgs.push('--min-money', minMoney);
                     log(ns, `INFO: XP cycle: launching hwgw-manager for money phase.`, false, 'info');
-                    launchScriptHelper(ns, hwgwScript, hwgwArgs, false);
+                    launchScriptHelper(ns, hwgwScript, buildHwgwArgs(hackLvl), false);
                 }
             }
         }
