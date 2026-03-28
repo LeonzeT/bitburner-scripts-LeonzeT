@@ -45,33 +45,34 @@ export async function main(ns) {
     const factionManagerOutputFile = "/Temp/affordable-augs.txt"; // Temp file produced by faction manager with status information
     const defaultBnOrder = [ // The order in which we intend to play bitnodes
         // 1st Priority: Key new features and/or major stat boosts
-        4.3,  // Normal. Need singularity to automate everything, and need the API costs reduced from 16x -> 4x -> 1x reliably do so from the start of each BN
+        4.3,  // Normal. Need singularity to automate everything, and need the API costs reduced from 16x -> 4x -> 1x to reliably do so from the start of each BN
         1.2,  // Easy.   Big boost to all multipliers (16% -> 24%), and no penalties to slow us down. Should go quick.
         5.1,  // Normal. Unlock intelligence stat early to maximize growth, getBitNodeMultipliers + Formulas.exe for more accurate scripts, and +8% hack mults
         1.3,  // Easy.   The last bonus is not as big a jump (24% -> 28%), but it's low-hanging fruit
         2.1,  // Easy.   Unlocks gangs, which reduces the need to grind faction and company rep for getting access to most augmentations, speeding up all BNs
+        3.1,  // Normal. Corp scripts (Tobacco/Agri/Water supply chain) make this highly efficient. SF3 unlocks corporations in other BNs, compounding income for every future run.
         // 2nd Priority: More new features, from Harder BNs. Things will slow down for a while, but the new features should pay in dividends for all future BNs
         10.1, // Hard.   Unlock Sleeves (which tremendously speed along gangs outside of BN2) and grafting (can speed up slow rep-gain BNs). // TODO: Buying / upgrading sleeve mem has no API, requires manual interaction. Can we automate this with UI clicking like casino.js?
         8.2,  // Hard.   8.1 immediately unlocks stocks, 8.2 doubles stock earning rate with shorts. Stocks are never nerfed in any BN (4S can be made too pricey though), and we have a good pre-4S stock script.
         13.1, // Hard.   Unlock Stanek's Gift. We've put a lot of effort into min/maxing the Tetris, so we should try to get it early, even though it's a hard BN. I might change my mind and push this down if it proves too slow.
         7.1,  // Hard.   Unlocks the bladeburner API (and bladeburner outside of BN 6/7). Many recommend it before BN9 since it ends up being a faster win condition in some of the tougher bitnodes ahead.
-        9.1,  // Hard.   Unlocks hacknet servers. Hashes can be earned and spent on cash very early in a tough BN to help kick-start things. Hacknet productin/costs improved by 12%
+        9.1,  // Hard.   Unlocks hacknet servers. Hashes can be earned and spent on cash very early in a tough BN to help kick-start things. Hacknet production/costs improved by 12%
         14.2, // Hard.   Boosts go.js bonuses, but note that we can automate IPvGO from the very start (BN1.1), no need to unlock it. 14.1 doubles all bonuses. 14.2 unlocks the cheat API.
-        // 3nd Priority: With most features unlocked, max out SF levels roughly in the order of greatest boost and/or easiest difficulty, to hardest and/or less worthwhile
+        // 3rd Priority: With most features unlocked, max out SF levels roughly in the order of greatest boost and/or easiest difficulty, to hardest and/or less worthwhile
         2.3,  // Easy.   Boosts to crime success / money / CHA will speed along gangs, training and earning augmentations in the future
         5.3,  // Normal. Diminishing boost to hacking multipliers (8% -> 12% -> 14%), but relatively normal bitnode, especially with other features unlocked
-        11.3, // Normal. Decrease augmentation cost scaling in a reset (4% -> 6% -> 7%) (can buy more augs per reset). Also boosts company salary/rep (32% -> 48% -> 56%), which we have little use for with gangs.)
+        3.3,  // Normal. Full permanent corp API in every future BN — worth grinding now that corp scripts exist. Each run adds another Tobacco cycle's worth of aug budget.
+        11.3, // Normal. Decrease augmentation cost scaling in a reset (4% -> 6% -> 7%) (can buy more augs per reset). Also boosts company salary/rep (32% -> 48% -> 56%), which we have little use for with gangs.
         14.3, // Hard.   Makes go.js cheats slightly more successful, increases max go favour from (100->120) and not too difficult to get out of the way
         13.3, // Hard.   Make stanek's gift bigger to get more/different boosts
-        9.2,  // Hard.   Start with 128 GB home ram. Speeds up slow-starting new BNs, but less important with good ram-dodging scripts. Hacknet productin/costs improved by 12% -> 18%.
-        9.3,  // Hard.   Start each new BN with an already powerful hacknet server, but *only until the first reset*, which is a bit of a damper. Hacknet productin/costs improved by 18% -> 21%
+        9.2,  // Hard.   Start with 128 GB home ram. Speeds up slow-starting new BNs, but less important with good ram-dodging scripts. Hacknet production/costs improved by 12% -> 18%.
+        9.3,  // Hard.   Start each new BN with an already powerful hacknet server, but *only until the first reset*, which is a bit of a damper. Hacknet production/costs improved by 18% -> 21%
         10.3, // Hard.   Get the last 2 sleeves (6 => 8) to boost their productivity ~30%. These really help with Bladeburner below. Putting this a little later because buying sleeves memory upgrades requires manual intervention right now.
         // 4th Priority: Play some Bladeburners. Mostly not used to beat other BNs, because for much of the BN this can't be done concurrently with player actions like crime/faction work, and no other BNs are "tuned" to be beaten via Bladeburner win condition
         6.3,  // Normal. The 3 easier bladeburner BNs. Boosts combat stats by 8% -> 12% -> 14%
         7.3,  // Hard.   The remaining 2 hard bladeburner BNs. Boosts all Bladeburner mults by 8% -> 12% -> 14%, so no interaction with other BNs unless trying to win via Bladeburner.
         // Low Priority:
-        8.3,  // Hard.   Just gives stock "Limit orders" which we don't use in our scripts,
-        3.3,  // Hard.   Corporations. I have no corp scripts, maybe one day I will. The history here is: in 2021, corps were too exploity and broke the game (inf. money). Also the APIs were buggy and new, so I skipped it. Autopilot will win normally while ignoring corps.
+        8.3,  // Hard.   Just gives stock "Limit orders" which we don't use in our scripts.
         12.9999 // Easy. Keep playing forever. Only stanek scales very well here, there is much work to be done to be able to climb these faster.
     ];
     const augTRP = "The Red Pill";
@@ -259,26 +260,6 @@ export async function main(ns) {
 
         // Respect a prior manual stop — don't relaunch until the next aug install.
         if (infilUserStopped) return;
-
-        // ── Adopt a manually-launched autoinfil instance ──────────────────────
-        // If autoinfil is running but infilCurrentCompany is null, the user
-        // launched it directly from the terminal (autopilot always sets
-        // infilCurrentCompany before launching and clears it before killing).
-        // Read the process's own --company / --city args and adopt it so that
-        // locationChanged doesn't fire spuriously on the next evaluation.
-        if (infilProc && !infilCurrentCompany) {
-            const args = infilProc.args ?? [];
-            const ci = args.indexOf('--company');
-            const xi = args.indexOf('--city');
-            infilCurrentCompany = ci !== -1 ? String(args[ci + 1]) : null;
-            infilCurrentCity    = xi !== -1 ? String(args[xi + 1]) : null;
-            log(ns, `INFO: Adopting manually-launched autoinfil.js ` +
-                `(${infilCurrentCompany ?? 'unknown'} / ${infilCurrentCity ?? 'unknown'}).`,
-                false, 'info');
-            // Don't return — fall through to rate-limit + target re-evaluation.
-            // If the user picked a suboptimal target, autopilot will still switch
-            // on the next INFIL_RECHECK_MS tick if it finds something better.
-        }
 
         // Rate-limit: only re-evaluate when the interval has elapsed, unless not running at all.
         if (infilProc && now - infilLastRecheck < INFIL_RECHECK_MS) return;
@@ -913,6 +894,40 @@ export async function main(ns) {
                 "--fracB", (bitNodeMults.ScriptHackMoneyGain ?? 1) === 0 ? 0.001 : 0.15,
                 "--reserve", pendingDarkwebReserve,
             ]);
+        // ── Corporation management ───────────────────────────────────────────────
+        // Launch corp/corp.js when corp is viable, available, and we can fund it.
+        //
+        // Availability:
+        //   - BN3: corp is always free (selfFund = true gives seed money at no cost to the player).
+        //   - Other BNs: requires SF3 (any level) + $150B from player cash.
+        //
+        // Viability guards (skip BNs where corp is broken or nearly worthless):
+        //   - BN8:  CorporationSoftcap = 0  → corp income is completely zeroed out. Skip.
+        //   - BN13: CorporationValuation = 0.001 → valuation is 1/1000 of normal; not worth the RAM. Skip.
+        //
+        // Funding guard (non-BN3 only):
+        //   We delay until the player is comfortably past the $100B Daedalus cash gate, so
+        //   the $150B corp seed doesn't interfere with earning a Daedalus invite. We use
+        //   $200B as the threshold, OR we wait until Daedalus has already been joined.
+        {
+            const corpSoftcap   = bitNodeMults?.CorporationSoftcap   ?? 1;
+            const corpValuation = bitNodeMults?.CorporationValuation  ?? 1;
+            // BN8 (softcap=0) and BN13 (valuation≈0.001) are not worth running corp in.
+            const corpViableInBn = corpSoftcap > 0 && corpValuation >= 0.01;
+            const inBn3          = resetInfo.currentNode === 3;
+            // SF3 at any level lets us create corps outside BN3.
+            const hasSf3         = 3 in unlockedSFs;
+            const corpUnlocked   = corpViableInBn && (inBn3 || hasSf3);
+            // In BN3, corp is self-funded (free). Elsewhere, it costs $150B from player cash —
+            // only attempt once past the Daedalus $100B gate so both goals don't compete.
+            const corpAffordable = inBn3 || alreadyJoinedDaedalus || player.money >= 200e9;
+            const corpScript     = 'corp/corp.js';
+            // Avoid false matches from findScript bare-name matching: check filename directly.
+            const corpRunning    = runningScripts.some(s =>
+                s.filename === corpScript || s.filename === '/' + corpScript || s.filename.endsWith('/corp/corp.js'));
+            if (corpUnlocked && corpAffordable && ns.fileExists(corpScript, 'home') && !corpRunning)
+                launchScriptHelper(ns, corpScript, ['--no-tail'], false);
+        }
         // Launch sleeves and allow them to also ignore the reserve so they can train up to boost gang unlock speed
         if ((10 in unlockedSFs) && (2 in unlockedSFs) && !findScript(resolveScript('sleeve'))) {
             let sleeveArgs = [];
