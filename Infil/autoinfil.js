@@ -8,62 +8,58 @@
  * Requirements
  * ────────────
  *   • Source-File 4 (Singularity) for travel / location navigation
- *   • infiltrator.js + infil.py already present and configured
+ *   • infiltrator.js + infil-nav.js + infil.py in the Infil/ folder
  *   • pip install websockets pynput  (for infil.py)
  *
  * Usage
  * ─────
- *   run autoinfil.js --reward money
- *       Infiltrate NWO in Volhaven, sell every reward for $.
+ *   run Infil/autoinfil.js --reward money
+ *   run Infil/autoinfil.js --reward rep --faction "Silhouette"
+ *   run Infil/autoinfil.js --stop
  *
- *   run autoinfil.js --reward rep --faction "Silhouette"
- *       Infiltrate NWO in Volhaven, trade every reward for Silhouette rep.
- *
- *   run autoinfil.js --reward rep --faction "Silhouette" --company NWO --city Volhaven
- *       Same as above with explicit defaults shown.
- *
- *   run autoinfil.js --stop
- *       Stop the running infiltrator.js (and therefore the whole loop).
- *
- * Flags
- * ─────
- *   --reward  money | rep   Which reward to take on each victory. (default: money)
- *   --faction <name>        Faction to trade rep to. Required when --reward rep.
- *   --company <name>        Company location to infiltrate.        (default: NWO)
- *   --city    <name>        City the company is in.                (default: Volhaven)
- *   --port    <number>      WebSocket port matching infil.py.      (default: 12525)
- *   --stop                  Send stop signal to infiltrator.js and exit.
- *
- * How it works
- * ────────────
- * 1. Travels to --city via ns.singularity.travelToCity (free if already there).
- * 2. Opens the company page via ns.singularity.goToLocation.
- * 3. Spawns infiltrator.js with --restart plus --sell or --trade --faction.
- *    infiltrator.js then handles everything inside Bitburner:
- *      • auto-clicks "Start" on the intro screen
- *      • sends mini-game state to infil.py over WebSocket
- *      • auto-selects the faction in the dropdown (if --reward rep)
- *      • auto-clicks "Sell for $" or "Trade for rep" on the victory screen
- *      • auto-clicks "Infiltrate" to begin the next run
- * 4. autoinfil.js exits — the loop lives entirely inside infiltrator.js's
- *    setInterval, so it keeps running even after this script finishes.
+ * RAM breakdown (why this is cheap)
+ * ──────────────────────────────────
+ *   This script only ever calls ns.run + ns.sleep + ns.tprint — 2.6 GB total.
+ *   The expensive Singularity calls (travelToCity, goToLocation) live in
+ *   infil-nav.js (6.1 GB) which is spawned briefly on demand and exits
+ *   immediately after navigating.  RAM is only borrowed, never held.
  *
  * @param {NS} ns
  */
+
+// Resolve paths from script-paths.json (ns.read costs 0 GB — no RAM impact).
+let _scriptPaths = null;
+function resolvePath(ns, key) {
+    if (!_scriptPaths) {
+        _scriptPaths = {};
+        try {
+            const raw = ns.read('/script-paths.json');
+            if (raw) { _scriptPaths = JSON.parse(raw); delete _scriptPaths._comment; }
+        } catch {}
+    }
+    return _scriptPaths[key] ?? (key.endsWith('.js') ? key : key + '.js');
+}
+
 export async function main(ns) {
     const flags = ns.flags([
-        ["reward",  "money"],   // "money" or "rep"
-        ["faction", ""],        // faction name (required when reward=rep)
-        ["company", "NWO"],     // company location name (Singularity string)
-        ["city",    "Volhaven"],// city to travel to
-        ["port",    12525],     // WebSocket port for infil.py
-        ["stop",    false],     // stop everything
+        ["reward",  "money"],    // "money" or "rep"
+        ["faction", ""],         // faction name (required when reward=rep)
+        ["company", "NWO"],      // company location name (Singularity string)
+        ["city",    "Volhaven"], // city to travel to
+        ["port",    12525],      // WebSocket port for infil.py
+        ["stop",    false],      // stop everything
     ]);
 
+    const wnd = eval("window");
+
     // ── Stop ──────────────────────────────────────────────────────────────────
+    // Directly clear infiltrator's window globals instead of spawning a stop
+    // instance — avoids needing ns.isRunning and saves its 0.1 GB RAM cost.
     if (flags.stop) {
-        ns.run("./infiltrator.js", 1, "--stop");
-        ns.tprint("autoinfil: stop signal sent to infiltrator.js.");
+        if (wnd._infTimer) { wnd.clearInterval(wnd._infTimer); delete wnd._infTimer; }
+        if (wnd._infWs)    { try { wnd._infWs.close(); } catch (_) {} delete wnd._infWs; }
+        wnd._infNeedsNav = false;
+        ns.tprint("autoinfil: infiltrator stopped.");
         return;
     }
 
@@ -71,13 +67,13 @@ export async function main(ns) {
     const reward = String(flags.reward).toLowerCase();
     if (reward !== "money" && reward !== "rep") {
         ns.tprint("ERROR  --reward must be 'money' or 'rep'");
-        ns.tprint("       e.g.  run autoinfil.js --reward money");
-        ns.tprint("             run autoinfil.js --reward rep --faction \"Silhouette\"");
+        ns.tprint("       e.g.  run Infil/autoinfil.js --reward money");
+        ns.tprint("             run Infil/autoinfil.js --reward rep --faction \"Silhouette\"");
         return;
     }
     if (reward === "rep" && !flags.faction) {
         ns.tprint("ERROR  --faction <name> is required when --reward rep");
-        ns.tprint("       e.g.  run autoinfil.js --reward rep --faction \"Silhouette\"");
+        ns.tprint("       e.g.  run Infil/autoinfil.js --reward rep --faction \"Silhouette\"");
         return;
     }
 
@@ -91,18 +87,15 @@ export async function main(ns) {
     ns.tprint("");
 
     // ── Kill any existing infiltrator ─────────────────────────────────────────
-    if (ns.isRunning("./infiltrator.js")) {
+    // Use the window timer directly — avoids ns.isRunning (saves 0.1 GB).
+    if (wnd._infTimer) {
         ns.tprint("  Stopping existing infiltrator.js...");
-        ns.run("./infiltrator.js", 1, "--stop");
+        wnd.clearInterval(wnd._infTimer); delete wnd._infTimer;
+        if (wnd._infWs) { try { wnd._infWs.close(); } catch (_) {} delete wnd._infWs; }
         await ns.sleep(600);
     }
 
     // ── Build infiltrator.js argument list ────────────────────────────────────
-    // --restart  → auto-click "Infiltrate" after each victory
-    // --sell     → auto-click "Sell for $"   (money mode)
-    // --trade    → auto-click "Trade for rep" (rep mode)
-    // --faction  → auto-select faction in the dropdown before trading
-    // --port     → WebSocket port
     const infArgs = ["--restart", "--port", flags.port];
     if (reward === "money") {
         infArgs.push("--sell");
@@ -110,32 +103,31 @@ export async function main(ns) {
         infArgs.push("--trade", "--faction", flags.faction);
     }
 
-    // ── Navigate to company ───────────────────────────────────────────────────
+    // ── Initial navigation — spawn infil-nav.js ───────────────────────────────
+    // infil-nav.js owns travelToCity + goToLocation + getPlayer, so those 4.6 GB
+    // of RAM are never baked into this script's footprint.
     ns.tprint(`  Navigating to ${flags.company} in ${flags.city}...`);
-
-    const player = ns.getPlayer();
-    if (player.city !== flags.city) {
-        const travelled = ns.singularity.travelToCity(flags.city);
-        if (!travelled) {
-            ns.tprint(`ERROR  Could not travel to ${flags.city}.`);
-            ns.tprint("       Check you have enough money ($200k) and SF4.");
-            return;
-        }
-        ns.tprint(`  Travelled to ${flags.city}.`);
-        await ns.sleep(1000);
-    } else {
-        ns.tprint(`  Already in ${flags.city}.`);
+    wnd._infNeedsNav  = false;
+    wnd._infNavDone   = false;
+    const navPid = ns.run(resolvePath(ns, "infil-nav"), 1,
+        "--company", flags.company, "--city", flags.city, "--initial");
+    if (!navPid) {
+        ns.tprint("ERROR  Failed to launch infil-nav.js — not enough free RAM?");
+        return;
     }
-
-    ns.singularity.goToLocation(flags.company);
-    await ns.sleep(500);
+    // Wait for infil-nav.js to signal completion via window global.
+    for (let i = 0; i < 30 && !wnd._infNavDone; i++) await ns.sleep(500);
+    if (!wnd._infNavDone) {
+        ns.tprint("ERROR  infil-nav.js timed out. Is SF4 active and do you have $200k?");
+        return;
+    }
     ns.tprint(`  Opened ${flags.company} location page.`);
 
     // ── Launch infiltrator.js ─────────────────────────────────────────────────
-    const pid = ns.run("./infiltrator.js", 1, ...infArgs);
+    const pid = ns.run(resolvePath(ns, "infiltrate"), 1, ...infArgs);
     if (!pid) {
         ns.tprint("ERROR  Failed to launch infiltrator.js.");
-        ns.tprint("       Make sure infiltrator.js is in the root directory.");
+        ns.tprint("       Make sure infiltrator.js is in the Infil/ directory.");
         return;
     }
 
@@ -144,60 +136,35 @@ export async function main(ns) {
     ns.tprint("  Make sure infil.py is running on your PC:");
     ns.tprint(`    python infil.py --port ${flags.port}`);
     ns.tprint("");
-    ns.tprint("  To stop:  run autoinfil.js --stop");
+    ns.tprint("  To stop:  run Infil/autoinfil.js --stop");
     ns.tprint("");
     ns.tprint("  [monitor] Watching for navigation signals from infiltrator.js...");
 
     // ── Navigation monitor loop ───────────────────────────────────────────────
     // infiltrator.js exits main() immediately (its loop lives in setInterval on
-    // window), so ns becomes invalid inside it.  This loop stays alive so that
-    // ns.singularity.goToLocation() remains available for navigating back to the
-    // company page after each infiltration ends.
+    // window), so ns is invalid inside it.  This loop stays alive so it can
+    // spawn infil-nav.js whenever infiltrator.js sets wnd._infNeedsNav = true.
     //
-    // infiltrator.js signals via wnd._infNeedsNav = true whenever it detects
-    // that the Infiltrate button is gone (i.e., we've been dropped to city view).
-    // We honour it only after _infNavCooldown clears (set for 3 s after each
-    // victory to let the trade/sell transition finish before navigating).
-    const wnd = eval("window");
-    const doc = wnd.document;
+    // RAM cost of this loop: zero extra — only ns.sleep and window reads.
+    // The expensive Singularity calls happen inside infil-nav.js instead.
     while (true) {
         await ns.sleep(500);
         if (!wnd._infNeedsNav || wnd._infNavCooldown) continue;
         wnd._infNeedsNav = false;
 
-        try {
-            // If the Infiltrate button is already visible we are already on the
-            // company page — infiltrator.js handles the click itself.  Calling
-            // goToLocation() here would be redundant and can throw in some states.
-            const alreadyOnPage = [...doc.querySelectorAll("button")]
-                .some(b => b.textContent.trim().toLowerCase().startsWith("infiltrate"));
-            if (alreadyOnPage) continue;
+        // Set a cooldown so we don't spawn multiple nav helpers back-to-back.
+        // infil-nav.js also sets _infNavDone when it finishes, but we don't
+        // need to wait for it — the cooldown is enough to prevent pile-ups.
+        wnd._infNavCooldown = true;
+        wnd.setTimeout(() => { delete wnd._infNavCooldown; }, 3000);
 
-            // Re-check city — other scripts (work-for-factions, daemon) may have
-            // moved the player while the infiltration was running.
-            const currentPlayer = ns.getPlayer();
-            if (currentPlayer.city !== flags.city) {
-                ns.tprint(`  [monitor] Wrong city (${currentPlayer.city}), travelling to ${flags.city}...`);
-                const travelled = ns.singularity.travelToCity(flags.city);
-                if (!travelled) {
-                    ns.tprint(`  [monitor] WARNING: Could not travel to ${flags.city} (not enough money?). Will retry.`);
-                    wnd._infNeedsNav = true; // retry on next 500ms tick
-                    continue;
-                }
-                await ns.sleep(1000);
-            }
-
-            ns.tprint(`  [monitor] Navigating back to ${flags.company}...`);
-            ns.singularity.goToLocation(flags.company);
-            // Brief cooldown so we don't spam goToLocation on consecutive ticks.
-            wnd._infNavCooldown = true;
-            wnd.setTimeout(() => { delete wnd._infNavCooldown; }, 2000);
-
-        } catch (err) {
-            // Never let a navigation error kill the monitor loop.
-            // Log and re-arm _infNeedsNav so we retry on the next tick.
-            ns.tprint(`  [monitor] ERROR during navigation: ${err?.message ?? err}. Will retry.`);
-            wnd._infNeedsNav = true;
+        const p = ns.run(resolvePath(ns, "infil-nav"), 1,
+            "--company", flags.company, "--city", flags.city);
+        if (!p) {
+            // Not enough RAM to spawn right now — re-arm and retry next tick.
+            ns.tprint("  [monitor] WARN: Could not spawn infil-nav.js (low RAM?). Will retry.");
+            wnd._infNeedsNav   = true;
+            delete wnd._infNavCooldown;
         }
     }
 }

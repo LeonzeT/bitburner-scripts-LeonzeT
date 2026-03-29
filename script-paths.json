@@ -42,6 +42,7 @@
   
   "autoinfil":           "Infil/autoinfil.js",
   "infiltrate":          "Infil/infiltrator.js",
+  "infil-nav":           "Infil/infil-nav.js",
 
   "helpers":            "helpers.js",
 
