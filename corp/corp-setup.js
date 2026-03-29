@@ -85,8 +85,14 @@ const CYCLE_MS   = 11000; // slightly over one full cycle to guarantee a tick
 // ═════════════════════════════════════════════════════════════════════════════
 export async function main(ns) {
     ns.disableLog('ALL');
-    ns.tail();
+    ns.ui.openTail();
     const c = ns.corporation; // shorthand
+
+    /** Resolve a script key via script-paths.json, falling back to the provided default. */
+    function resolvePath(key, fallback) {
+        try { const p = JSON.parse(ns.read('/script-paths.json')); return p[key] ?? fallback; }
+        catch { return fallback; }
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Internal helpers
@@ -527,7 +533,8 @@ export async function main(ns) {
     log(ns, 'INFO: Setup complete! Handing off to corp-autopilot.js.', true, 'success');
     log(ns, '═══════════════════════════════════════════════════════', true);
 
-    if (!ns.isRunning('corp/corp-autopilot.js')) {
-        ns.run('corp/corp-autopilot.js');
+    const autopilotScript = resolvePath('corp-autopilot', 'corp/corp-autopilot.js');
+    if (!ns.isRunning(autopilotScript)) {
+        ns.run(autopilotScript);
     }
 }

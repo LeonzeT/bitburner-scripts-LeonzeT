@@ -155,7 +155,7 @@ export function autocomplete(data) { data.flags(argsSchema); return []; }
 export async function main(ns) {
     const opts = ns.flags(argsSchema);
     ns.disableLog('ALL');
-    if (!opts['no-tail']) ns.tail();
+    if (!opts['no-tail']) ns.ui.openTail();
 
     if (!ns.corporation.hasCorporation()) {
         log(ns, 'ERROR: No corporation found. Run corp.js first.', true, 'error');

@@ -23,10 +23,16 @@ export function autocomplete(data) { data.flags(argsSchema); return []; }
 export async function main(ns) {
     const opts = ns.flags(argsSchema);
     ns.disableLog('ALL');
-    if (!opts['no-tail']) ns.tail();
+    if (!opts['no-tail']) ns.ui.openTail();
 
-    const setupScript     = 'corp/corp-setup.js';
-    const autopilotScript = 'corp/corp-autopilot.js';
+    /** Resolve a script key via script-paths.json, falling back to the provided default. */
+    function resolvePath(key, fallback) {
+        try { const p = JSON.parse(ns.read('/script-paths.json')); return p[key] ?? fallback; }
+        catch { return fallback; }
+    }
+
+    const setupScript     = resolvePath('corp-setup',    'corp/corp-setup.js');
+    const autopilotScript = resolvePath('corp-autopilot','corp/corp-autopilot.js');
     const setupDoneFlag   = '/Temp/corp-setup-done.txt';
 
     // ── No corporation yet ────────────────────────────────────────────────────

@@ -89,7 +89,7 @@ def tap_char(ch, delay=0.05):
 
 def mouse_click(x, y, delay=0.05):
     """Move the OS cursor to (x, y) in physical screen pixels and left-click."""
-    mouse.position = (x, y + 35)
+    mouse.position = (x, y)
     time.sleep(delay)
     mouse.click(MouseButton.left)
     time.sleep(delay)

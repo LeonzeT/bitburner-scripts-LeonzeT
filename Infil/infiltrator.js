@@ -1,5 +1,5 @@
 /**
- * infiltrator.js — v2
+ * infiltrator.js — v3
  *
  * Polls the DOM every 30ms and sends infiltration game state to infil.py
  * via WebSocket.  Exits immediately — the interval and socket live on window.
@@ -135,8 +135,9 @@ function _infTick() {
                 if (infiltrateBtn) {
                     const dpr  = wnd.devicePixelRatio || 1;
                     const rect = infiltrateBtn.getBoundingClientRect();
-                    const cx   = Math.round((rect.left + rect.width  / 2 + wnd.screenX) * dpr);
-                    const cy   = Math.round((rect.top  + rect.height / 2 + wnd.screenY) * dpr);
+                    const chromeH = wnd.outerHeight - wnd.innerHeight;
+                    const cx = Math.round((rect.left + rect.width  / 2 + wnd.screenX) * dpr);
+                    const cy = Math.round((rect.top  + rect.height / 2 + wnd.screenY + chromeH) * dpr);
                     const ws   = wnd._infWs;
                     if (ws && ws.readyState === 1)
                         ws.send(JSON.stringify({ active: true, game: "click", x: cx, y: cy }));

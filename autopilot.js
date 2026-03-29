@@ -96,6 +96,7 @@ export async function main(ns) {
     let playerInstalledAugCount = (/**@returns{null|number}*/() => null)(); // Number of augs installed, or null if we don't have SF4 and can't tell.
     let installedAugmentations = [];
     let acceptedStanek = false, stanekLaunched = false;
+    let corpLaunched = false; // Set when corp/corp.js is launched; prevents spam-relaunching on failed corp creation within one aug cycle
     let daemonStartTime = 0; // The time we personally launched daemon.
     let lastContractSweep = 0; // Timestamp of last coding-contracts.js run
     let installCountdown = 0; // Start of a countdown before we install augmentations.
@@ -118,7 +119,6 @@ export async function main(ns) {
     let bnCompletionSuppressed = false; // Flag if we've detected that we've won the BN, but are suppressing a restart
     let sleevesMaxedOut = false; // Flag used only when the player is replaying BN 10 with all sleeves but has suppressed auto-destroying the BN, to allow continued auto-installs
     let loggedBnCompletion = false; // Flag set to ensure that if we choose to stay in the BN, we only log the "BN completed" message once per reset.
-    let loggedLateGameMilestone = false; // Flag to ensure the "Entering late-game phase" message only fires once per aug install.
     // ── Infiltration state ────────────────────────────────────────────────────────
     // autoinfil.js is launched automatically by autopilot.
     // Phase 1 (early): only run infil until INFIL_CASINO_SEED is earned — no heavy
@@ -913,21 +913,40 @@ export async function main(ns) {
         {
             const corpSoftcap   = bitNodeMults?.CorporationSoftcap   ?? 1;
             const corpValuation = bitNodeMults?.CorporationValuation  ?? 1;
-            // BN8 (softcap=0) and BN13 (valuation≈0.001) are not worth running corp in.
             const corpViableInBn = corpSoftcap > 0 && corpValuation >= 0.01;
             const inBn3          = resetInfo.currentNode === 3;
-            // SF3 at any level lets us create corps outside BN3.
             const hasSf3         = 3 in unlockedSFs;
             const corpUnlocked   = corpViableInBn && (inBn3 || hasSf3);
-            // In BN3, corp is self-funded (free). Elsewhere, it costs $150B from player cash —
-            // only attempt once past the Daedalus $100B gate so both goals don't compete.
             const corpAffordable = inBn3 || alreadyJoinedDaedalus || player.money >= 200e9;
-            const corpScript     = 'corp/corp.js';
-            // Avoid false matches from findScript bare-name matching: check filename directly.
-            const corpRunning    = runningScripts.some(s =>
-                s.filename === corpScript || s.filename === '/' + corpScript || s.filename.endsWith('/corp/corp.js'));
-            if (corpUnlocked && corpAffordable && ns.fileExists(corpScript, 'home') && !corpRunning)
+            const corpScript     = resolveScript('corp');
+
+            // Check whether a corporation already exists (safe try/catch — API may be absent).
+            let hasCorp = false;
+            try { hasCorp = ns.corporation.hasCorporation(); } catch {}
+
+            // corp.js is a fire-and-exit dispatcher: it starts corp-setup.js or corp-autopilot.js
+            // then returns immediately, so checking only for corp.js being "running" is never enough.
+            // We must watch all three scripts to know whether corp work is in progress.
+            const corpScripts = [resolveScript('corp'), resolveScript('corp-setup'), resolveScript('corp-autopilot')];
+            const anyCorporateScriptRunning = runningScripts.some(s =>
+                corpScripts.some(name =>
+                    s.filename === name || s.filename === '/' + name ||
+                    s.filename.endsWith('/' + name.split('/').pop())));
+
+            if (hasCorp) {
+                // Corp exists — ensure autopilot is running (handles the case where autopilot.js
+                // itself restarted mid-run and corp-autopilot.js died with it).
+                if (!anyCorporateScriptRunning && ns.fileExists(corpScript, 'home'))
+                    launchScriptHelper(ns, corpScript, ['--no-tail'], false);
+            } else if (corpUnlocked && corpAffordable && !corpLaunched
+                       && ns.fileExists(corpScript, 'home') && !anyCorporateScriptRunning) {
+                // No corp yet and conditions are met — launch once per aug cycle.
+                // corpLaunched prevents repeated failed attempts from spamming the log.
+                // If creation fails (wrong BN, insufficient funds slipped through), we simply
+                // wait until the next aug install to try again rather than retrying every 10s.
+                corpLaunched = true;
                 launchScriptHelper(ns, corpScript, ['--no-tail'], false);
+            }
         }
         // Launch sleeves and allow them to also ignore the reserve so they can train up to boost gang unlock speed
         if ((10 in unlockedSFs) && (2 in unlockedSFs) && !findScript(resolveScript('sleeve'))) {
@@ -1524,15 +1543,13 @@ export async function main(ns) {
         // and the BN is in full-speed mode (Daedalus / gang prep can begin).
         const INFIL_RAM_TB   = 4 * 1024; // 4 TB
         const INFIL_WEALTH   = 20e9;     // $20 B
-        if (!loggedLateGameMilestone && homeRam >= INFIL_RAM_TB) {
+        if (homeRam >= INFIL_RAM_TB) {
             let totalWealth = player.money;
             try { totalWealth += await getStocksValue(ns); } catch {}
-            if (totalWealth >= INFIL_WEALTH) {
-                loggedLateGameMilestone = true;
-                log(ns, `INFO: Milestone reached — home RAM ${homeRam} GB ≥ 4 TB ` +
+            if (totalWealth >= INFIL_WEALTH)
+                log_once(ns, `INFO: Milestone reached — home RAM ${homeRam} GB ≥ 4 TB ` +
                     `and total wealth ${formatMoney(totalWealth)} ≥ $20B. ` +
                     `Entering late-game phase (Daedalus / gang aug grind).`, true, 'success');
-            }
         }
     }
     /** Get the source of the player's earnings by category.
