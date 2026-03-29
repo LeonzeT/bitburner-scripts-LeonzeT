@@ -79,6 +79,7 @@ export async function main(ns) {
     const augStanek = `Stanek's Gift - Genesis`;
     let options; // The options used at construction time
     let playerInGang = false, rushGang = false; // Tells us whether we're should be trying to work towards getting into a gang
+    let sleevesSetForGangRush = false; // Whether autopilot has overridden sleeve tasks to Homicide for karma grind
     let playerInBladeburner = false; // Whether we've joined bladeburner
     let wdHack = (/**@returns{null|number}*/() => null)(); // If the WD server is available (i.e. TRP is installed), caches the required hack level
     let ranCasino = false; // Flag to indicate whether we've stolen 10b from the casino yet
@@ -1154,6 +1155,32 @@ export async function main(ns) {
             // Check if we've joined a gang yet. (Never have to check again once we know we're in one)
             if (!playerInGang) playerInGang = await getNsDataThroughFile(ns, 'ns.gang.inGang()');
             rushGang = !options['disable-rush-gangs'] && !playerInGang;
+
+            // ── Sleeve Homicide override during gang rush ─────────────────────
+            // Shock does not affect karma (karma uses syncBonus, not shockBonus),
+            // and success rate doesn't use shock either — so even high-shock sleeves
+            // farm karma at full speed.  Force all sleeves to Homicide for the
+            // duration of the gang rush and restore autonomy once the gang is joined.
+            if ((10 in unlockedSFs) && rushGang && !sleevesSetForGangRush) {
+                try {
+                    const numSleeves = await getNsDataThroughFile(ns, 'ns.sleeve.getNumSleeves()');
+                    if (numSleeves > 0) {
+                        const setCrimes = Array.from({ length: numSleeves }, (_, i) =>
+                            `ns.sleeve.setToCommitCrime(${i}, "Homicide")`).join('; ');
+                        await getNsDataThroughFile(ns, `(()=>{ ${setCrimes} })()`);
+                        sleevesSetForGangRush = true;
+                        log(ns, `INFO: Set ${numSleeves} sleeve(s) to Homicide for gang rush (shock doesn't affect karma).`, true, 'info');
+                    }
+                } catch (e) {
+                    log(ns, `WARN: Could not set sleeves to Homicide for gang rush: ${e?.message ?? e}`);
+                }
+            } else if (sleevesSetForGangRush && playerInGang) {
+                // Gang joined — clear the flag so sleeve.js resumes normal management.
+                // We don't force a task here; sleeve.js will re-assign on its next tick.
+                sleevesSetForGangRush = false;
+                log(ns, `INFO: Gang joined! Releasing sleeve Homicide override — sleeve.js resumes control.`, true, 'success');
+            }
+
             // Detect if a resolveScript('work-for-factions') instance is running with args that don't match our goal. We aren't too picky,
             // (so the player can run with custom args), but should have --crime-focus if (and only if) we're still working towards a gang.
             const wrongWork = findScript(resolveScript('work-for-factions'), !rushGang ? s => s.args.includes("--crime-focus") :
