@@ -229,7 +229,7 @@ export async function main(ns) {
 
     // ── Logging helpers ───────────────────────────────────────────────────────
     const log       = (msg) => { ns.print(msg); if (!quiet) ns.tprint(msg); };
-    const logAlways = (msg) => { ns.print(msg); ns.tprint(msg); };
+    const logAlways = (msg) => ns.print(msg);
     const logQuiet  = (msg) => ns.print(msg);
 
     // ── Exec host partition ───────────────────────────────────────────────────

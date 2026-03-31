@@ -343,10 +343,6 @@ export async function main(ns) {
                 h('span', { style:{ color:'#2d5a2d', fontSize:11, width:120, flexShrink:0 } }, label),
                 h('input', { className:'nd-input nd-input-sm', style:{ width:90 },
                     placeholder, value:val, onChange: e => setter(e.target.value) }));
-        if (!hwgw && !managerRunning) return h('div', { className: 'nd-empty' },
-            h('div', { style:{ marginBottom:10 } }, 'Manager not running.'),
-            h('button', { className:'nd-btn', onClick: () => enqueue({ type:'launchManager', args:buildMgrArgs() }) }, 'Launch Manager'),
-        );
         const targets = hwgw?.targets ?? [], batchers = hwgw?.batchers ?? {};
 
         // Prep progress section: show weaken + grow bars for each target being prepped.

@@ -1,1 +1,1 @@
-[["no-tail-windows", false]]
+[["no-tail-windows", true]]

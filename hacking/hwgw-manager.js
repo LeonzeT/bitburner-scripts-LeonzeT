@@ -158,7 +158,7 @@ export async function main(ns) {
   resolveScripts(ns);
 
   const log = (msg) => { ns.print(msg); if (!quiet) ns.tprint(msg); };
-  const logAlways = (msg) => { ns.print(msg); ns.tprint(msg); };
+  const logAlways = (msg) => ns.print(msg);
   const logQuiet = (msg) => ns.print(msg);
 
   // ── Read home RAM reserve ─────────────────────────────────────────────────

@@ -65,7 +65,7 @@ export async function main(ns) {
 
     const target = ns.args[0];
     if (!target || typeof target !== 'string') {
-        ns.tprint('ERROR hwgw-prep: no target specified.');
+        ns.print('ERROR hwgw-prep: no target specified.');
         return;
     }
 
@@ -89,7 +89,7 @@ export async function main(ns) {
     const GROW   = paths['hwgw-grow']   ?? 'hacking/hwgw-grow.js';
 
     if (!ns.fileExists(WEAKEN, 'home') || !ns.fileExists(GROW, 'home')) {
-        ns.tprint(`ERROR hwgw-prep: worker scripts missing (${WEAKEN}, ${GROW})`);
+        ns.print(`ERROR hwgw-prep: worker scripts missing (${WEAKEN}, ${GROW})`);
         ns.write(signalFile, `FAILED:worker scripts missing`, 'w');
         return;
     }
@@ -233,7 +233,7 @@ export async function main(ns) {
         const growRam   = fin(ns.getScriptRam(GROW, 'home'),   0);
 
         if (weakenRam <= 0 || growRam <= 0) {
-            ns.tprint(`ERROR hwgw-prep: worker scripts have 0 RAM. Missing from home?`);
+            ns.print(`ERROR hwgw-prep: worker scripts have 0 RAM. Missing from home?`);
             ns.write(signalFile, 'FAILED:worker script RAM is 0', 'w');
             return;
         }
@@ -278,6 +278,6 @@ export async function main(ns) {
         }
     }
 
-    ns.tprint(`ERROR hwgw-prep: "${target}" not prepped after ${MAX_ITERATIONS} iterations.`);
+    ns.print(`ERROR hwgw-prep: "${target}" not prepped after ${MAX_ITERATIONS} iterations.`);
     ns.write(signalFile, `FAILED:exceeded ${MAX_ITERATIONS} iterations`, 'w');
 }
