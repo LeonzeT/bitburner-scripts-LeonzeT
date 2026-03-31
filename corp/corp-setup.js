@@ -231,15 +231,18 @@ export async function main(ns) {
         } catch { return {}; }
     }
 
-    async function applyBoostMaterials(div, city, targets) {
-        for (const [mat, target] of Object.entries(targets)) {
-            const stored = c.getMaterial(div, city, mat).stored;
-            const needed = Math.max(0, target - stored);
-            if (needed > 0) c.buyMaterial(div, city, mat, needed / CYCLE_SECS);
-        }
-        await waitCycles(1);
-        for (const mat of Object.keys(targets)) c.buyMaterial(div, city, mat, 0);
-    }
+	async function applyBoostMaterials(div, city, targets) {
+		let anyNeeded = false;
+		for (const [mat, target] of Object.entries(targets)) {
+			const stored = c.getMaterial(div, city, mat).stored;
+			const needed = Math.max(0, target - stored);
+			if (needed > 0) { c.buyMaterial(div, city, mat, needed / CYCLE_SECS); anyNeeded = true; }
+		}
+		if (anyNeeded) {
+			await waitCycles(1);
+			for (const mat of Object.keys(targets)) c.buyMaterial(div, city, mat, 0);
+		}
+	}
 
     // Re-apply boosts whenever a warehouse level has changed (SmartStorage expanded it).
     const prevWHLevel = {};
@@ -497,7 +500,7 @@ export async function main(ns) {
             try {
                 c.expandIndustry(IND_TOBACCO, DIV_TOBACCO);
             } catch (e) {
-                log(ns, `ERROR: expandIndustry Chemical failed: ${e?.message}`, true, 'error');
+                log(ns, `ERROR: expandIndustry Tobacco failed: ${e?.message}`, true, 'error');
                 return;
             }
         }
@@ -523,6 +526,16 @@ export async function main(ns) {
             try { c.exportMaterial(DIV_AGRI, city, DIV_CHEM,    city, 'Plants',    EXP); } catch { }  // Quality loop
             try { c.exportMaterial(DIV_CHEM, city, DIV_AGRI,    city, 'Chemicals', EXP); } catch { }  // Quality loop
         }
+		
+		// Prevent Smart Supply from double-buying imported materials.
+		// 'leftovers' = only top up what the export route doesn't cover.
+		for (const city of CITIES) {
+			try { c.setSmartSupplyOption(DIV_AGRI,    city, 'Chemicals', 'leftovers'); } catch { }
+			try { c.setSmartSupplyOption(DIV_AGRI,    city, 'Water',     'leftovers'); } catch { }
+			try { c.setSmartSupplyOption(DIV_CHEM,    city, 'Plants',    'leftovers'); } catch { }
+			try { c.setSmartSupplyOption(DIV_CHEM,    city, 'Water',     'leftovers'); } catch { }
+			try { c.setSmartSupplyOption(DIV_TOBACCO, city, 'Plants',    'leftovers'); } catch { }
+		}
 
         // Ensure all divisions have at least level-3 warehouses.
         for (const div of [DIV_TOBACCO, DIV_AGRI, DIV_CHEM])
