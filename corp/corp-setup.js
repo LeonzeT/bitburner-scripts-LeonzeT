@@ -2,7 +2,7 @@
  * corp/corp-setup.js  —  Corporation bootstrapper
  *
  * Runs once to take the corp from nothing through investment rounds 1 and 2,
- * establishing a fully automated Tobacco + Agriculture + Chemical supply chain.
+ * establishing a fully automated Tobacco + Agriculture + Water supply chain.
  * Writes '/corp-setup-done.txt' = 'true' on completion, then launches
  * corp-autopilot.js and exits.
  *
@@ -14,15 +14,15 @@
  *  0  Create corp + buy essential unlocks
  *  1  Agriculture — all 6 cities, offices, warehouses, boost materials
  *  2  Accept investment round 1  (waits until offer ≥ MIN_ROUND1)
- *  3  Launch Tobacco + Chemical; supply-chain exports; first product
+ *  3  Launch Tobacco + Water; supply-chain exports; first product
  *  4  Accept investment round 2  (waits until offer ≥ MIN_ROUND2)
  *  5  Final office/warehouse scaling — hand off to corp-autopilot.js
  *
  * Supply chain
  * ────────────
- *  Chemical division →  exports Chemicals →  Agriculture division
- *  Agriculture      →  exports Plants    →  Tobacco division
- *  (Water and Hardware bought from market via Smart Supply)
+ *  Water division  →  exports Water   →  Agriculture division
+ *  Agriculture     →  exports Plants  →  Tobacco division
+ *  (Chemicals and Hardware bought from market via Smart Supply)
  *
  * @param {NS} ns
  */
@@ -32,10 +32,10 @@ import { log, formatMoney } from '/helpers.js';
 const CORP_NAME = 'Nite-Corp';
 const DIV_TOBACCO = 'Tobacco';
 const DIV_AGRI = 'Agriculture';
-const DIV_CHEM = 'Chemical';
+const DIV_WATER = 'Water';
 const IND_TOBACCO = 'Tobacco';
 const IND_AGRI = 'Agriculture';
-const IND_CHEM = 'Chemical';
+const IND_WATER = 'Water Utilities';
 
 // ── Geography ─────────────────────────────────────────────────────────────────
 const CITIES = ['Aevum', 'Chongqing', 'Sector-12', 'New Tokyo', 'Ishima', 'Volhaven'];
@@ -49,6 +49,7 @@ const MIN_ROUND2 = 5e12;
 
 // ── Flags / temp files ────────────────────────────────────────────────────────
 const SETUP_DONE_FLAG = '/corp-setup-done.txt';
+const SETUP_PHASE_FILE = '/corp-setup-phase.txt';
 const SETUP_LOCK = '/Temp/corp-setup.lock.txt';
 
 // ── Exact strings from Enums.ts ───────────────────────────────────────────────
@@ -92,9 +93,9 @@ const AGRI_FACTORS = [0.72, 0.20, 0.30, 0.30]; // RE, HW, Robots, AI
 const AGRI_SIZES = [0.005, 0.06, 0.5, 0.1];
 const AGRI_MATS = ['Real Estate', 'Hardware', 'Robots', 'AI Cores'];
 
-const CHEM_FACTORS = [0.25, 0.20, 0.25, 0.20];
-const CHEM_SIZES = [0.005, 0.06, 0.5, 0.1];
-const CHEM_MATS = ['Real Estate', 'Hardware', 'Robots', 'AI Cores'];
+const WATER_FACTORS = [0.5, 0.40, 0.40];
+const WATER_SIZES = [0.005, 0.5, 0.1];
+const WATER_MATS = ['Real Estate', 'Robots', 'AI Cores'];
 
 // ── Market cycle duration ─────────────────────────────────────────────────────
 const CYCLE_SECS = 10;
@@ -138,6 +139,21 @@ export async function main(ns) {
         return ns.ps(lock.host).some(p => p.pid === lock.pid && p.filename === ns.getScriptName());
     }
 
+    function readSetupPhase() {
+        try {
+            const raw = ns.read(SETUP_PHASE_FILE).trim();
+            if (raw === '') return 0;
+            const phase = Number.parseInt(raw, 10);
+            return Number.isFinite(phase) && phase >= 0 ? phase : 0;
+        } catch {
+            return 0;
+        }
+    }
+
+    function writeSetupPhase(phase) {
+        try { ns.write(SETUP_PHASE_FILE, String(phase), 'w'); } catch { }
+    }
+
     function acquireLock() {
         const lock = readLock();
         if (lockStillValid(lock)) return false;
@@ -158,6 +174,27 @@ export async function main(ns) {
 
     if (!acquireLock()) {
         log(ns, 'corp-setup is already running.', true, 'warning');
+        return;
+    }
+
+    let setupPhase = readSetupPhase();
+    let setupCompleted = false;
+
+    if (!c.hasCorporation() && setupPhase !== 0) {
+        setupPhase = 0;
+        writeSetupPhase(0);
+    }
+
+    if (c.hasCorporation() && setupPhase >= 6) {
+        writeSetupPhase(6);
+        try { ns.write(SETUP_DONE_FLAG, 'true', 'w'); } catch { }
+        const PILOT_SCRIPT = resolvePath('corp-autopilot', 'corp/corp-autopilot.js');
+        try {
+            const running = ns.ps('home').some(p => p.filename === PILOT_SCRIPT);
+            if (!running) ns.run(PILOT_SCRIPT);
+        } catch {
+            ns.run(PILOT_SCRIPT);
+        }
         return;
     }
 
@@ -226,22 +263,11 @@ export async function main(ns) {
         }
     }
 
-    const SMART_SUPPLY_MATS = {
-        [DIV_AGRI]: ['Water', 'Chemicals'],
-        [DIV_CHEM]: ['Plants', 'Water'],
-        [DIV_TOBACCO]: ['Plants'],
-    };
-
     function enableSmartSupply(div) {
         if (!c.hasUnlock(UNLOCKS.smartSupply)) return;
         for (const city of CITIES) {
             try {
-                if (c.hasWarehouse(div, city)) {
-                    c.setSmartSupply(div, city, true);
-                    for (const mat of SMART_SUPPLY_MATS[div] ?? []) {
-                        c.setSmartSupplyOption(div, city, mat, 'leftovers');
-                    }
-                }
+                if (c.hasWarehouse(div, city)) c.setSmartSupply(div, city, true);
             } catch { }
         }
     }
@@ -256,6 +282,7 @@ export async function main(ns) {
     function keepAgriRunning() {
         for (const city of CITIES) {
             try { c.sellMaterial(DIV_AGRI, city, 'Food', 'MAX', 'MP'); } catch { }
+            try { c.sellMaterial(DIV_AGRI, city, 'Plants', 'MAX', 'MP'); } catch { }
 
             try {
                 fillOffice(DIV_AGRI, city, 9, { ops: 4, eng: 2, biz: 1, mgmt: 1, rnd: 1 });
@@ -273,6 +300,7 @@ export async function main(ns) {
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 0 — Create corp + buy essential unlocks
     // ─────────────────────────────────────────────────────────────────────────
+    if (setupPhase <= 0) {
     if (!c.hasCorporation()) {
         log(ns, `INFO: Creating "${CORP_NAME}"...`, true, 'info');
         const inBn3 = ns.getResetInfo().currentNode === 3;
@@ -299,9 +327,13 @@ export async function main(ns) {
         buyUnlock(name);
     }
 
+        writeSetupPhase(1);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 1 — Agriculture: all cities, offices, warehouses, boost materials
     // ─────────────────────────────────────────────────────────────────────────
+    if (setupPhase <= 1) {
     if (!c.getCorporation().divisions.includes(DIV_AGRI)) {
         log(ns, `INFO: Expanding into Agriculture ($40 B)...`, true, 'info');
         c.expandIndustry(IND_AGRI, DIV_AGRI);
@@ -319,6 +351,7 @@ export async function main(ns) {
 
     for (const city of CITIES) {
         c.sellMaterial(DIV_AGRI, city, 'Food', 'MAX', 'MP');
+        c.sellMaterial(DIV_AGRI, city, 'Plants', 'MAX', 'MP');
     }
 
     log(ns, 'INFO: Applying Phase 1 Agriculture boost materials...', true);
@@ -327,9 +360,13 @@ export async function main(ns) {
         await applyBoostMaterials(DIV_AGRI, city, targets);
     }
 
+        writeSetupPhase(2);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 2 — Wait for and accept investment round 1
     // ─────────────────────────────────────────────────────────────────────────
+    if (setupPhase <= 2) {
     log(ns, `INFO: Waiting for round-1 offer ≥ ${formatMoney(MIN_ROUND1)}...`, true);
     while (true) {
         await waitCycles(2);
@@ -362,10 +399,14 @@ export async function main(ns) {
     }
     await waitCycles(1);
 
+        writeSetupPhase(3);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
-    // PHASE 3 — Launch Tobacco + Chemical; supply chain; first product; scale Agri
+    // PHASE 3 — Launch Tobacco + Water; supply chain; first product; scale Agri
     // ─────────────────────────────────────────────────────────────────────────
-    log(ns, 'INFO: Phase 3 — launching Tobacco and Chemical divisions...', true);
+    if (setupPhase <= 3) {
+    log(ns, 'INFO: Phase 3 — launching Tobacco and Water divisions...', true);
 
     for (const city of CITIES) {
         fillOffice(DIV_AGRI, city, 15, { ops: 6, eng: 3, biz: 1, mgmt: 3, rnd: 2 });
@@ -378,24 +419,28 @@ export async function main(ns) {
         await applyBoostMaterials(DIV_AGRI, city, targets);
     }
 
-    if (!c.getCorporation().divisions.includes(DIV_CHEM)) {
-        log(ns, `INFO: Expanding into Chemical ($70 B)...`, true, 'info');
-        c.expandIndustry(IND_CHEM, DIV_CHEM);
+    if (!c.getCorporation().divisions.includes(DIV_WATER)) {
+        log(ns, `INFO: Expanding into Water Utilities ($150 B)...`, true, 'info');
+        c.expandIndustry(IND_WATER, DIV_WATER);
     }
 
-    expandToAllCities(DIV_CHEM);
-    enableSmartSupply(DIV_CHEM);
+    expandToAllCities(DIV_WATER);
+    enableSmartSupply(DIV_WATER);
 
     for (const city of CITIES) {
-        fillOffice(DIV_CHEM, city, 9, { ops: 3, eng: 2, biz: 0, mgmt: 2, rnd: 2 });
+        fillOffice(DIV_WATER, city, 9, { ops: 5, eng: 2, biz: 0, mgmt: 1, rnd: 1 });
     }
 
-    boostMorale(DIV_CHEM);
+    boostMorale(DIV_WATER);
 
-    log(ns, 'INFO: Applying Chemical boost materials...', true);
     for (const city of CITIES) {
-        const targets = getBoostTargets(DIV_CHEM, city, CHEM_FACTORS, CHEM_SIZES, CHEM_MATS);
-        await applyBoostMaterials(DIV_CHEM, city, targets);
+        c.sellMaterial(DIV_WATER, city, 'Water', 'MAX', 'MP');
+    }
+
+    log(ns, 'INFO: Applying Water boost materials...', true);
+    for (const city of CITIES) {
+        const targets = getBoostTargets(DIV_WATER, city, WATER_FACTORS, WATER_SIZES, WATER_MATS);
+        await applyBoostMaterials(DIV_WATER, city, targets);
     }
 
     if (!c.getCorporation().divisions.includes(DIV_TOBACCO)) {
@@ -415,12 +460,11 @@ export async function main(ns) {
 
     log(ns, 'INFO: Setting up supply-chain exports...', true);
     for (const city of CITIES) {
-        try { c.exportMaterial(DIV_CHEM, city, DIV_AGRI, city, 'Chemicals', 'PROD'); } catch { }
-        try { c.exportMaterial(DIV_AGRI, city, DIV_CHEM, city, 'Plants', 'PROD'); } catch { }
+        try { c.exportMaterial(DIV_WATER, city, DIV_AGRI, city, 'Water', 'PROD'); } catch { }
         try { c.exportMaterial(DIV_AGRI, city, DIV_TOBACCO, city, 'Plants', 'PROD'); } catch { }
     }
 
-    for (const div of [DIV_TOBACCO, DIV_AGRI, DIV_CHEM]) {
+    for (const div of [DIV_TOBACCO, DIV_AGRI, DIV_WATER]) {
         for (const city of CITIES) {
             try {
                 const wh = c.getWarehouse(div, city);
@@ -458,9 +502,13 @@ export async function main(ns) {
         } catch { }
     }
 
+        writeSetupPhase(4);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 4 — Wait for and accept investment round 2
     // ─────────────────────────────────────────────────────────────────────────
+    if (setupPhase <= 4) {
     log(ns, `INFO: Waiting for round-2 offer ≥ ${formatMoney(MIN_ROUND2)}...`, true);
 
     const RESEARCH_QUEUE = [
@@ -489,7 +537,7 @@ export async function main(ns) {
     while (true) {
         await waitCycles(3);
 
-        for (const div of [DIV_TOBACCO, DIV_AGRI, DIV_CHEM]) {
+        for (const div of [DIV_TOBACCO, DIV_AGRI, DIV_WATER]) {
             boostMorale(div);
         }
 
@@ -521,7 +569,7 @@ export async function main(ns) {
             } catch { }
         }
 
-        for (const [div, queue] of [[DIV_AGRI, MAT_RESEARCH_QUEUE], [DIV_CHEM, MAT_RESEARCH_QUEUE]]) {
+        for (const [div, queue] of [[DIV_AGRI, MAT_RESEARCH_QUEUE], [DIV_WATER, MAT_RESEARCH_QUEUE]]) {
             for (const rName of queue) {
                 try {
                     if (!c.hasResearched(div, rName)) {
@@ -539,7 +587,7 @@ export async function main(ns) {
         for (const upg of [
             'Smart Factories',
             'Smart Storage',
-            'Nuoptimal Nootropic Injector Implants',
+            'NuoptimalNootropicInjectorImplants',
             'Neural Accelerators',
             'FocusWires',
             'Speech Processor Implants',
@@ -567,9 +615,13 @@ export async function main(ns) {
     }
     await waitCycles(1);
 
+        writeSetupPhase(5);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 5 — Final setup scaling before handoff
     // ─────────────────────────────────────────────────────────────────────────
+    if (setupPhase <= 5) {
     log(ns, 'INFO: Phase 5 — final scaling pass...', true);
 
     for (const city of CITIES) {
@@ -583,10 +635,10 @@ export async function main(ns) {
                 : { ops: 6, eng: 4, biz: 2, mgmt: 5, rnd: 3 }
         );
         fillOffice(DIV_AGRI, city, 20, { ops: 8, eng: 4, biz: 1, mgmt: 4, rnd: 3 });
-        fillOffice(DIV_CHEM, city, 9, { ops: 3, eng: 2, biz: 0, mgmt: 2, rnd: 2 });
+        fillOffice(DIV_WATER, city, 15, { ops: 7, eng: 3, biz: 0, mgmt: 3, rnd: 2 });
     }
 
-    for (const div of [DIV_TOBACCO, DIV_AGRI, DIV_CHEM]) {
+    for (const div of [DIV_TOBACCO, DIV_AGRI, DIV_WATER]) {
         for (const city of CITIES) {
             try {
                 const wh = c.getWarehouse(div, city);
@@ -597,15 +649,15 @@ export async function main(ns) {
 
     log(ns, 'INFO: Topping up Agriculture boost materials...', true);
     const AGRI_BOOST_FINAL = { 'Real Estate': 10000, 'Hardware': 500, 'Robots': 60, 'AI Cores': 400 };
-    const CHEM_BOOST_FINAL = { 'Real Estate': 1500, 'Hardware': 150, 'Robots': 40, 'AI Cores': 100 };
+    const WATER_BOOST_FINAL = { 'Real Estate': 3000, 'Robots': 50, 'AI Cores': 200 };
     for (const city of CITIES) {
         await applyBoostMaterials(DIV_AGRI, city, AGRI_BOOST_FINAL);
-        await applyBoostMaterials(DIV_CHEM, city, CHEM_BOOST_FINAL);
+        await applyBoostMaterials(DIV_WATER, city, WATER_BOOST_FINAL);
     }
 
     boostMorale(DIV_TOBACCO);
     boostMorale(DIV_AGRI);
-    boostMorale(DIV_CHEM);
+    boostMorale(DIV_WATER);
 
     try {
         if (c.getCorporation().funds > c.getHireAdVertCost(DIV_TOBACCO) * 2) {
@@ -614,7 +666,11 @@ export async function main(ns) {
         }
     } catch { }
 
-    ns.write(SETUP_DONE_FLAG, 'true', 'w');
+    }
+
+    writeSetupPhase(6);
+    setupCompleted = true;
+    try { ns.write(SETUP_DONE_FLAG, 'true', 'w'); } catch { }
     log(ns, '═══════════════════════════════════════════════════════', true);
     log(ns, 'INFO: Setup complete! Handing off to corp-autopilot.js.', true, 'success');
     log(ns, '═══════════════════════════════════════════════════════', true);

@@ -106,12 +106,6 @@ export async function main(ns) {
         "uPgrade: Fulcrum",
     ]);
 
-    const SMART_SUPPLY_MATS = {
-        [AGRI]: ["Water", "Chemicals"],
-        [CHEM]: ["Plants", "Water"],
-        [TOB]: ["Plants"],
-    };
-
     // ── State ─────────────────────────────────────────────────────────────────
     const state = {
         readyToIPO:       false,
@@ -507,19 +501,16 @@ export async function main(ns) {
     // correct and simpler for an autopilot.
     // ─────────────────────────────────────────────────────────────────────────
 
-    function applySmartSupplyLeftovers(divName, city) {
-        for (const mat of SMART_SUPPLY_MATS[divName] ?? []) {
-            safe(() => api.setSmartSupplyOption(divName, city, mat, "leftovers"));
-        }
-    }
-
     function enableSmartSupply(divName) {
         const div = getDivision(divName);
         if (!div || !hasUnlock("Smart Supply")) return;
         for (const city of div.cities ?? []) {
             if (!getWarehouse(divName, city)) continue;
             safe(() => api.setSmartSupply(divName, city, true));
-            applySmartSupplyLeftovers(divName, city);
+            // "Use leftovers" — only buy what exports don't cover.
+            for (const mat of ["Plants","Water","Chemicals"]) {
+                safe(() => api.setSmartSupplyOption(divName, city, mat, "leftovers"));
+            }
         }
     }
 
@@ -535,9 +526,6 @@ export async function main(ns) {
             safe(() => api.exportMaterial(AGRI, city, CHEM, city, "Plants", "PROD"));
             // Chemical → Agri: Chemicals supply for Agriculture quality loop.
             safe(() => api.exportMaterial(CHEM, city, AGRI, city, "Chemicals", "PROD"));
-            applySmartSupplyLeftovers(AGRI, city);
-            applySmartSupplyLeftovers(CHEM, city);
-            applySmartSupplyLeftovers(TOB, city);
         }
 
         state.exportsSetUp = true;
@@ -582,6 +570,7 @@ export async function main(ns) {
             if (Number.isFinite(n) && n > max) max = n;
         }
         const seq = Math.max(state.nextProductSeq, max + 1);
+        state.nextProductSeq = seq + 1;
         return `Tobac-v${seq}`;
     }
 
@@ -633,12 +622,8 @@ export async function main(ns) {
 
         // Start a product if we have a free slot and nothing developing.
         if (names.length < cap && developing.length === 0 && invest >= 1e8) {
-            const pName = nextProductName(TOB);
-            try {
-                api.makeProduct(TOB, HQ_CITY, pName, invest/2, invest/2);
-                state.nextProductSeq = parseInt(pName.slice(7), 10) + 1;
-                return;
-            } catch {}
+            safe(() => api.makeProduct(TOB, HQ_CITY, nextProductName(TOB), invest/2, invest/2));
+            return;
         }
 
         // At cap and nothing developing: cycle — discontinue oldest, start fresh.
@@ -652,12 +637,8 @@ export async function main(ns) {
                 if (Number.isFinite(seq) && seq < oldestSeq) { oldestSeq = seq; oldest = pName; }
             }
             if (oldest && invest >= 1e8) {
-                const pName = nextProductName(TOB);
-                try {
-                    api.discontinueProduct(TOB, oldest);
-                    api.makeProduct(TOB, HQ_CITY, pName, invest/2, invest/2);
-                    state.nextProductSeq = parseInt(pName.slice(7), 10) + 1;
-                } catch {}
+                safe(() => api.discontinueProduct(TOB, oldest));
+                safe(() => api.makeProduct(TOB, HQ_CITY, nextProductName(TOB), invest/2, invest/2));
             }
         }
     }

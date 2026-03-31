@@ -8,8 +8,9 @@ export async function main(ns) {
 
     const hasCorp = ns.corporation.hasCorporation();
     const setupDone = ns.fileExists(SETUP_DONE_FLAG, "home");
+    const setupPhase = Number.parseInt(ns.read('/corp-setup-phase.txt') || '0', 10) || 0;
 
-    if (!hasCorp || !setupDone) {
+    if (!hasCorp || !setupDone || setupPhase < 6) {
         if (!ns.isRunning(SETUP_SCRIPT, "home")) {
             ns.run(SETUP_SCRIPT);
         }
