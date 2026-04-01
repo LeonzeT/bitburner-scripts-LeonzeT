@@ -106,25 +106,14 @@ export async function main(ns) {
         "uPgrade: Fulcrum",
     ]);
 
-    const MIN_ROUND1 = 34e9;
-    const MIN_ROUND2 = 5e12;
-    const RP_TARGET_AGRI = 700;
-    const RP_TARGET_CHEM = 390;
-    const BOOST_MATS = ["Real Estate", "Hardware", "Robots", "AI Cores"];
-    const BOOST_SPACE_RATIO = { [AGRI]: 0.70, [CHEM]: 0.70 };
-    const FALLBACK_BOOST_FACTORS = {
-        [AGRI]: [0.72, 0.20, 0.30, 0.30],
-        [CHEM]: [0.25, 0.20, 0.25, 0.20],
-    };
-    const FALLBACK_BOOST_SIZES = [0.005, 0.06, 0.5, 0.1];
-
     // ── State ─────────────────────────────────────────────────────────────────
     const state = {
-        readyToIPO:       false,
-        lastDividendRate: -1,
-        nextProductSeq:   1,
-        exportsSetUp:     false,
-        agriRpReady:      false,     // true once Agri RP >= 55 in round 1
+        readyToIPO:          false,
+        lastDividendRate:    -1,
+        nextProductSeq:      1,
+        agriChemExportsSetUp:false,
+        tobExportsSetUp:     false,
+        agriRpReady:         false,  // true once Agri RP >= 55 in round 1
     };
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -140,75 +129,7 @@ export async function main(ns) {
     const hasUnlock  = (n)        => safe(() => api.hasUnlock(n), false);
     const hasRes     = (d,r)      => safe(() => api.hasResearched(d,r), false);
     const resCost    = (d,r)      => safe(() => api.getResearchCost(d,r), Infinity);
-
-    function optimalBoosts(space, factors, sizes, names) {
-        const c = [...factors], s = [...sizes], n = [...names];
-        while (c.length) {
-            const csum = c.reduce((a, b) => a + b, 0);
-            const qtys = c.map((ci, j) => {
-                const otherCoeff = csum - ci;
-                const otherSizes = s.reduce((a, sk, k) => (k !== j ? a + sk : a), 0);
-                return (space - 500 * ((s[j] / ci) * otherCoeff - otherSizes)) / (csum / ci) / s[j];
-            });
-            const negative = qtys.reduce((w, v, i) => (v < 0 && (w === -1 || v < qtys[w]) ? i : w), -1);
-            if (negative === -1) return Object.fromEntries(n.map((name, i) => [name, Math.floor(qtys[i])]));
-            c.splice(negative, 1);
-            s.splice(negative, 1);
-            n.splice(negative, 1);
-        }
-        return {};
-    }
-
-    function getBoostConfig(divName) {
-        const industry = divName === AGRI ? "Agriculture" : divName === CHEM ? "Chemical" : null;
-        if (!industry) return null;
-
-        const data = safe(() => api.getIndustryData(industry), null);
-        const fallbackFactors = FALLBACK_BOOST_FACTORS[divName];
-        const factors = [
-            data?.realEstateFactor ?? fallbackFactors[0],
-            data?.hardwareFactor ?? fallbackFactors[1],
-            data?.robotFactor ?? fallbackFactors[2],
-            data?.aiCoreFactor ?? fallbackFactors[3],
-        ];
-        const sizes = BOOST_MATS.map((mat, i) => safe(() => api.getMaterialData(mat).size, FALLBACK_BOOST_SIZES[i]));
-        return { factors, sizes, mats: [...BOOST_MATS] };
-    }
-
-    function getBoostTargets(divName, city) {
-        const config = getBoostConfig(divName);
-        const wh = getWarehouse(divName, city);
-        if (!config || !wh) return {};
-        const space = (wh.size ?? 0) * (BOOST_SPACE_RATIO[divName] ?? 0.70);
-        return optimalBoosts(space, config.factors, config.sizes, config.mats);
-    }
-
-    function applyBoostMaterials(divName, city) {
-        const targets = getBoostTargets(divName, city);
-        let changed = false;
-        for (const [mat, target] of Object.entries(targets)) {
-            const stored = safe(() => api.getMaterial(divName, city, mat).stored, 0);
-            const needed = Math.max(0, target - stored);
-            if (needed > 1) {
-                safe(() => api.buyMaterial(divName, city, mat, needed / 10));
-                changed = true;
-            } else {
-                safe(() => api.buyMaterial(divName, city, mat, 0));
-            }
-        }
-        return changed;
-    }
-
-    function refreshBoostMaterials(divName) {
-        const div = getDivision(divName);
-        if (!div || !hasUnlock("Warehouse API")) return;
-        if (divName === AGRI && !state.agriRpReady) return;
-        for (const city of div.cities ?? []) {
-            const wh = getWarehouse(divName, city);
-            if (!wh) continue;
-            applyBoostMaterials(divName, city);
-        }
-    }
+    const industryCost = (name)   => safe(() => api.getIndustryData(name)?.startingCost, Infinity);
 
     function log(msg) { ns.print(msg); }
 
@@ -504,14 +425,18 @@ export async function main(ns) {
                 }
             }
 
-            // Keep energy/morale capped without paying blindly when an office is already full.
-            const liveOffice = getOffice(divName, city) ?? office;
-            const avgEnergy = liveOffice?.avgEnergy ?? 0;
-            const maxEnergy = liveOffice?.maxEnergy ?? 0;
-            const avgMorale = liveOffice?.avgMorale ?? 0;
-            const maxMorale = liveOffice?.maxMorale ?? 0;
-            if (maxEnergy > 0 && avgEnergy < maxEnergy - 0.05) safe(() => api.buyTea(divName, city));
-            if (maxMorale > 0 && avgMorale < maxMorale - 0.05) safe(() => api.throwParty(divName, city, 500e3));
+            // Top up morale/energy only when they slip meaningfully below max.
+            // This keeps the office healthy without burning cash every single cycle.
+            const avgEnergy = office.avgEnergy ?? 0;
+            const maxEnergy = office.maxEnergy ?? 0;
+            const avgMorale = office.avgMorale ?? 0;
+            const maxMorale = office.maxMorale ?? 0;
+            if (maxEnergy > 0 && avgEnergy < maxEnergy * 0.95) {
+                safe(() => api.buyTea(divName, city));
+            }
+            if (maxMorale > 0 && avgMorale < maxMorale * 0.95) {
+                safe(() => api.throwParty(divName, city, 500e3));
+            }
 
             // Apply job distribution.
             const currentEmployees = getOffice(divName, city)?.numEmployees ?? 0;
@@ -553,8 +478,7 @@ export async function main(ns) {
 
     function ensureDivision(industry, name, corp, minFunds = 0) {
         if (getDivision(name)) return true;
-        const startCost = safe(() => api.getIndustryData(industry).startingCost, minFunds);
-        if (recoveryMode(corp) || (corp?.funds ?? 0) < Math.max(minFunds, startCost)) return false;
+        if (recoveryMode(corp) || (corp?.funds ?? 0) < minFunds) return false;
         safe(() => api.expandIndustry(industry, name));
         return !!getDivision(name);
     }
@@ -567,20 +491,6 @@ export async function main(ns) {
             if ((corp?.funds ?? 0) < minFunds || recoveryMode(corp)) continue;
             safe(() => api.expandCity(divName, city));
             safe(() => api.purchaseWarehouse(divName, city));
-        }
-    }
-
-    function manageValuationDummies(corp) {
-        const offer = safe(() => api.getInvestmentOffer(), null);
-        if (!offer || offer.round !== 2 || isPublic(corp) || recoveryMode(corp)) return;
-
-        for (let i = 1; i <= 5; i++) {
-            const name = `Dummy-${i}`;
-            if (getDivision(name)) continue;
-            if ((corp?.funds ?? 0) < 80e9) return;
-            if (!ensureDivision("Restaurant", name, corp, 80e9)) return;
-            ensureAllCities(name, corp, 5e9);
-            return;
         }
     }
 
@@ -614,33 +524,58 @@ export async function main(ns) {
     }
 
     function setupExports() {
-    if (state.exportsSetUp) return;
-    if (!hasUnlock("Export")) return;
-    if (!getDivision(AGRI) || !getDivision(CHEM) || !getDivision(TOB)) return;
+        if (!hasUnlock("Export")) return;
 
-    const EXP = "(IPROD+IINV/10)*(-1)";
+        const agri = getDivision(AGRI);
+        const chem = getDivision(CHEM);
+        const tob  = getDivision(TOB);
+        if (!agri || !chem) return;
 
-    for (const city of CITIES) {
-        // Agriculture → Tobacco
-        safe(() => api.exportMaterial(AGRI, city, TOB, city, "Plants", EXP));
+        // Build the Chemical quality loop as soon as Chemical exists.
+        // If Tobacco is later added, re-order the Plants export routes so Tobacco
+        // gets FIFO priority over Chemical, per the docs.
+        if (!state.agriChemExportsSetUp) {
+            if (tob) {
+                for (const city of CITIES) {
+                    safe(() => api.cancelExportMaterial(AGRI, city, CHEM, city, "Plants"));
+                    safe(() => api.cancelExportMaterial(CHEM, city, AGRI, city, "Chemicals"));
+                    safe(() => api.cancelExportMaterial(AGRI, city, TOB, city, "Plants"));
+                }
+                for (const city of CITIES) {
+                    safe(() => api.exportMaterial(AGRI, city, TOB, city, "Plants", "PROD"));
+                    safe(() => api.exportMaterial(AGRI, city, CHEM, city, "Plants", "PROD"));
+                    safe(() => api.exportMaterial(CHEM, city, AGRI, city, "Chemicals", "PROD"));
+                }
+                state.agriChemExportsSetUp = true;
+                state.tobExportsSetUp = true;
+                log("Export routes configured: Agri→Tob, Agri→Chem, Chem→Agri.");
+                return;
+            }
 
-        // Agriculture → Chemical
-        safe(() => api.exportMaterial(AGRI, city, CHEM, city, "Plants", EXP));
+            for (const city of CITIES) {
+                safe(() => api.exportMaterial(AGRI, city, CHEM, city, "Plants", "PROD"));
+                safe(() => api.exportMaterial(CHEM, city, AGRI, city, "Chemicals", "PROD"));
+            }
+            state.agriChemExportsSetUp = true;
+            log("Export routes configured: Agri→Chem, Chem→Agri.");
+        }
 
-        // Chemical → Agriculture
-        safe(() => api.exportMaterial(CHEM, city, AGRI, city, "Chemicals", EXP));
-
-        // Smart Supply should only top up leftovers
-        safe(() => api.setSmartSupplyOption(AGRI, city, "Chemicals", "leftovers"));
-        safe(() => api.setSmartSupplyOption(AGRI, city, "Water", "leftovers"));
-        safe(() => api.setSmartSupplyOption(CHEM, city, "Plants", "leftovers"));
-        safe(() => api.setSmartSupplyOption(CHEM, city, "Water", "leftovers"));
-        safe(() => api.setSmartSupplyOption(TOB, city, "Plants", "leftovers"));
+        if (tob && !state.tobExportsSetUp) {
+            for (const city of CITIES) {
+                safe(() => api.cancelExportMaterial(AGRI, city, TOB, city, "Plants"));
+                safe(() => api.cancelExportMaterial(AGRI, city, CHEM, city, "Plants"));
+                safe(() => api.cancelExportMaterial(CHEM, city, AGRI, city, "Chemicals"));
+            }
+            for (const city of CITIES) {
+                safe(() => api.exportMaterial(AGRI, city, TOB, city, "Plants", "PROD"));
+                safe(() => api.exportMaterial(AGRI, city, CHEM, city, "Plants", "PROD"));
+                safe(() => api.exportMaterial(CHEM, city, AGRI, city, "Chemicals", "PROD"));
+            }
+            state.tobExportsSetUp = true;
+            log("Export routes configured: Agri→Tob, Agri→Chem, Chem→Agri.");
+        }
     }
 
-    state.exportsSetUp = true;
-    log("Export routes configured: Agri→Tob, Agri→Chem, Chem→Agri.");
-}
     // ─────────────────────────────────────────────────────────────────────────
     // Material sales
     // ─────────────────────────────────────────────────────────────────────────
@@ -679,7 +614,6 @@ export async function main(ns) {
             if (Number.isFinite(n) && n > max) max = n;
         }
         const seq = Math.max(state.nextProductSeq, max + 1);
-        state.nextProductSeq = seq + 1;
         return `Tobac-v${seq}`;
     }
 
@@ -724,14 +658,17 @@ export async function main(ns) {
         // Docs: "It's fine to spend 1% of your current funds for them. Their exponent is 0.1."
         const invest = Math.max(
             1e8, // $100M minimum so product quality isn't trivially bad
-            (corp.funds ?? 0) * 0.01
+            Math.min((corp.funds ?? 0) * 0.01, 5e9)  // 1% capped at $5B
         );
 
         const cap = maxProducts(TOB);
 
         // Start a product if we have a free slot and nothing developing.
         if (names.length < cap && developing.length === 0 && invest >= 1e8) {
-            safe(() => api.makeProduct(TOB, HQ_CITY, nextProductName(TOB), invest/2, invest/2));
+            const pName = nextProductName(TOB);
+            if (safe(() => api.makeProduct(TOB, HQ_CITY, pName, invest/2, invest/2), false)) {
+                state.nextProductSeq = (parseInt(pName.slice(7), 10) || state.nextProductSeq) + 1;
+            }
             return;
         }
 
@@ -747,7 +684,10 @@ export async function main(ns) {
             }
             if (oldest && invest >= 1e8) {
                 safe(() => api.discontinueProduct(TOB, oldest));
-                safe(() => api.makeProduct(TOB, HQ_CITY, nextProductName(TOB), invest/2, invest/2));
+                const pName = nextProductName(TOB);
+                if (safe(() => api.makeProduct(TOB, HQ_CITY, pName, invest/2, invest/2), false)) {
+                    state.nextProductSeq = (parseInt(pName.slice(7), 10) || state.nextProductSeq) + 1;
+                }
             }
         }
     }
@@ -756,43 +696,33 @@ export async function main(ns) {
     // Investment + IPO + Dividends
     // ─────────────────────────────────────────────────────────────────────────
 
-    function shouldAcceptInvestment(offer, corp) {
-        const round      = offer?.round ?? 0;
-        const funds      = corp?.funds ?? 0;
-        const revenue    = corp?.revenue ?? 0;
-        const offerFunds = offer?.funds ?? 0;
+    function shouldAcceptInvestment(corp) {
+    const offer = corp.getInvestmentOffer();
+    const funds = corp.getCorporation().funds;
+    const round = offer.round;
 
-        if (funds < 0) return true; // Emergency: always accept if in debt
-        if (round <= 0 || round > 4) return false;
+    const total = offer.funds + funds;
 
-        if (round === 1) {
-            return offerFunds >= MIN_ROUND1;
-        }
-
-        if (round === 2) {
-            const agri = getDivision(AGRI);
-            const chem = getDivision(CHEM);
-            const tob = getDivision(TOB);
-            if (!agri || !chem || !tob) return false;
-            if ((agri.researchPoints ?? 0) < RP_TARGET_AGRI) return false;
-            if ((chem.researchPoints ?? 0) < RP_TARGET_CHEM) return false;
-            return offerFunds >= MIN_ROUND2;
-        }
-
-        // Hard floors per round - accept as soon as we hit them.
-        const floors = { 3: 250e9, 4: 1e12 };
-        if (offerFunds >= (floors[round] ?? Infinity)) return true;
-
-        // Accept if offer beats our cash on hand by the round-dependent multiplier.
-        const mults = { 3: 1.4, 4: 1.2 };
-        if (offerFunds >= Math.max(10e9, funds * (mults[round] ?? 1.5))) return true;
-
-        // Accept if offer is worth several hours of revenue.
-        const hrs = { 3: 12, 4: 24 };
-        if (offerFunds >= revenue * 3600 * (hrs[round] ?? 8)) return true;
-
-        return false;
+    if (round === 1) {
+        // Must enable Chemical immediately
+        return total >= 75e9;
     }
+
+    if (round === 2) {
+        // Must enable Tobacco + upgrades
+        return total >= 150e9;
+    }
+
+    if (round === 3) {
+        return total >= 500e9;
+    }
+
+    if (round === 4) {
+        return true;
+    }
+
+    return false;
+}
 
     function manageInvestments(corp) {
         if (isPublic(corp)) return;
@@ -873,12 +803,14 @@ export async function main(ns) {
         // But: "Don't invest much funds on Chemical's Office/Advert upgrades."
         if (!getDivision(AGRI)) return false;  // Need Agri first
         const agProfit = (corp?.revenue ?? 0) - (corp?.expenses ?? 0);
-        if (!ensureDivision("Chemical", CHEM, corp, 70e9)) return false;
+        if (!ensureDivision("Chemical", CHEM, corp, industryCost(CHEM))) return false;
         ensureAllCities(CHEM, corp, 5e9);
         ensureWarehouses(CHEM, corp);
         enableSmartSupply(CHEM);
         manageOfficeGrowth(CHEM, corp);
         manageResearch(CHEM, MAT_RESEARCH);
+        // Chemical: sell excess Chemicals on market.
+        manageMaterialSales(CHEM);
         // No Advert for Chemical (waste of funds).
         setupExports();
         return true;
@@ -887,8 +819,8 @@ export async function main(ns) {
     function bootstrapTobacco(corp) {
         if (!getDivision(AGRI)) return false;
         if (!getDivision(TOB)) {
-            if (recoveryMode(corp) || (corp?.funds ?? 0) < 20e9) return false;
-            ensureDivision("Tobacco", TOB, corp, 20e9);
+            if (recoveryMode(corp) || (corp?.funds ?? 0) < industryCost(TOB)) return false;
+            ensureDivision("Tobacco", TOB, corp, industryCost(TOB));
         }
         if (!getDivision(TOB)) return false;
 
@@ -923,7 +855,8 @@ export async function main(ns) {
             fundingRound: safe(() => api.getInvestmentOffer()?.round, 0),
             wilsonLevel:  safe(() => api.getUpgradeLevel(U.wilson), 0),
             agriRpReady:  state.agriRpReady,
-            exportsSetUp: state.exportsSetUp,
+            agriChemExportsSetUp: state.agriChemExportsSetUp,
+            tobExportsSetUp: state.tobExportsSetUp,
             divisions: divs.map(div => ({
                 name:      div.name,
                 cities:    Array.isArray(div.cities) ? div.cities.length : 0,
@@ -960,8 +893,9 @@ export async function main(ns) {
             continue;
         }
 
-        // Core management - always runs.
+        // Core management — always runs.
         manageUnlocks(corp);
+        manageInvestments(corp);
 
         // Agriculture must exist before anything else can bootstrap.
         if (!bootstrapAgriculture(corp)) {
@@ -977,12 +911,6 @@ export async function main(ns) {
         if ((corp.funds ?? 0) > 20e9 && ((corp.revenue ?? 0) - (corp.expenses ?? 0)) > 0) {
             bootstrapTobacco(corp);
         }
-
-        refreshBoostMaterials(AGRI);
-        refreshBoostMaterials(CHEM);
-
-        manageValuationDummies(corp);
-        manageInvestments(corp);
 
         // Global upgrades after divisions are alive.
         if (!recoveryMode(corp)) {

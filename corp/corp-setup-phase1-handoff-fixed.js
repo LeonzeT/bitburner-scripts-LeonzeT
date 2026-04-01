@@ -33,53 +33,25 @@
 import { log, formatMoney } from '/helpers.js';
 
 // ── Division / industry names ─────────────────────────────────────────────────
-const CORP_NAME = 'Nite-Corp';
+const CORP_NAME   = 'Nite-Corp';
 const DIV_TOBACCO = 'Tobacco';
-const DIV_AGRI = 'Agriculture';
-const DIV_CHEM = 'Chemical';
+const DIV_AGRI    = 'Agriculture';
+const DIV_CHEM    = 'Chemical';
 const IND_TOBACCO = 'Tobacco';
-const IND_AGRI = 'Agriculture';
-const IND_CHEM = 'Chemical';
+const IND_AGRI    = 'Agriculture';
+const IND_CHEM    = 'Chemical';
 
 // ── Geography ─────────────────────────────────────────────────────────────────
-const CITIES = ['Aevum', 'Chongqing', 'Sector-12', 'New Tokyo', 'Ishima', 'Volhaven'];
+const CITIES  = ['Aevum', 'Chongqing', 'Sector-12', 'New Tokyo', 'Ishima', 'Volhaven'];
 const HQ_CITY = 'Sector-12';
-const PHASE3_CHEM_START_CITIES = [HQ_CITY];
-const PHASE3_TOB_START_CITIES = [HQ_CITY];
 
 // ── Investment thresholds ─────────────────────────────────────────────────────
 // Round 1 (10% dilution, offer = val×0.3): need enough post-acceptance funds
 // to cover Chemical ($70B) + Tobacco ($20B) + city expansions (~50B each) + buffer.
+// 210B requires ~2M/s profit — achievable ceiling for 4-employee Agri with boosts.
 // At 25B we accepted with nothing left to fund Phase 3 → infinite crash loop.
-const MIN_ROUND1 = 34e9;  // Accept early — 210B is unreachable from Agriculture alone
+const MIN_ROUND1 = 26e9;
 const MIN_ROUND2 = 5e12;
-const ROUND1_FREEZE_RATIO = 0.80;
-const ROUND1_SOFT_ACCEPT = 28e9;
-const ROUND1_NO_IMPROVE_LIMIT = 6;
-const MAX_ROUND1_SMART_STORAGE = 2;
-const MAX_ROUND1_WAREHOUSE_LEVEL = 2;
-const ROUND1_USE_CUSTOM_SUPPLY = true;
-const ROUND1_TARGET = ROUND1_USE_CUSTOM_SUPPLY ? 80e9 : MIN_ROUND1;
-const ROUND1_SOFT_FLOOR = ROUND1_USE_CUSTOM_SUPPLY ? 40e9 : ROUND1_SOFT_ACCEPT;
-const ROUND1_STAGNATION_LIMIT = ROUND1_USE_CUSTOM_SUPPLY ? 10 : ROUND1_NO_IMPROVE_LIMIT;
-const ROUND1_SMART_STORAGE_TARGET = ROUND1_USE_CUSTOM_SUPPLY ? 4 : MAX_ROUND1_SMART_STORAGE;
-const ROUND1_WAREHOUSE_TARGET = ROUND1_USE_CUSTOM_SUPPLY ? 3 : MAX_ROUND1_WAREHOUSE_LEVEL;
-const ROUND1_ADVERT_TARGET = ROUND1_USE_CUSTOM_SUPPLY ? 4 : 2;
-const ROUND1_SUPPLY_BUFFER_CYCLES = 2.5;
-const ROUND1_SUPPLY_SEED = { Water: 75, Chemicals: 30 };
-const PHASE3_CHEM_MIN_RESERVE = 18e9;
-const PHASE3_CHEM_MID_RESERVE = 30e9;
-const PHASE3_CHEM_FREEZE_GAP = 8e9;
-const PHASE3_AGRI_TARGET_OFFICE = 8;
-const PHASE3_AGRI_TARGET_WAREHOUSE = 8;
-const PHASE3_AGRI_TARGET_ADVERT = 8;
-const PHASE3_AGRI_GLOBAL_UPGRADE_TARGET = 6;
-const PHASE3_CHEM_INITIAL_OFFICE = 3;
-const PHASE3_CHEM_INITIAL_WAREHOUSE = 2;
-const PHASE3_TOB_INITIAL_HQ_OFFICE = 6;
-const PHASE3_EXPORT_RESERVE = 2e9;
-const PHASE3_CHEM_WATER_SEED = 120;
-const PHASE3_CHEM_WATER_BUFFER_CYCLES = 3;
 
 // ── RP targets before the quality loop is strong enough (from docs) ───────────
 // "Waiting for 700RP/390RP in Agriculture/Chemical respectively is enough."
@@ -87,9 +59,9 @@ const RP_TARGET_AGRI = 700;
 const RP_TARGET_CHEM = 390;
 
 // ── Flags / temp files ────────────────────────────────────────────────────────
-const SETUP_DONE_FLAG = '/corp-setup-done.txt';
+const SETUP_DONE_FLAG  = '/corp-setup-done.txt';
 const SETUP_PHASE_FILE = '/corp-setup-phase.txt';
-const SETUP_LOCK = '/Temp/corp-setup.lock.txt';
+const SETUP_LOCK       = '/Temp/corp-setup.lock.txt';
 
 // ── Job strings — exact CorpEmployeeJob enum values ───────────────────────────
 const JOBS = {
@@ -100,7 +72,7 @@ const JOBS = {
 // ── Unlock strings ────────────────────────────────────────────────────────────
 const UNLOCKS = {
     warehouseAPI: 'Warehouse API', officeAPI: 'Office API',
-    smartSupply: 'Smart Supply', export: 'Export',
+    smartSupply: 'Smart Supply',   export: 'Export',
     mktDemand: 'Market Research - Demand', mktComp: 'Market Data - Competition',
 };
 
@@ -128,14 +100,14 @@ function optimalBoosts(S, factors, sizes, names) {
 // Source: IndustryData.ts (realEstateFactor/hardwareFactor/robotFactor/aiCoreFactor)
 // Sizes: MaterialInfo.ts
 const AGRI_FACTORS = [0.72, 0.20, 0.30, 0.30];
-const AGRI_SIZES = [0.005, 0.06, 0.5, 0.1];
-const AGRI_MATS = ['Real Estate', 'Hardware', 'Robots', 'AI Cores'];
+const AGRI_SIZES   = [0.005, 0.06, 0.5, 0.1];
+const AGRI_MATS    = ['Real Estate', 'Hardware', 'Robots', 'AI Cores'];
 
 // Chemical: realEstate=0.25, hardware=0.20, robot=0.25, aiCore=0.20
 // scienceFactor=0.75 (highest material industry) — why Chemical is mandatory
 const CHEM_FACTORS = [0.25, 0.20, 0.25, 0.20];
-const CHEM_SIZES = [0.005, 0.06, 0.5, 0.1];
-const CHEM_MATS = ['Real Estate', 'Hardware', 'Robots', 'AI Cores'];
+const CHEM_SIZES   = [0.005, 0.06, 0.5, 0.1];
+const CHEM_MATS    = ['Real Estate', 'Hardware', 'Robots', 'AI Cores'];
 
 // ── Research queues ───────────────────────────────────────────────────────────
 // Excluded (per docs): AutoBrew/AutoPartyManager ("useless"), Capacity.I/II ("not useful").
@@ -172,7 +144,7 @@ const PRODUCTION_RESEARCH = new Set([
 
 // ── Market cycle ──────────────────────────────────────────────────────────────
 const CYCLE_SECS = 10;
-const CYCLE_MS = 11000;
+const CYCLE_MS   = 11000;
 
 const argsSchema = [['self-fund', false]];
 export function autocomplete(data) { data.flags(argsSchema); return []; }
@@ -184,46 +156,10 @@ export async function main(ns) {
     ns.ui.openTail();
     const c = ns.corporation;
 
-    function resolvePath(key, fallbackFile) {
-        try {
-            const p = JSON.parse(ns.read('/script-paths.json') || '{}');
-            if (typeof p[key] === 'string' && p[key].length > 0) return p[key];
-        } catch { }
-        const script = ns.getScriptName();
-        const slash = script.lastIndexOf('/');
-        return slash === -1 ? fallbackFile : `${script.slice(0, slash)}/${fallbackFile}`;
+    function resolvePath(key, fallback) {
+        try { const p = JSON.parse(ns.read('/script-paths.json')); return p[key] ?? fallback; }
+        catch { return fallback; }
     }
-
-    function getBoostConfig(industry, fallbackFactors, fallbackSizes, mats) {
-        try {
-            const data = c.getIndustryData(industry);
-            return {
-                factors: [
-                    data.realEstateFactor ?? fallbackFactors[0],
-                    data.hardwareFactor ?? fallbackFactors[1],
-                    data.robotFactor ?? fallbackFactors[2],
-                    data.aiCoreFactor ?? fallbackFactors[3],
-                ],
-                sizes: mats.map((mat, i) => c.getMaterialData(mat)?.size ?? fallbackSizes[i]),
-                mats: [...mats],
-            };
-        } catch {
-            return { factors: [...fallbackFactors], sizes: [...fallbackSizes], mats: [...mats] };
-        }
-    }
-
-    const AGRI_BOOST = getBoostConfig(IND_AGRI, AGRI_FACTORS, AGRI_SIZES, AGRI_MATS);
-    const CHEM_BOOST = getBoostConfig(IND_CHEM, CHEM_FACTORS, CHEM_SIZES, CHEM_MATS);
-
-    function getRequiredMaterialsConfig(industry, fallback) {
-        try { return { ...(c.getIndustryData(industry).requiredMaterials ?? fallback) }; }
-        catch { return { ...fallback }; }
-    }
-
-    const ROUND1_AGRI_REQUIRED = getRequiredMaterialsConfig(IND_AGRI, { Water: 0.5, Chemicals: 0.2 });
-    const ROUND1_AGRI_MAT_SIZES = Object.fromEntries(
-        Object.keys(ROUND1_AGRI_REQUIRED).map((mat) => [mat, c.getMaterialData(mat)?.size ?? 0.05]),
-    );
 
     // ── Lock ──────────────────────────────────────────────────────────────────
     function readLock() {
@@ -256,7 +192,7 @@ export async function main(ns) {
 
     if (c.hasCorporation() && phase >= 6) {
         ns.write(SETUP_DONE_FLAG, 'true', 'w');
-        const pilot = resolvePath('corp-autopilot', 'corp-autopilot.js');
+        const pilot = resolvePath('corp-autopilot', 'corp/corp-autopilot.js');
         if (!ns.ps('home').some(p => p.filename === pilot)) ns.run(pilot);
         return;
     }
@@ -264,17 +200,30 @@ export async function main(ns) {
 
     async function waitCycles(n = 1) { await ns.sleep(CYCLE_MS * n); }
 
+    function finishSetupAndHandoff() {
+        writePhase(6);
+        phase = 6;
+        ns.write(SETUP_DONE_FLAG, 'true', 'w');
+        log(ns, '═══════════════════════════════════════════════════════', true);
+        log(ns, 'INFO: Phase 1 complete — handing off to corp-autopilot.js for Chemical/Tobacco.', true, 'success');
+        log(ns, '═══════════════════════════════════════════════════════', true);
+
+        const PILOT = resolvePath('corp-autopilot', 'corp/corp-autopilot.js');
+        try { if (!ns.ps('home').some(p => p.filename === PILOT)) ns.run(PILOT); }
+        catch { ns.run(PILOT); }
+    }
+
     // ── Job assignment (two-pass — zero first, then set targets) ─────────────
     // setJobAssignment operates on employeeNextJobs (pending state).
     // Pass 1 zeros all → freed to Unassigned pool. Pass 2 draws from that pool.
-    function assignJobs(div, city, { ops = 0, eng = 0, biz = 0, mgmt = 0, rnd = 0 } = {}) {
+    function assignJobs(div, city, { ops=0, eng=0, biz=0, mgmt=0, rnd=0 } = {}) {
         for (const job of [JOBS.ops, JOBS.eng, JOBS.biz, JOBS.mgmt, JOBS.rnd])
             try { c.setJobAssignment(div, city, job, 0); } catch { }
-        if (ops > 0) try { c.setJobAssignment(div, city, JOBS.ops, ops); } catch { }
-        if (eng > 0) try { c.setJobAssignment(div, city, JOBS.eng, eng); } catch { }
-        if (biz > 0) try { c.setJobAssignment(div, city, JOBS.biz, biz); } catch { }
+        if (ops  > 0) try { c.setJobAssignment(div, city, JOBS.ops,  ops);  } catch { }
+        if (eng  > 0) try { c.setJobAssignment(div, city, JOBS.eng,  eng);  } catch { }
+        if (biz  > 0) try { c.setJobAssignment(div, city, JOBS.biz,  biz);  } catch { }
         if (mgmt > 0) try { c.setJobAssignment(div, city, JOBS.mgmt, mgmt); } catch { }
-        if (rnd > 0) try { c.setJobAssignment(div, city, JOBS.rnd, rnd); } catch { }
+        if (rnd  > 0) try { c.setJobAssignment(div, city, JOBS.rnd,  rnd);  } catch { }
     }
 
     function fillOffice(div, city, targetSize, jobCounts) {
@@ -295,28 +244,28 @@ export async function main(ns) {
         } catch { return {}; }
     }
 
-    async function applyBoostMaterials(div, city, targets) {
-        let anyNeeded = false;
-        for (const [mat, target] of Object.entries(targets)) {
-            const stored = c.getMaterial(div, city, mat).stored;
-            const needed = Math.max(0, target - stored);
-            if (needed > 0) { c.buyMaterial(div, city, mat, needed / CYCLE_SECS); anyNeeded = true; }
-        }
-        if (anyNeeded) {
-            await waitCycles(1);
-            for (const mat of Object.keys(targets)) c.buyMaterial(div, city, mat, 0);
-        }
-    }
+	async function applyBoostMaterials(div, city, targets) {
+		let anyNeeded = false;
+		for (const [mat, target] of Object.entries(targets)) {
+			const stored = c.getMaterial(div, city, mat).stored;
+			const needed = Math.max(0, target - stored);
+			if (needed > 0) { c.buyMaterial(div, city, mat, needed / CYCLE_SECS); anyNeeded = true; }
+		}
+		if (anyNeeded) {
+			await waitCycles(1);
+			for (const mat of Object.keys(targets)) c.buyMaterial(div, city, mat, 0);
+		}
+	}
 
-    // Re-apply boosts whenever warehouse capacity changes from level, Smart Storage, or research.
-    const prevWHCapacity = {};
+    // Re-apply boosts whenever a warehouse level has changed (SmartStorage expanded it).
+    const prevWHLevel = {};
     async function refreshBoosts(div, factors, sizes, mats) {
         for (const city of CITIES) {
             try {
                 const key = `${div}|${city}`;
-                const cap = c.getWarehouse(div, city).size;
-                if (cap !== prevWHCapacity[key]) {
-                    prevWHCapacity[key] = cap;
+                const lvl = c.getWarehouse(div, city).level;
+                if (lvl !== prevWHLevel[key]) {
+                    prevWHLevel[key] = lvl;
                     await applyBoostMaterials(div, city, getBoostTargets(div, city, factors, sizes, mats));
                 }
             } catch { }
@@ -324,20 +273,12 @@ export async function main(ns) {
     }
 
     // ── Division helpers ──────────────────────────────────────────────────────
-    function hasDiv(div) {
-        try { return c.getCorporation().divisions.includes(div); } catch { return false; }
-    }
-
-    function expandIndustryCost(industry) {
-        try { return c.getIndustryData(industry).startingCost; } catch { return Infinity; }
-    }
-
-    function expandToCities(div, targetCities = CITIES) {
+    function expandToAllCities(div) {
         const existing = c.getDivision(div).cities;
-        for (const city of targetCities) {
+        for (const city of CITIES) {
             if (!existing.includes(city)) try { c.expandCity(div, city); } catch { }
         }
-        for (const city of targetCities)
+        for (const city of CITIES)
             if (!c.hasWarehouse(div, city)) try { c.purchaseWarehouse(div, city); } catch { }
     }
 
@@ -351,206 +292,6 @@ export async function main(ns) {
         if (!c.hasUnlock(UNLOCKS.smartSupply)) return;
         for (const city of CITIES)
             try { if (c.hasWarehouse(div, city)) c.setSmartSupply(div, city, true); } catch { }
-    }
-
-    function setLeftovers(div, city, materials) {
-        if (!c.hasUnlock(UNLOCKS.smartSupply)) return;
-        for (const material of materials) {
-            try { c.setSmartSupplyOption(div, city, material, 'leftovers'); } catch { }
-        }
-    }
-
-    function divisionInfraReady(div, targetCities = CITIES) {
-        try {
-            const cities = c.getDivision(div).cities;
-            return targetCities.every(city => cities.includes(city) && c.hasWarehouse(div, city));
-        } catch {
-            return false;
-        }
-    }
-
-    async function waitForDivisionInfrastructure(div, label, targetCities = CITIES) {
-        while (!divisionInfraReady(div, targetCities)) {
-            expandToCities(div, targetCities);
-            if (!divisionInfraReady(div, targetCities)) {
-                log(ns, `  Waiting for ${label} city/warehouse expansion...`, false);
-                await waitCycles(2);
-            }
-        }
-    }
-
-    async function waitForWarehouseLevel(div, city, targetLevel) {
-        while (true) {
-            try {
-                const wh = c.getWarehouse(div, city);
-                if (wh.level >= targetLevel) return;
-                c.upgradeWarehouse(div, city, 1);
-            } catch { }
-            await waitCycles(1);
-        }
-    }
-
-    async function waitFillOffice(div, city, targetSize, jobCounts) {
-        while (true) {
-            try {
-                fillOffice(div, city, targetSize, jobCounts);
-                return;
-            } catch { }
-            await waitCycles(1);
-        }
-    }
-
-    function maintainAgriSalesAndJobs(jobCounts = { ops: 1, eng: 1, biz: 1, mgmt: 1 }) {
-        for (const city of CITIES) {
-            try { c.sellMaterial(DIV_AGRI, city, 'Food', 'MAX', 'MP'); } catch { }
-            try { c.sellMaterial(DIV_AGRI, city, 'Plants', 'MAX', 'MP'); } catch { }
-            try { assignJobs(DIV_AGRI, city, jobCounts); } catch { }
-        }
-    }
-
-    function maintainRound1AgriSupply() {
-        if (!ROUND1_USE_CUSTOM_SUPPLY) return;
-        for (const city of CITIES) {
-            try {
-                const wh = c.getWarehouse(DIV_AGRI, city);
-                const freeSpace = Math.max(0, wh.size - wh.sizeUsed);
-                const rawProd = Math.max(
-                    c.getMaterial(DIV_AGRI, city, 'Plants').productionAmount || 0,
-                    c.getMaterial(DIV_AGRI, city, 'Food').productionAmount || 0,
-                    0,
-                );
-                const needed = {};
-                let totalNeedSize = 0;
-                for (const [mat, coeff] of Object.entries(ROUND1_AGRI_REQUIRED)) {
-                    const stored = c.getMaterial(DIV_AGRI, city, mat).stored;
-                    const seed = ROUND1_SUPPLY_SEED[mat] ?? 0;
-                    const target = Math.max(seed, rawProd * coeff * CYCLE_SECS * ROUND1_SUPPLY_BUFFER_CYCLES);
-                    const deficit = Math.max(0, target - stored);
-                    needed[mat] = deficit;
-                    totalNeedSize += deficit * (ROUND1_AGRI_MAT_SIZES[mat] ?? 0.05);
-                }
-                const scale = totalNeedSize > freeSpace && totalNeedSize > 0 ? freeSpace / totalNeedSize : 1;
-                for (const [mat, deficit] of Object.entries(needed)) {
-                    c.buyMaterial(DIV_AGRI, city, mat, Math.max(0, deficit * scale / CYCLE_SECS));
-                }
-            } catch { }
-        }
-    }
-
-    function stopRound1AgriSupply() {
-        if (!ROUND1_USE_CUSTOM_SUPPLY) return;
-        for (const city of CITIES) {
-            for (const mat of Object.keys(ROUND1_AGRI_REQUIRED)) {
-                try { c.buyMaterial(DIV_AGRI, city, mat, 0); } catch { }
-            }
-        }
-    }
-
-    function maintainChemicalWaterSupply(cities = PHASE3_CHEM_START_CITIES) {
-        for (const city of cities) {
-            try {
-                if (!c.hasWarehouse(DIV_CHEM, city)) continue;
-                const wh = c.getWarehouse(DIV_CHEM, city);
-                const freeSpace = Math.max(0, wh.size - wh.sizeUsed);
-                const chemProd = Math.max(c.getMaterial(DIV_CHEM, city, 'Chemicals').productionAmount || 0, 0);
-                const stored = c.getMaterial(DIV_CHEM, city, 'Water').stored;
-                const target = Math.max(PHASE3_CHEM_WATER_SEED, chemProd * 0.5 * CYCLE_SECS * PHASE3_CHEM_WATER_BUFFER_CYCLES);
-                const deficit = Math.max(0, target - stored);
-                const maxBySpace = (ROUND1_AGRI_MAT_SIZES.Water ?? 0.05) > 0 ? freeSpace / (ROUND1_AGRI_MAT_SIZES.Water ?? 0.05) : deficit;
-                c.buyMaterial(DIV_CHEM, city, 'Water', Math.max(0, Math.min(deficit, maxBySpace) / CYCLE_SECS));
-            } catch { }
-        }
-    }
-
-    function stopChemicalWaterSupply(cities = CITIES) {
-        for (const city of cities) {
-            try { c.buyMaterial(DIV_CHEM, city, 'Water', 0); } catch { }
-        }
-    }
-
-    function unlockCost(name, fallback = Infinity) {
-        try { return c.getUnlockCost(name); } catch { return fallback; }
-    }
-
-    function configureExports() {
-        if (!c.hasUnlock(UNLOCKS.export)) return;
-        const EXP = '(IPROD+IINV/10)*(-1)';
-        for (const city of CITIES) {
-            try { c.exportMaterial(DIV_AGRI, city, DIV_TOBACCO, city, 'Plants', EXP); } catch { }
-            try { c.exportMaterial(DIV_AGRI, city, DIV_CHEM, city, 'Plants', EXP); } catch { }
-            try { c.exportMaterial(DIV_CHEM, city, DIV_AGRI, city, 'Chemicals', EXP); } catch { }
-        }
-        for (const city of CITIES) {
-            setLeftovers(DIV_AGRI, city, ['Chemicals', 'Water']);
-            setLeftovers(DIV_CHEM, city, ['Plants', 'Water']);
-            setLeftovers(DIV_TOBACCO, city, ['Plants']);
-        }
-    }
-
-    function getPhase3ChemicalReserve() {
-        const chemCost = expandIndustryCost(IND_CHEM);
-        const funds = c.getCorporation().funds;
-        const gap = Math.max(0, chemCost - funds);
-        if (gap <= PHASE3_CHEM_FREEZE_GAP) {
-            return Math.max(chemCost - 2e9, funds * 0.95);
-        }
-        if (gap <= 20e9) {
-            return Math.max(PHASE3_CHEM_MID_RESERVE, funds * 0.72);
-        }
-        return Math.max(PHASE3_CHEM_MIN_RESERVE, funds * 0.60);
-    }
-
-    async function investInAgricultureWhileWaitingForChemical() {
-        maintainAgriSalesAndJobs({ ops: 2, eng: 3, biz: 1, mgmt: 1, rnd: 1 });
-        if (!c.hasUnlock(UNLOCKS.smartSupply)) maintainRound1AgriSupply();
-        tryResearch(DIV_AGRI, MAT_RESEARCH);
-
-        const reserve = getPhase3ChemicalReserve();
-        const corpFunds = () => c.getCorporation().funds;
-
-        for (const city of CITIES) {
-            try {
-                const off = c.getOffice(DIV_AGRI, city);
-                if (off.size < PHASE3_AGRI_TARGET_OFFICE) {
-                    const increase = PHASE3_AGRI_TARGET_OFFICE - off.size;
-                    const cost = c.getOfficeSizeUpgradeCost(DIV_AGRI, city, increase);
-                    if (corpFunds() - cost >= reserve) {
-                        fillOffice(DIV_AGRI, city, PHASE3_AGRI_TARGET_OFFICE, { ops: 2, eng: 3, biz: 1, mgmt: 1, rnd: 1 });
-                    }
-                } else {
-                    fillOffice(DIV_AGRI, city, off.size, { ops: 2, eng: 3, biz: 1, mgmt: 1, rnd: 1 });
-                }
-            } catch { }
-
-            try {
-                const wh = c.getWarehouse(DIV_AGRI, city);
-                if (wh.level < PHASE3_AGRI_TARGET_WAREHOUSE) {
-                    const cost = c.getUpgradeWarehouseCost(DIV_AGRI, city, 1);
-                    if (corpFunds() - cost >= reserve) {
-                        c.upgradeWarehouse(DIV_AGRI, city, 1);
-                    }
-                }
-            } catch { }
-        }
-
-        try {
-            while (c.getHireAdVertCount(DIV_AGRI) < PHASE3_AGRI_TARGET_ADVERT) {
-                const cost = c.getHireAdVertCost(DIV_AGRI);
-                if (corpFunds() - cost < reserve) break;
-                c.hireAdVert(DIV_AGRI);
-            }
-        } catch { }
-
-        for (const upg of ['Smart Factories', 'Smart Storage']) {
-            try {
-                while (c.getUpgradeLevel(upg) < PHASE3_AGRI_GLOBAL_UPGRADE_TARGET) {
-                    const cost = c.getUpgradeLevelCost(upg);
-                    if (corpFunds() - cost < reserve) break;
-                    c.levelUpgrade(upg);
-                }
-            } catch { }
-        }
-        await refreshBoosts(DIV_AGRI, AGRI_BOOST.factors, AGRI_BOOST.sizes, AGRI_BOOST.mats);
     }
 
     // Docs: "Buy tea / throw party every cycle. Maintain maximum energy/morale."
@@ -601,8 +342,8 @@ export async function main(ns) {
                 else if (c.hasResearched(DIV_TOBACCO, 'Market-TA.I'))
                     c.setProductMarketTA1(DIV_TOBACCO, pName, true);
                 const price = c.hasResearched(DIV_TOBACCO, 'Market-TA.II') ? 'MP'
-                    : c.hasResearched(DIV_TOBACCO, 'Market-TA.I') ? 'MP*2'
-                        : 'MP*3';
+                            : c.hasResearched(DIV_TOBACCO, 'Market-TA.I')  ? 'MP*2'
+                            : 'MP*3';
                 c.sellProduct(DIV_TOBACCO, HQ_CITY, pName, 'MAX', price, true);
             } catch { }
         }
@@ -622,51 +363,47 @@ export async function main(ns) {
             await waitCycles(1);
         }
         log(ns, `INFO: "${c.getCorporation().name}" active. Funds: ${formatMoney(c.getCorporation().funds)}`, true);
-        for (const name of [UNLOCKS.warehouseAPI, UNLOCKS.officeAPI]) buyUnlock(name);
-        if (!ROUND1_USE_CUSTOM_SUPPLY) {
-            buyUnlock(UNLOCKS.smartSupply);
-        } else {
-            log(ns, 'INFO: Delaying Smart Supply until after round 1 to improve valuation.', true, 'info');
-        }
+        for (const name of [
+            UNLOCKS.warehouseAPI, UNLOCKS.officeAPI,
+            UNLOCKS.smartSupply,  UNLOCKS.export,
+            UNLOCKS.mktDemand,    UNLOCKS.mktComp,
+        ]) buyUnlock(name);
         writePhase(1); phase = 1;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 1 — Agriculture: all cities, offices, warehouses, initial boosts
     // ─────────────────────────────────────────────────────────────────────────
-        if (phase <= 1) {
-            if (!c.getCorporation().divisions.includes(DIV_AGRI)) {
-                log(ns, 'INFO: Expanding into Agriculture ($40B)...', true, 'info');
-                c.expandIndustry(IND_AGRI, DIV_AGRI);
-            }
-            expandToCities(DIV_AGRI);
-            if (!ROUND1_USE_CUSTOM_SUPPLY) enableSmartSupply(DIV_AGRI);
-            // Docs: "Upgrade from 3 to 4. Set 4 employees to R&D and wait until RP ≥ 55.
-            // Switch to Ops(1)+Eng(1)+Biz(1)+Mgmt(1) before buying boost materials."
-            // At < 9 employees, energy/morale never drop naturally — no tea/party spending needed.
-            for (const city of CITIES)
-                fillOffice(DIV_AGRI, city, 4, { rnd: 4 });
-            for (const city of CITIES) {
-                try { c.sellMaterial(DIV_AGRI, city, 'Food', 'MAX', 'MP'); } catch { }
-                try { c.sellMaterial(DIV_AGRI, city, 'Plants', 'MAX', 'MP'); } catch { }
-            }
-            maintainRound1AgriSupply();
-            await waitCycles(1);
-            // Wait for RP ≥ 55 before buying boost materials (docs requirement).
-            log(ns, 'INFO: Waiting for Agriculture RP ≥ 55 before buying boost materials...', true);
-            while (c.getDivision(DIV_AGRI).researchPoints < 55) {
-                maintainRound1AgriSupply();
-                await ns.sleep(5000);
-            }
-            log(ns, 'INFO: RP ≥ 55 — switching to production jobs.', true, 'success');
-            for (const city of CITIES)
-                assignJobs(DIV_AGRI, city, { ops: 1, eng: 1, biz: 1, mgmt: 1 });
-            maintainRound1AgriSupply();
-            await waitCycles(1);
-            log(ns, 'INFO: Applying Phase 1 Agriculture boost materials...', true);
-            for (const city of CITIES)
-                await applyBoostMaterials(DIV_AGRI, city,
-                    getBoostTargets(DIV_AGRI, city, AGRI_BOOST.factors, AGRI_BOOST.sizes, AGRI_BOOST.mats));
+    if (phase <= 1) {
+        if (!c.getCorporation().divisions.includes(DIV_AGRI)) {
+            log(ns, 'INFO: Expanding into Agriculture ($40B)...', true, 'info');
+            c.expandIndustry(IND_AGRI, DIV_AGRI);
+        }
+        expandToAllCities(DIV_AGRI);
+        enableSmartSupply(DIV_AGRI);
+        // Docs: "Upgrade from 3 to 4. Set 4 employees to R&D and wait until RP ≥ 55.
+        // Switch to Ops(1)+Eng(1)+Biz(1)+Mgmt(1) before buying boost materials."
+        // At < 9 employees, energy/morale never drop naturally — no tea/party spending needed.
+        for (const city of CITIES)
+            fillOffice(DIV_AGRI, city, 4, { rnd: 4 });
+        for (const city of CITIES) {
+            try { c.sellMaterial(DIV_AGRI, city, 'Food',   'MAX', 'MP'); } catch { }
+            try { c.sellMaterial(DIV_AGRI, city, 'Plants', 'MAX', 'MP'); } catch { }
+        }
+        await waitCycles(1);
+        // Wait for RP ≥ 55 before buying boost materials (docs requirement).
+        log(ns, 'INFO: Waiting for Agriculture RP ≥ 55 before buying boost materials...', true);
+        while (c.getDivision(DIV_AGRI).researchPoints < 55) {
+            await ns.sleep(5000);
+        }
+        log(ns, 'INFO: RP ≥ 55 — switching to production jobs.', true, 'success');
+        for (const city of CITIES)
+            assignJobs(DIV_AGRI, city, { ops: 1, eng: 1, biz: 1, mgmt: 1 });
+        await waitCycles(1);
+        log(ns, 'INFO: Applying Phase 1 Agriculture boost materials...', true);
+        for (const city of CITIES)
+            await applyBoostMaterials(DIV_AGRI, city,
+                getBoostTargets(DIV_AGRI, city, AGRI_FACTORS, AGRI_SIZES, AGRI_MATS));
         writePhase(2); phase = 2;
     }
 
@@ -675,162 +412,163 @@ export async function main(ns) {
     // Docs: "Focus on Smart Storage and warehouse upgrade. Buy 2 Advert levels."
     // ─────────────────────────────────────────────────────────────────────────
     if (phase <= 2) {
-        log(ns, `INFO: Waiting for round-1 offer ≥ ${formatMoney(ROUND1_TARGET)}...`, true);
-        let bestOffer = 0;
-        let stagnantChecks = 0;
-        let spendingFrozen = false;
-        let phase2PrepDone = false;
-
+        log(ns, `INFO: Waiting for round-1 offer ≥ ${formatMoney(MIN_ROUND1)}...`, true);
         while (true) {
             await waitCycles(2);
 
             // Keep Agriculture selling and jobs assigned — no office expansion yet,
             // and NO tea/party (< 9 employees, morale doesn't drop; spending kills profit).
             for (const city of CITIES) {
-                try { c.sellMaterial(DIV_AGRI, city, 'Food', 'MAX', 'MP'); } catch { }
+                try { c.sellMaterial(DIV_AGRI, city, 'Food',   'MAX', 'MP'); } catch { }
                 try { c.sellMaterial(DIV_AGRI, city, 'Plants', 'MAX', 'MP'); } catch { }
                 try { assignJobs(DIV_AGRI, city, { ops: 1, eng: 1, biz: 1, mgmt: 1 }); } catch { }
             }
-            maintainRound1AgriSupply();
-
-            const offer = c.getInvestmentOffer();
-            if (offer.funds > bestOffer) {
-                bestOffer = offer.funds;
-                stagnantChecks = 0;
-            } else {
-                stagnantChecks++;
-            }
-            if (bestOffer >= ROUND1_TARGET * ROUND1_FREEZE_RATIO) spendingFrozen = true;
 
             const funds = c.getCorporation().funds;
-            if (!phase2PrepDone && !spendingFrozen) {
-                // Round 1 wants a small amount of infra spending, not continuous reinvestment.
-                if (funds > 2e9)
+            // Docs: focus on SmartStorage in round 1.
+            if (funds > 2e9) try { c.levelUpgrade('Smart Storage'); } catch { }
+            // Warehouse upgrades up to level 3.
+            if (funds > 1e9)
+                for (const city of CITIES)
                     try {
-                        while (c.getUpgradeLevel('Smart Storage') < ROUND1_SMART_STORAGE_TARGET
-                            && c.getCorporation().funds > c.getUpgradeLevelCost('Smart Storage') * 2) {
-                            c.levelUpgrade('Smart Storage');
-                        }
+                        if (c.getWarehouse(DIV_AGRI, city).level < 3)
+                            c.upgradeWarehouse(DIV_AGRI, city, 1);
                     } catch { }
-                if (funds > 1e9)
-                    for (const city of CITIES)
-                        try {
-                            while (c.getWarehouse(DIV_AGRI, city).level < ROUND1_WAREHOUSE_TARGET
-                                && c.getCorporation().funds > 1e9) {
-                                c.upgradeWarehouse(DIV_AGRI, city, 1);
-                            }
-                        } catch { }
-                if (funds > 3e9)
-                    try {
-                        while (c.getHireAdVertCount(DIV_AGRI) < ROUND1_ADVERT_TARGET
-                            && c.getCorporation().funds > c.getHireAdVertCost(DIV_AGRI) * 2) {
-                            c.hireAdVert(DIV_AGRI);
-                        }
-                    } catch { }
-                phase2PrepDone = true;
-                spendingFrozen = true;
-            }
+            // Docs: "Buy 2 Advert levels" in round 1.
+            if (funds > 3e9)
+                try { if (c.getHireAdVertCount(DIV_AGRI) < 2) c.hireAdVert(DIV_AGRI); } catch { }
 
             // Re-apply boosts if warehouse capacity has grown.
-            await refreshBoosts(DIV_AGRI, AGRI_BOOST.factors, AGRI_BOOST.sizes, AGRI_BOOST.mats);
+            await refreshBoosts(DIV_AGRI, AGRI_FACTORS, AGRI_SIZES, AGRI_MATS);
 
-            log(ns, `  Round ${offer.round} offer: ${formatMoney(offer.funds)} (best ${formatMoney(bestOffer)})`, false);
+            const offer = c.getInvestmentOffer();
+            log(ns, `  Round ${offer.round} offer: ${formatMoney(offer.funds)}`, false);
             if (offer.round > 1) { log(ns, 'INFO: Round 1 already accepted.', true, 'info'); break; }
-            if (offer.round === 1 && offer.funds >= ROUND1_TARGET) {
+            if (offer.round === 1 && offer.funds >= MIN_ROUND1) {
                 c.acceptInvestmentOffer();
                 log(ns, `INFO: Accepted Round 1 — received ${formatMoney(offer.funds)}!`, true, 'success');
                 break;
             }
-            if (offer.round === 1 && spendingFrozen && stagnantChecks >= ROUND1_STAGNATION_LIMIT && offer.funds >= ROUND1_SOFT_FLOOR) {
-                c.acceptInvestmentOffer();
-                log(ns, `INFO: Accepted Round 1 soft floor — received ${formatMoney(offer.funds)} after offer plateau.`, true, 'success');
-                break;
-            }
-        }
-        if (!ROUND1_USE_CUSTOM_SUPPLY && c.hasUnlock(UNLOCKS.smartSupply)) {
-            stopRound1AgriSupply();
-            enableSmartSupply(DIV_AGRI);
         }
         await waitCycles(1);
-        writePhase(3); phase = 3;
+        finishSetupAndHandoff();
+        return;
     }
 
     // ─────────────────────────────────────────────────────────────────────────
     // PHASE 3 — Launch Chemical + Tobacco; supply chain; first product
     // ─────────────────────────────────────────────────────────────────────────
     if (phase <= 3) {
-        log(ns, 'INFO: Phase 3 — launching Chemical and Tobacco without a cash deadlock...', true, 'info');
-        // Keep Agriculture alive on custom supply until Smart Supply is affordable later.
+        log(ns, 'INFO: Phase 3 — launching Chemical and Tobacco divisions...', true);
 
-        // Launch Chemical as soon as it is affordable.
-        while (!hasDiv(DIV_CHEM)) {
-            const chemCost = expandIndustryCost(IND_CHEM);
-            if (c.getCorporation().funds >= chemCost) {
+        // Scale Agriculture to 8 employees (docs: "8 is the optimal size" for round 2).
+        for (const city of CITIES)
+            fillOffice(DIV_AGRI, city, 8, { ops: 3, eng: 2, biz: 1, mgmt: 1, rnd: 1 });
+        boostMorale(DIV_AGRI);  // Now at 8 employees — morale can drop, safe to spend here
+        log(ns, 'INFO: Applying Phase 2 Agriculture boost materials...', true);
+        for (const city of CITIES)
+            await applyBoostMaterials(DIV_AGRI, city,
+                getBoostTargets(DIV_AGRI, city, AGRI_FACTORS, AGRI_SIZES, AGRI_MATS));
+
+        // ── Chemical division ─────────────────────────────────────────────────
+        // Chemical costs $70B. If MIN_ROUND1 is correct we have 210B+ here.
+        // Guard: wait until we can definitely afford it to avoid crashing the script.
+        // (Unwrapped expandIndustry throws on insufficient funds — crash = phase loop.)
+        if (!c.getCorporation().divisions.includes(DIV_CHEM)) {
+            while (c.getCorporation().funds < 75e9) {
+                log(ns, `INFO: Waiting for funds ≥ $75B for Chemical (have ${formatMoney(c.getCorporation().funds)})…`, false);
+                await waitCycles(3);
+                boostMorale(DIV_AGRI);
+            }
+            log(ns, 'INFO: Expanding into Chemical ($70B)...', true, 'info');
+            try {
                 c.expandIndustry(IND_CHEM, DIV_CHEM);
-                log(ns, 'INFO: Chemical launched.', true, 'success');
-                break;
+            } catch (e) {
+                log(ns, `ERROR: expandIndustry Chemical failed: ${e?.message}`, true, 'error');
+                return;
             }
-            await investInAgricultureWhileWaitingForChemical();
-            const corp = c.getCorporation();
-            const profit = corp.revenue - corp.expenses;
-            log(ns, `  Waiting for Chemical: ${formatMoney(corp.funds)} / ${formatMoney(chemCost)} | profit ${formatMoney(profit)}/s`, false);
-            await waitCycles(3);
         }
-
-        await waitForDivisionInfrastructure(DIV_CHEM, 'Chemical', PHASE3_CHEM_START_CITIES);
-        for (const city of PHASE3_CHEM_START_CITIES) {
-            await waitForWarehouseLevel(DIV_CHEM, city, PHASE3_CHEM_INITIAL_WAREHOUSE);
-            await waitFillOffice(DIV_CHEM, city, PHASE3_CHEM_INITIAL_OFFICE, { ops: 1, eng: 1, rnd: 1 });
-        }
-        for (const city of PHASE3_CHEM_START_CITIES) {
+        expandToAllCities(DIV_CHEM);
+        enableSmartSupply(DIV_CHEM);
+        // Docs: "1 warehouse upgrade is enough" for Chemical.
+        for (const city of CITIES)
+            try { if (c.getWarehouse(DIV_CHEM, city).level < 2) c.upgradeWarehouse(DIV_CHEM, city, 1); } catch { }
+        for (const city of CITIES)
+            fillOffice(DIV_CHEM, city, 6, { ops: 1, eng: 3, biz: 0, mgmt: 1, rnd: 1 });
+        boostMorale(DIV_CHEM);
+        for (const city of CITIES)
             try { c.sellMaterial(DIV_CHEM, city, 'Chemicals', 'MAX', 'MP'); } catch { }
-        }
+        log(ns, 'INFO: Applying Chemical boost materials...', true);
+        for (const city of CITIES)
+            await applyBoostMaterials(DIV_CHEM, city,
+                getBoostTargets(DIV_CHEM, city, CHEM_FACTORS, CHEM_SIZES, CHEM_MATS));
 
-        while (!c.hasUnlock(UNLOCKS.export)) {
-            const cost = unlockCost(UNLOCKS.export, 20e9);
-            if (c.getCorporation().funds >= cost + PHASE3_EXPORT_RESERVE) {
-                buyUnlock(UNLOCKS.export);
-                break;
+        // ── Tobacco division ──────────────────────────────────────────────────
+        if (!c.getCorporation().divisions.includes(DIV_TOBACCO)) {
+            while (c.getCorporation().funds < 20e9) {
+                log(ns, `INFO: Waiting for funds ≥ $20B for Tobacco (have ${formatMoney(c.getCorporation().funds)})…`, false);
+                await waitCycles(3);
+                boostMorale(DIV_AGRI);
             }
-            maintainRound1AgriSupply();
-            maintainChemicalWaterSupply();
-            const corp = c.getCorporation();
-            log(ns, `  Waiting for Export: ${formatMoney(corp.funds)} / ${formatMoney(cost)}`, false);
-            await waitCycles(2);
-        }
-        configureExports();
-        maintainChemicalWaterSupply();
-
-        // Launch Tobacco as soon as it is affordable.
-        while (!hasDiv(DIV_TOBACCO)) {
-            const tobCost = expandIndustryCost(IND_TOBACCO);
-            if (c.getCorporation().funds >= tobCost) {
+            log(ns, 'INFO: Expanding into Tobacco ($20B)...', true, 'info');
+            try {
                 c.expandIndustry(IND_TOBACCO, DIV_TOBACCO);
-                log(ns, 'INFO: Tobacco launched.', true, 'success');
-                break;
+            } catch (e) {
+                log(ns, `ERROR: expandIndustry Tobacco failed: ${e?.message}`, true, 'error');
+                return;
             }
-            maintainRound1AgriSupply();
-            maintainChemicalWaterSupply();
-            log(ns, `  Waiting for Tobacco: ${formatMoney(c.getCorporation().funds)} / ${formatMoney(tobCost)}`, false);
-            await waitCycles(3);
         }
+        expandToAllCities(DIV_TOBACCO);
+        enableSmartSupply(DIV_TOBACCO);
+        // HQ: product dev — Engineer + Management heavy.
+        // ProductDevelopmentMultiplier = (EngineerProd^0.34 + OpsProd^0.2) × ManagementFactor
+        fillOffice(DIV_TOBACCO, HQ_CITY, 18, { ops: 4, eng: 7, biz: 1, mgmt: 5, rnd: 1 });
+        // Satellites: R&D-heavy. Docs: "1 main + 5 support offices."
+        // RP gain = 0.004 × RnDProduction^0.5 per state (×4 states/cycle).
+        for (const city of CITIES.filter(ct => ct !== HQ_CITY))
+            fillOffice(DIV_TOBACCO, city, 9, { ops: 1, eng: 1, biz: 0, mgmt: 0, rnd: 7 });
+        boostMorale(DIV_TOBACCO);
 
-        await waitForDivisionInfrastructure(DIV_TOBACCO, 'Tobacco', PHASE3_TOB_START_CITIES);
-        await waitFillOffice(DIV_TOBACCO, HQ_CITY, PHASE3_TOB_INITIAL_HQ_OFFICE, { ops: 1, eng: 3, biz: 1, mgmt: 1 });
+        // ── Supply chain exports ──────────────────────────────────────────────
+        // Optimal export string per docs: (IPROD+IINV/10)*(-1)
+        // Drains inventory gradually while covering consumption — prevents starvation and overflow.
+        // FIFO order: Agri→Tobacco first so Tobacco's Plants supply takes priority.
+        const EXP = '(IPROD+IINV/10)*(-1)';
+        log(ns, 'INFO: Setting up supply-chain exports...', true);
+        for (const city of CITIES) {
+            try { c.exportMaterial(DIV_AGRI, city, DIV_TOBACCO, city, 'Plants',    EXP); } catch { }  // Priority
+            try { c.exportMaterial(DIV_AGRI, city, DIV_CHEM,    city, 'Plants',    EXP); } catch { }  // Quality loop
+            try { c.exportMaterial(DIV_CHEM, city, DIV_AGRI,    city, 'Chemicals', EXP); } catch { }  // Quality loop
+        }
+		
+		// Prevent Smart Supply from double-buying imported materials.
+		// 'leftovers' = only top up what the export route doesn't cover.
+		for (const city of CITIES) {
+			try { c.setSmartSupplyOption(DIV_AGRI,    city, 'Chemicals', 'leftovers'); } catch { }
+			try { c.setSmartSupplyOption(DIV_AGRI,    city, 'Water',     'leftovers'); } catch { }
+			try { c.setSmartSupplyOption(DIV_CHEM,    city, 'Plants',    'leftovers'); } catch { }
+			try { c.setSmartSupplyOption(DIV_CHEM,    city, 'Water',     'leftovers'); } catch { }
+			try { c.setSmartSupplyOption(DIV_TOBACCO, city, 'Plants',    'leftovers'); } catch { }
+		}
 
-        boostMorale(DIV_CHEM, DIV_TOBACCO);
-        configureExports();
+        // Ensure all divisions have at least level-3 warehouses.
+        for (const div of [DIV_TOBACCO, DIV_AGRI, DIV_CHEM])
+            for (const city of CITIES)
+                try {
+                    const wh = c.getWarehouse(div, city);
+                    if (wh.level < 3) c.upgradeWarehouse(div, city, 3 - wh.level);
+                } catch { }
 
-        for (const city of PHASE3_CHEM_START_CITIES) await waitForWarehouseLevel(DIV_CHEM, city, 3);
-        for (const city of PHASE3_TOB_START_CITIES) await waitForWarehouseLevel(DIV_TOBACCO, city, 3);
-        for (const city of CITIES) await waitForWarehouseLevel(DIV_AGRI, city, 3);
-
-        if (!c.getDivision(DIV_TOBACCO).products.includes('Tobac-v1')) {
+        // ── First Tobacco product ─────────────────────────────────────────────
+        // Docs: "It's fine to spend 1% of current funds" on design/advertising.
+        // Their exponents are 0.1 — very low returns; don't over-invest.
+        const FIRST_PRODUCT = 'Tobac-v1';
+        if (!c.getDivision(DIV_TOBACCO).products.includes(FIRST_PRODUCT)) {
             const invest = Math.max(1e8, Math.min(c.getCorporation().funds * 0.01, 2e9));
             try {
-                c.makeProduct(DIV_TOBACCO, HQ_CITY, 'Tobac-v1', invest / 2, invest / 2);
-                log(ns, `INFO: Started product Tobac-v1 with ${formatMoney(invest)} investment.`, true, 'info');
-            } catch { }
+                c.makeProduct(DIV_TOBACCO, HQ_CITY, FIRST_PRODUCT, invest / 2, invest / 2);
+                log(ns, `INFO: Started "${FIRST_PRODUCT}" (${formatMoney(invest)} invest)`, true, 'info');
+            } catch (e) { log(ns, `WARN: Could not start product: ${e?.message}`, false, 'warning'); }
         }
 
         buyUpgrades([
@@ -851,26 +589,21 @@ export async function main(ns) {
         // Initialise warehouse tracking for boost refresh.
         for (const div of [DIV_AGRI, DIV_CHEM])
             for (const city of CITIES)
-                try { prevWHCapacity[`${div}|${city}`] = c.getWarehouse(div, city).size; } catch { }
+                try { prevWHLevel[`${div}|${city}`] = c.getWarehouse(div, city).level; } catch { }
 
         let rpGateCleared = false;
 
         while (true) {
             await waitCycles(3);
             boostMorale(DIV_TOBACCO, DIV_AGRI, DIV_CHEM);
-            if (!c.hasUnlock(UNLOCKS.smartSupply)) {
-                maintainRound1AgriSupply();
-                maintainChemicalWaterSupply();
-            }
-            configureExports();
 
             // Price finished products (sellProduct required even when TA2 active).
             priceProducts();
 
             // Research with RP threshold (50% general, 10% production).
             tryResearch(DIV_TOBACCO, TOB_RESEARCH);
-            tryResearch(DIV_AGRI, MAT_RESEARCH);
-            tryResearch(DIV_CHEM, MAT_RESEARCH);
+            tryResearch(DIV_AGRI,    MAT_RESEARCH);
+            tryResearch(DIV_CHEM,    MAT_RESEARCH);
 
             // Wilson must be bought BEFORE Advert — it multiplies future Advert benefit (not retroactive).
             // Docs: "Buy Wilson if you can afford it, then use ≥20% of funds on Advert."
@@ -894,8 +627,8 @@ export async function main(ns) {
             } catch { }
 
             // Re-apply boosts if SmartStorage has expanded warehouse capacity.
-            await refreshBoosts(DIV_AGRI, AGRI_BOOST.factors, AGRI_BOOST.sizes, AGRI_BOOST.mats);
-            await refreshBoosts(DIV_CHEM, CHEM_BOOST.factors, CHEM_BOOST.sizes, CHEM_BOOST.mats);
+            await refreshBoosts(DIV_AGRI, AGRI_FACTORS, AGRI_SIZES, AGRI_MATS);
+            await refreshBoosts(DIV_CHEM, CHEM_FACTORS, CHEM_SIZES, CHEM_MATS);
 
             // Dummy Restaurant divisions — each adds 12 office+warehouse pairs,
             // boosting private valuation by ×1.1 (~10% better round-2 offer).
@@ -947,18 +680,6 @@ export async function main(ns) {
     if (phase <= 5) {
         log(ns, 'INFO: Phase 5 — final scaling pass...', true);
 
-        await waitForDivisionInfrastructure(DIV_CHEM, 'Chemical');
-        await waitForDivisionInfrastructure(DIV_TOBACCO, 'Tobacco');
-        if (!c.hasUnlock(UNLOCKS.smartSupply)) buyUnlock(UNLOCKS.smartSupply);
-        if (c.hasUnlock(UNLOCKS.smartSupply)) {
-            stopRound1AgriSupply();
-            stopChemicalWaterSupply();
-            enableSmartSupply(DIV_AGRI);
-            enableSmartSupply(DIV_CHEM);
-            enableSmartSupply(DIV_TOBACCO);
-        }
-        configureExports();
-
         for (const city of CITIES) {
             const isHQ = city === HQ_CITY;
             // HQ: product dev focus. Satellites: R&D-heavy (80% in R&D).
@@ -966,7 +687,7 @@ export async function main(ns) {
                 isHQ ? 30 : 20,
                 isHQ
                     ? { ops: 5, eng: 11, biz: 2, mgmt: 9, rnd: 3 }
-                    : { ops: 1, eng: 2, biz: 0, mgmt: 1, rnd: 16 });
+                    : { ops: 1, eng: 2,  biz: 0, mgmt: 1, rnd: 16 });
             // Agriculture: Engineer-heavy for material quality.
             fillOffice(DIV_AGRI, city, 20, { ops: 6, eng: 8, biz: 1, mgmt: 3, rnd: 2 });
             // Chemical: small and Engineer-heavy — don't over-invest (docs).
@@ -986,9 +707,9 @@ export async function main(ns) {
         log(ns, 'INFO: Topping up boost materials...', true);
         for (const city of CITIES) {
             await applyBoostMaterials(DIV_AGRI, city,
-                getBoostTargets(DIV_AGRI, city, AGRI_BOOST.factors, AGRI_BOOST.sizes, AGRI_BOOST.mats));
+                getBoostTargets(DIV_AGRI, city, AGRI_FACTORS, AGRI_SIZES, AGRI_MATS));
             await applyBoostMaterials(DIV_CHEM, city,
-                getBoostTargets(DIV_CHEM, city, CHEM_BOOST.factors, CHEM_BOOST.sizes, CHEM_BOOST.mats));
+                getBoostTargets(DIV_CHEM, city, CHEM_FACTORS, CHEM_SIZES, CHEM_MATS));
         }
 
         writePhase(6); phase = 6;
@@ -1000,7 +721,7 @@ export async function main(ns) {
     log(ns, 'INFO: Setup complete! Handing off to corp-autopilot.js.', true, 'success');
     log(ns, '═══════════════════════════════════════════════════════', true);
 
-    const PILOT = resolvePath('corp-autopilot', 'corp-autopilot.js');
+    const PILOT = resolvePath('corp-autopilot', 'corp/corp-autopilot.js');
     try { if (!ns.ps('home').some(p => p.filename === PILOT)) ns.run(PILOT); }
     catch { ns.run(PILOT); }
 }
