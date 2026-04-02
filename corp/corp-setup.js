@@ -131,7 +131,8 @@ const ROUND2_LATE_PUSH_FORCE_TRIGGER = 1.5e12;
 const ROUND2_LATE_DUMMY_TRIGGER = 9e11;
 const ROUND2_STAGNATION_ABS = 10e9;
 const ROUND2_STAGNATION_PCT = 0.01;
-const ROUND2_CLASSIC_RESERVE = 15e9;
+const ROUND2_CLASSIC_RESERVE = 2e9;
+const ROUND2_CLASSIC_RESERVE_PCT = 0.05;
 const ROUND2_CLASSIC_DUMMY_TRIGGER = 2.5e12;
 const ROUND2_CLASSIC_DUMMY_STAGNATION = 10;
 const ROUND2_PRODUCT_MIN_INVEST = 2e8;
@@ -421,6 +422,80 @@ export async function main(ns) {
             const wh = c.getWarehouse(div, city);
             return optimalBoosts(wh.size * 0.70, [...factors], [...sizes], [...mats]);
         } catch { return {}; }
+    }
+
+    function getDivisionBoostConfig(div) {
+        if (div === DIV_AGRI) return AGRI_BOOST;
+        if (div === DIV_CHEM) return CHEM_BOOST;
+        return null;
+    }
+
+    function estimateBoostTargetsForSize(div, nextSize) {
+        const config = getDivisionBoostConfig(div);
+        if (!config || !Number.isFinite(nextSize) || nextSize <= 0) return {};
+        return optimalBoosts(nextSize * 0.70, [...config.factors], [...config.sizes], [...config.mats]);
+    }
+
+    function getMaterialBuyPrice(div, city, mat) {
+        try {
+            const info = c.getMaterial(div, city, mat);
+            return Math.max(0, Number(info.marketPrice ?? info.averagePrice ?? 0));
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBoostTopUpCost(div, city, nextSize) {
+        try {
+            const targets = estimateBoostTargetsForSize(div, nextSize);
+            let total = 0;
+            for (const [mat, target] of Object.entries(targets)) {
+                const stored = c.getMaterial(div, city, mat).stored;
+                const needed = Math.max(0, target - stored);
+                total += needed * getMaterialBuyPrice(div, city, mat);
+            }
+            return total;
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateWarehouseUpgradeSpend(div, city) {
+        try {
+            const wh = c.getWarehouse(div, city);
+            const cost = c.getUpgradeWarehouseCost(div, city, 1);
+            if (!Number.isFinite(cost)) return Infinity;
+            if (!getDivisionBoostConfig(div) || wh.level <= 0) return cost;
+            const nextSize = wh.size * ((wh.level + 1) / wh.level);
+            return cost + estimateBoostTopUpCost(div, city, nextSize);
+        } catch {
+            return Infinity;
+        }
+    }
+
+    function estimateSmartStorageUpgradeSpend() {
+        try {
+            const level = c.getUpgradeLevel('Smart Storage');
+            const cost = c.getUpgradeLevelCost('Smart Storage');
+            if (!Number.isFinite(cost)) return Infinity;
+            const currentMult = 1 + level * 0.1;
+            const nextMult = 1 + (level + 1) * 0.1;
+            const sizeRatio = currentMult > 0 ? nextMult / currentMult : 1;
+            let total = cost;
+            for (const div of [DIV_AGRI, DIV_CHEM]) {
+                if (!getDivisionBoostConfig(div)) continue;
+                for (const city of CITIES) {
+                    try {
+                        if (!c.hasWarehouse(div, city)) continue;
+                        const wh = c.getWarehouse(div, city);
+                        total += estimateBoostTopUpCost(div, city, wh.size * sizeRatio);
+                    } catch { }
+                }
+            }
+            return total;
+        } catch {
+            return Infinity;
+        }
     }
 
     async function applyBoostMaterials(div, city, targets) {
@@ -833,8 +908,8 @@ export async function main(ns) {
             try {
                 const wh = c.getWarehouse(DIV_AGRI, city);
                 if (wh.level < targetWarehouse) {
-                    const cost = c.getUpgradeWarehouseCost(DIV_AGRI, city, 1);
-                    if (canSpend(cost, reserve)) {
+                    const spendCost = estimateWarehouseUpgradeSpend(DIV_AGRI, city);
+                    if (canSpend(spendCost, reserve)) {
                         c.upgradeWarehouse(DIV_AGRI, city, 1);
                         return `Agriculture ${city} warehouse -> ${wh.level + 1}`;
                     }
@@ -889,7 +964,8 @@ export async function main(ns) {
             try {
                 if (c.getUpgradeLevel(upg) >= target) continue;
                 const cost = c.getUpgradeLevelCost(upg);
-                if (!canSpend(cost, reserve)) continue;
+                const spendCost = upg === 'Smart Storage' ? estimateSmartStorageUpgradeSpend() : cost;
+                if (!canSpend(spendCost, reserve)) continue;
                 c.levelUpgrade(upg);
                 return `${upg} -> ${c.getUpgradeLevel(upg)}`;
             } catch { }
@@ -902,8 +978,8 @@ export async function main(ns) {
             try {
                 const wh = c.getWarehouse(DIV_AGRI, city);
                 if (wh.level < ROUND2_AGRI_WAREHOUSE_LATE) {
-                    const cost = c.getUpgradeWarehouseCost(DIV_AGRI, city, 1);
-                    if (canSpend(cost, reserve)) {
+                    const spendCost = estimateWarehouseUpgradeSpend(DIV_AGRI, city);
+                    if (canSpend(spendCost, reserve)) {
                         c.upgradeWarehouse(DIV_AGRI, city, 1);
                         return `Agriculture ${city} warehouse -> ${wh.level + 1}`;
                     }
@@ -1090,7 +1166,7 @@ export async function main(ns) {
 
     function getClassicRound2Reserve() {
         const funds = c.getCorporation().funds;
-        return Math.max(ROUND2_CLASSIC_RESERVE, funds * 0.12);
+        return Math.max(ROUND2_CLASSIC_RESERVE, funds * ROUND2_CLASSIC_RESERVE_PCT);
     }
 
     function isClassicRound2BuiltOut() {
@@ -1123,15 +1199,23 @@ export async function main(ns) {
     }
 
     function tryClassicRound2WarehouseStep(reserve) {
+        const candidates = [];
         for (const city of CITIES) {
             try {
                 const wh = c.getWarehouse(DIV_AGRI, city);
                 if (wh.level < ROUND2_CLASSIC_AGRI_WAREHOUSE) {
-                    const cost = c.getUpgradeWarehouseCost(DIV_AGRI, city, 1);
-                    if (canSpend(cost, reserve)) {
-                        c.upgradeWarehouse(DIV_AGRI, city, 1);
-                        return `Agriculture ${city} warehouse -> ${wh.level + 1}`;
-                    }
+                    candidates.push({ city, level: wh.level });
+                }
+            } catch { }
+        }
+        candidates.sort((a, b) => a.level - b.level || a.city.localeCompare(b.city));
+        for (const { city } of candidates) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                const spendCost = estimateWarehouseUpgradeSpend(DIV_AGRI, city);
+                if (canSpend(spendCost, reserve)) {
+                    c.upgradeWarehouse(DIV_AGRI, city, 1);
+                    return `Agriculture ${city} warehouse -> ${wh.level + 1}`;
                 }
             } catch { }
         }
