@@ -78,6 +78,15 @@ export async function main(ns) {
     const augStanek = `Stanek's Gift - Genesis`;
     let options; // The options used at construction time
     let playerInGang = false, rushGang = false; // Tells us whether we're should be trying to work towards getting into a gang
+    // Small helper used by a few optional UI / launch helpers.
+    const safe = (fn, fallback = undefined) => {
+        try { return fn(); } catch { return fallback; }
+    };
+    const CORP_HOME_RAM_RESERVE = 800; // GB reserved whenever a corporation exists
+    const CORP_LAUNCH_BUFFER = 32; // Additional home RAM headroom when kicking corporation scripts
+    const CORP_SETUP_DONE_FLAG = "/corp-setup-done.txt";
+    const CORP_SETUP_PHASE_FILE = "/corp-setup-phase.txt";
+    const CORP_SETUP_COMPLETE_PHASE = 6;
     let playerInBladeburner = false; // Whether we've joined bladeburner
     let wdHack = (/**@returns{null|number}*/() => null)(); // If the WD server is available (i.e. TRP is installed), caches the required hack level
     let ranCasino = false; // Flag to indicate whether we've stolen 10b from the casino yet
@@ -599,6 +608,60 @@ export async function main(ns) {
             && (!filter || filter(s))
         )[0];
     }
+    /** Helper to open tails for our corp scripts when they are running
+     * @param {ProcessInfo[]} runningScripts */
+    function openCorpScriptTails(runningScripts) {
+        if (options['no-tail-windows']) return;
+        for (const baseScriptName of ['corp.js', 'corp-setup.js', 'corp-autopilot.js']) {
+            const processInfo = findScriptHelper(baseScriptName, runningScripts);
+            if (processInfo) {
+                try { tail(ns, processInfo.pid); } catch {}
+            }
+        }
+    }
+    /** Read corporation setup state from the files written by corp-setup.js */
+    function getCorpSetupState() {
+        const setupDone = ns.fileExists(CORP_SETUP_DONE_FLAG, "home");
+        const setupPhase = Number.parseInt(ns.read(CORP_SETUP_PHASE_FILE) || '0', 10) || 0;
+        return { setupDone, setupPhase, setupComplete: setupDone && setupPhase >= CORP_SETUP_COMPLETE_PHASE };
+    }
+    /** Lightweight home RAM snapshot used only for corporation launch gating */
+    function getFreeHomeRam() {
+        return Math.max(0, safe(() => ns.getServerMaxRam("home") - ns.getServerUsedRam("home"), 0));
+    }
+    /** Get a script's RAM cost without throwing if the file cannot be resolved */
+    function getScriptRamSafe(baseScriptName) {
+        return Math.max(0, safe(() => ns.getScriptRam(resolveScript(baseScriptName), "home"), 0));
+    }
+    /** Ensure the right corporation script is running after resets and manual restarts.
+     * Returns true if a corporation script was launched, so the caller can stop launching lower-priority scripts. */
+    function manageCorporationScripts(runningScripts) {
+        if (!safe(() => ns.corporation.hasCorporation(), false)) return false;
+
+        const corpLauncher = findScriptHelper('corp', runningScripts);
+        const corpSetup = findScriptHelper('corp-setup', runningScripts);
+        const corpAutopilot = findScriptHelper('corp-autopilot', runningScripts);
+        const { setupComplete } = getCorpSetupState();
+
+        if (!setupComplete) {
+            if (corpLauncher || corpSetup || corpAutopilot) return false;
+            const requiredFreeRam = getScriptRamSafe('corp') + getScriptRamSafe('corp-setup') + CORP_LAUNCH_BUFFER;
+            if (getFreeHomeRam() + 1e-9 < requiredFreeRam) {
+                log_once(ns, `INFO: Waiting for ${formatNumber(requiredFreeRam)} GB free home RAM before relaunching corp setup.`);
+                return false;
+            }
+            return !!launchScriptHelper(ns, 'corp');
+        }
+
+        if (corpAutopilot || corpSetup || corpLauncher) return false;
+        const requiredFreeRam = getScriptRamSafe('corp-autopilot') + CORP_LAUNCH_BUFFER;
+        if (getFreeHomeRam() + 1e-9 < requiredFreeRam) {
+            log_once(ns, `INFO: Waiting for ${formatNumber(requiredFreeRam)} GB free home RAM before relaunching corporation autopilot.`);
+            return false;
+        }
+        const corpAutopilotArgs = options['no-tail-windows'] ? ['--no-tail'] : [];
+        return !!launchScriptHelper(ns, 'corp-autopilot', corpAutopilotArgs);
+    }
     /** Helper to kill a running script instance by name
      * @param {NS} ns
      * @param {ProcessInfo[]} runningScripts - (optional) Cached list of running scripts to avoid repeating this expensive request
@@ -626,6 +689,10 @@ export async function main(ns) {
             await killScript(ns, killScripts.pop(), runningScripts);
         // See if home ram has improved. We hold back on launching certain scripts if we are low on home RAM
         homeRam = await getNsDataThroughFile(ns, `ns.getServerMaxRam(ns.args[0])`, null, ["home"]);
+        const corpReserve = safe(() => ns.corporation.hasCorporation(), false) ? CORP_HOME_RAM_RESERVE : 0;
+        const effectiveHomeRam = Math.max(0, homeRam - corpReserve);
+        openCorpScriptTails(runningScripts);
+        if (manageCorporationScripts(runningScripts)) return;
         // Buy darkweb programs BEFORE stockmaster launches so crack programs get bought
         // with casino money. Crack programs unlock servers → more RAM → faster everything.
         // Ordered by priority: crack tools first (unlock servers), then utility programs.
@@ -677,7 +744,7 @@ export async function main(ns) {
                 await killScript(ns, resolveScript('stockmaster'), runningScripts, _existingStockmaster);
         }
         // Launch stock-master in a way that emphasizes it as our main source of income early-on
-        if (!findScript(resolveScript('stockmaster')) && !disableStockmasterForDaedalus && homeRam >= 32)
+        if (!findScript(resolveScript('stockmaster')) && !disableStockmasterForDaedalus && effectiveHomeRam >= 32)
             launchScriptHelper(ns, resolveScript('stockmaster'), [
                 // When hack earns $0 (ScriptHackMoneyGain=0), keep nearly everything invested.
                 // fracH/fracB of 0.001 means 99.9% invested — cash is useless in these BNs.
@@ -759,7 +826,7 @@ export async function main(ns) {
                 daemonArgs = ["--cycle-timing-delay", 40, "--queue-delay", 50, "--silent-misfires",
                     "--recovery-thread-padding", Math.min(5.0, player.skills.hacking / hackThreshold)]; // Use more recovery thread padding as our hack level increases
             }
-            else if (homeRam < 32) { // If we're in early BN 1.1 (i.e. with < 32GB home RAM), avoid squandering RAM
+            else if (effectiveHomeRam < 32) { // If we're in early BN 1.1 (i.e. with < 32GB home RAM), avoid squandering RAM
                 daemonArgs.push("--no-share", "--initial-max-targets", 1);
             } else { // XP-ONLY MODE: We can shift daemon.js to this when we want to prioritize earning hack exp rather than money
                 // Only do this if we aren't in --looping mode because TODO: currently it does not kill it's loops on shutdown, so they'd be stuck in hack exp mode
@@ -849,9 +916,14 @@ export async function main(ns) {
         // If stanek is running, tell daemon to reserve all home RAM for it.
         if (stanekRunning)
             daemonArgs.push("--reserved-ram", 1E100);
+        const desiredReservedRam = daemonArgs.reduce((max, arg, idx, arr) =>
+            arg === '--reserved-ram' ? Math.max(max, Number(arr[idx + 1]) || 0) : max, 0);
+        const existingReservedRam = existingDaemon?.args.reduce((max, arg, idx, arr) =>
+            arg === '--reserved-ram' ? Math.max(max, Number(arr[idx + 1]) || 0) : max, 0) ?? 0;
         // Launch (or re-launch) daemon if it is not already running with all our desired args.
         // Hack: Ignore numeric arguments in the comparison, since we e.g. tweak --recovery-thread-padding over time
         let launchDaemon = !existingDaemon || daemonArgs.some(arg => !existingDaemon.args.includes(arg) && !Number.isFinite(arg)) ||
+            existingReservedRam < desiredReservedRam ||
             // Special cases: We also must relaunch daemon if it is running with certain flags we wish to remove
             (["--xp-only"].some(arg => !daemonArgs.includes(arg) && existingDaemon.args.includes(arg)))
         if (launchDaemon) {
@@ -981,7 +1053,7 @@ export async function main(ns) {
         // Use resolveScript('dashboard') (the same path findScript resolves via getFilePath)
         // NOT 'dashboard.js' — getFilePath('dashboard.js') resolves to a different path,
         // causing findScript to always return undefined → relaunches every loop.
-        if (homeRam >= 128 && ns.fileExists(dashScript, 'home') && !findScript(resolveScript('dashboard'))) {
+        if (effectiveHomeRam >= 128 && ns.fileExists(dashScript, 'home') && !findScript(resolveScript('dashboard'))) {
             launchScriptHelper(ns, dashScript, [], false);
         }
         // Auto-launch the darknet crawler once DarkscapeNavigator.exe is available.

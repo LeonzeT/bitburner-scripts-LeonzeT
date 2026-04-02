@@ -3,6 +3,9 @@ export async function main(ns) {
     ns.disableLog("ALL");
 
     const SETUP_DONE_FLAG = "/corp-setup-done.txt";
+    const SETUP_PHASE_FILE = "/corp-setup-phase.txt";
+    const SETUP_COMPLETE_PHASE = 6;
+    const CHILD_LAUNCH_BUFFER = 32;
 
     function resolveSiblingPath(key, fallbackFile) {
         try {
@@ -20,16 +23,26 @@ export async function main(ns) {
 
     const hasCorp = ns.corporation.hasCorporation();
     const setupDone = ns.fileExists(SETUP_DONE_FLAG, "home");
-    const setupPhase = Number.parseInt(ns.read('/corp-setup-phase.txt') || '0', 10) || 0;
+    const setupPhase = Number.parseInt(ns.read(SETUP_PHASE_FILE) || '0', 10) || 0;
 
-    if (!hasCorp || !setupDone || setupPhase < 6) {
-        if (!ns.isRunning(SETUP_SCRIPT, "home")) {
-            ns.run(SETUP_SCRIPT);
+    function freeHomeRam() {
+        return Math.max(0, ns.getServerMaxRam("home") - ns.getServerUsedRam("home"));
+    }
+
+    function tryLaunch(script, extraRam = 0) {
+        if (ns.isRunning(script, "home")) return true;
+        const requiredFreeRam = ns.getScriptRam(script, "home") + extraRam;
+        if (freeHomeRam() + 1e-9 < requiredFreeRam) {
+            ns.print(`INFO: Waiting for ${requiredFreeRam.toFixed(1)} GB free home RAM before launching ${script}.`);
+            return false;
         }
+        return !!ns.run(script);
+    }
+
+    if (!hasCorp || !setupDone || setupPhase < SETUP_COMPLETE_PHASE) {
+        tryLaunch(SETUP_SCRIPT, CHILD_LAUNCH_BUFFER);
         return;
     }
 
-    if (!ns.isRunning(AUTOPILOT_SCRIPT, "home")) {
-        ns.run(AUTOPILOT_SCRIPT);
-    }
+    tryLaunch(AUTOPILOT_SCRIPT, CHILD_LAUNCH_BUFFER);
 }

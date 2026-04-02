@@ -43,6 +43,10 @@ const CHA_TRAINING_THRESHOLD  = 350;     // Stop training cha once all members e
 const HACK_TRAINING_THRESHOLD = 80;      // Same for hack (hacking gangs)
 const MIN_TRAINING_TICKS      = 10;      // Territory ticks of training after ascend/recruit
 const GANGS_FILE              = '/Temp/dashboard-gangs.txt'; // Dashboard reads this for Gang tab (ns.write = 0 GB)
+const TASK_OPTIMIZER_BUCKETS  = 240;     // DP resolution for wanted-budget task optimization
+const GEAR_POWER_WEIGHT       = 0.20;    // Value extra combat power while territory is still contested
+const GEAR_RECOVERY_WEIGHT    = 0.35;    // Value stronger vigilante output while recovering wanted
+const TEMP_GEAR_ASC_PENALTY   = 0.40;    // Temporary gear is worth less when a member is close to ascending
 
 // Gang creation preference order (most desirable first)
 // Combat gangs listed before hacking gangs since they're available earlier
@@ -284,10 +288,13 @@ async function onTerritoryTick(ns, myGangInfo) {
     if (await getNsDataThroughFile(ns, 'ns.gang.canRecruitMember()'))
         await doRecruitMember(ns);
 
-    const dictMembers = await getGangDict(ns, myGangMembers, 'getMemberInformation');
+    let dictMembers = await getGangDict(ns, myGangMembers, 'getMemberInformation');
 
     if (!options['no-auto-ascending']) await tryAscendMembers(ns, myGangInfo);
-    await tryUpgradeMembers(ns, dictMembers);
+    myGangInfo = await getNsDataThroughFile(ns, 'ns.gang.getGangInformation()');
+    dictMembers = await getGangDict(ns, myGangMembers, 'getMemberInformation');
+
+    await tryUpgradeMembers(ns, myGangInfo, dictMembers);
     await enableOrDisableWarfare(ns, myGangInfo);
 
     // Determine training task for this tick
@@ -428,11 +435,8 @@ async function optimizeGangCrime(ns, myGangInfo) {
     }
     if (factionRep < 0) factionRep = myGangInfo.respect / 75;
 
-    const optStat = options['reputation-focus'] ? 'respect'
-        : options['money-focus']       ? 'money'
-        : factionRep > requiredRep     ? 'money'
-        : (myGangInfo.respect < 9000)  ? 'respect'
-        : 'both';
+    const objectiveWeights = getOptimizationWeights(myGangInfo, factionRep);
+    const goalLabel = formatOptimizationGoal(objectiveWeights);
 
 
 
@@ -567,43 +571,97 @@ async function optimizeGangCrime(ns, myGangInfo) {
     if (combatTrainSet.size > 0)
         log(ns, `[gang-dbg] combatTrainSet (training to reach asc threshold): [${[...combatTrainSet].join(', ')}]`);
 
-    // Commit chaTrainSet and combatTrainSet assignments to assignedTasks NOW,
-    // before startingGain is computed. Without this, the optimizer sees the
-    // current gain (members on crimes) as the baseline, and rates "all training"
-    // as gain=0 < baseline -> never updates -> training never starts.
-    let trainingChanged = false;
-    for (const m of allMembers) {
-        if (chaTrainSet.has(m.name) && assignedTasks[m.name] !== trainTaskName) {
-            assignedTasks[m.name] = trainTaskName;
-            trainingChanged = true;
-        } else if (combatTrainSet.has(m.name) && assignedTasks[m.name] !== trainTask()) {
-            assignedTasks[m.name] = trainTask();
-            trainingChanged = true;
-        }
-    }
-    if (trainingChanged) {
-        await updateMemberActivities(ns, dictMembers);
-        log(ns, `[gang-dbg] Committed ${[...chaTrainSet].length} cha + ${combatTrainSet.size} combat trainers before optimizing.`);
-    }
+    const utilityTasks = new Set([strWantedReduction, trainTask(), trainTaskName, 'Territory Warfare']);
+    const regularCrimeTasks = allTaskNames.filter(t => !utilityTasks.has(t));
+    const rateScales = getTaskRateScales(myGangInfo, allMembers, regularCrimeTasks);
+    const fixedAssignments = {};
+    const memberOptions = [];
+    const fallbackTrainers = [];
+    let baselineWanted = 0, baselineMoney = 0, baselineRespect = 0;
 
     // Pre-compute every member × every task rate
     // Members in chaTrainSet are locked to Train Charisma/Hacking
     // Members in combatTrainSet are locked to Train Combat
-    const memberTaskRates = Object.fromEntries(
-        Object.values(dictMembers).map(m => [m.name,
-            chaTrainSet.has(m.name)
-                ? [{ name: trainTaskName, respect: 0, money: 0, wanted: 0, both: 0 }]
-                : combatTrainSet.has(m.name)
-                    ? [{ name: trainTask(), respect: 0, money: 0, wanted: 0, both: 0 }]
-                    : allTaskNames.map(t => ({
-                    name:    t,
-                    respect: computeRespectGain(myGangInfo, t, m),
-                    money:   computeMoneyGain(myGangInfo, t, m),
-                    wanted:  computeWantedGain(myGangInfo, t, m),
-                })).filter(t => t.wanted <= 0 || t.money > 0 || t.respect > 0)
-        ])
+    for (const m of allMembers) {
+        if (chaTrainSet.has(m.name)) {
+            fixedAssignments[m.name] = { name: trainTaskName, wanted: 0, money: 0, respect: 0 };
+            continue;
+        }
+        if (combatTrainSet.has(m.name)) {
+            fixedAssignments[m.name] = { name: trainTask(), wanted: 0, money: 0, respect: 0 };
+            continue;
+        }
+
+        const crimeRates = regularCrimeTasks.map(t => {
+            const rate = {
+                name: t,
+                respect: computeRespectGain(myGangInfo, t, m),
+                money: computeMoneyGain(myGangInfo, t, m),
+                wanted: computeWantedGain(myGangInfo, t, m),
+            };
+            rate.score = computeTaskObjectiveScore(rate, objectiveWeights, rateScales);
+            return rate;
+        }).filter(t => t.score > 0);
+
+        if (!crimeRates.length) {
+            fallbackTrainers.push(m.name);
+            fixedAssignments[m.name] = { name: trainTask(), wanted: 0, money: 0, respect: 0 };
+            continue;
+        }
+
+        const baseline = {
+            name: strWantedReduction,
+            respect: computeRespectGain(myGangInfo, strWantedReduction, m),
+            money: computeMoneyGain(myGangInfo, strWantedReduction, m),
+            wanted: computeWantedGain(myGangInfo, strWantedReduction, m),
+        };
+        baseline.score = computeTaskObjectiveScore(baseline, objectiveWeights, rateScales);
+        baselineWanted += baseline.wanted;
+        baselineMoney += baseline.money;
+        baselineRespect += baseline.respect;
+        memberOptions.push({
+            member: m.name,
+            baseline,
+            options: [baseline, ...crimeRates].sort((a, b) =>
+                Math.abs(a.wanted - b.wanted) > 1e-9 ? a.wanted - b.wanted : b.score - a.score),
+        });
+    }
+
+    if (fallbackTrainers.length > 0)
+        log(ns, `[gang-dbg] fallbackTrainSet (no productive crimes yet): [${fallbackTrainers.join(', ')}]`);
+
+    const wantedBudget = Math.max(0, wantedGainTolerance - baselineWanted);
+    const optimized = optimizeWantedBudget(memberOptions, wantedBudget);
+    const predictedWanted = baselineWanted + optimized.wanted;
+    const predictedRespect = baselineRespect + optimized.respect;
+    const predictedMoney = baselineMoney + optimized.money;
+    const plannedAssignments = Object.fromEntries(
+        allMembers.map(m => {
+            const fixed = fixedAssignments[m.name];
+            return [m.name, fixed?.name ?? optimized.assignments[m.name] ?? strWantedReduction];
+        })
     );
 
+    if (myGangMembers.some(m => assignedTasks[m] !== plannedAssignments[m])) {
+        myGangMembers.forEach(m => { assignedTasks[m] = plannedAssignments[m]; });
+        const old = myGangInfo;
+        await updateMemberActivities(ns, dictMembers);
+        myGangInfo = await waitForGameUpdate(ns, old);
+        log(ns, `Optimized ${goalLabel}. Predicted wanted=${predictedWanted.toPrecision(3)} ` +
+            `(tol=${wantedGainTolerance.toPrecision(3)}), predicted rep=${formatNumberShort(predictedRespect)}, ` +
+            `predicted money=${formatMoney(predictedMoney)}. Actual wanted: ${old.wantedLevelGainRate.toPrecision(3)} ` +
+            `to ${myGangInfo.wantedLevelGainRate.toPrecision(3)}, rep: ${formatNumberShort(old.respectGainRate)} ` +
+            `to ${formatNumberShort(myGangInfo.respectGainRate)}, money: ${formatMoney(old.moneyGainRate)} ` +
+            `to ${formatMoney(myGangInfo.moneyGainRate)}.`);
+    } else {
+        log(ns, `All ${myGangMembers.length} assignments already optimal for ${goalLabel}.`);
+    }
+
+    if (myGangInfo.wantedLevelGainRate > wantedGainTolerance)
+        await fixWantedGainRate(ns, myGangInfo, wantedGainTolerance);
+    return;
+
+    /* Legacy shuffle optimizer retained for reference.
     // 'both' mode: alternate between pure 'money' and pure 'respect' each territory tick.
     // The old approach computed a combined 'both' score (money/_bothDivisor + respect)
     // and evaluated the shuffle by that score. This was circular: when moneyRate is low,
@@ -695,6 +753,7 @@ async function optimizeGangCrime(ns, myGangInfo) {
 
     if (myGangInfo.wantedLevelGainRate > wantedGainTolerance)
         await fixWantedGainRate(ns, myGangInfo, wantedGainTolerance);
+    */
 }
 
 async function fixWantedGainRate(ns, myGangInfo, tolerance = 0) {
@@ -918,7 +977,7 @@ async function tryAscendMembers(ns, myGangInfo) {
 }
 
 // ── Equipment upgrades ─────────────────────────────────────────────────────────
-async function tryUpgradeMembers(ns, dictMembers) {
+async function tryUpgradeMembers(ns, myGangInfo, dictMembers) {
     const costs = await getGangDict(ns, equipments.map(e => e.name), 'getEquipmentCost');
     equipments.forEach(e => e.cost = costs[e.name]);
 
@@ -931,24 +990,44 @@ async function tryUpgradeMembers(ns, dictMembers) {
     const budgetMult = (!is4sBought || resetInfo.currentNode === 8)
         ? options['no-4s-budget-multiplier'] : 1;
 
-    let budget    = Math.min(0.99, (options['equipment-budget']     ?? DEFAULT_EQUIP_BUDGET))   * cash * budgetMult;
-    let augBudget = Math.min(0.99, (options['augmentations-budget'] ?? DEFAULT_AUG_BUDGET))     * cash * budgetMult;
+    let budget    = Math.min(0.99, (options['equipment-budget']     ?? DEFAULT_EQUIP_BUDGET)) * cash * budgetMult;
+    let augBudget = Math.min(0.99, (options['augmentations-budget'] ?? DEFAULT_AUG_BUDGET))   * cash * budgetMult;
 
+    const ascResults = await getGangDict(ns, myGangMembers, 'getAscensionResult');
+    const objectiveWeights = getOptimizationWeights(myGangInfo, myGangInfo.respect / 75);
+    const utilityTasks = new Set([strWantedReduction, trainTask(), isHackGang ? 'Train Hacking' : 'Train Charisma', 'Territory Warfare']);
+    const regularCrimeTasks = allTaskNames.filter(t => !utilityTasks.has(t));
+    const rateScales = getTaskRateScales(myGangInfo, Object.values(dictMembers), regularCrimeTasks);
+    const liveMembers = Object.fromEntries(Object.values(dictMembers).map(m => [m.name, cloneMemberState(m)]));
     const order = [];
-    for (const equip of equipments) {
-        if (augBudget <= 0) break;
-        for (const m of Object.values(dictMembers)) {
-            if (augBudget <= 0) break;
+
+    while (augBudget > 0) {
+        let best = null;
+        for (const equip of equipments) {
             const isRelevant = Object.keys(equip.stats ?? {}).some(s =>
                 importantStats.some(i => s.includes(i)) || s.includes('cha'));
             const perceivedCost = equip.cost * (isRelevant ? 1 : OFF_STAT_COST_PENALTY);
             if (perceivedCost > augBudget) continue;
             if (equip.type !== 'Augmentation' && perceivedCost > budget) continue;
-            if (m.upgrades.includes(equip.name) || m.augmentations.includes(equip.name)) continue;
-            order.push({ member: m.name, type: equip.type, equipmentName: equip.name, cost: equip.cost });
-            budget    -= equip.cost;
-            augBudget -= equip.cost;
+
+            for (const source of Object.values(dictMembers)) {
+                const m = liveMembers[source.name];
+                if ((source.upgrades ?? []).includes(equip.name) || (source.augmentations ?? []).includes(equip.name)) continue;
+                if ((order.some(o => o.member === source.name && o.equipmentName === equip.name))) continue;
+
+                const roi = estimateEquipmentRoi(m, equip, myGangInfo, objectiveWeights, rateScales, ascResults[source.name]);
+                if (!roi || roi.value <= 0) continue;
+                if (!best || roi.score > best.score) {
+                    best = { member: source.name, equipmentName: equip.name, type: equip.type, cost: equip.cost, score: roi.score };
+                }
+            }
         }
+
+        if (!best) break;
+        order.push(best);
+        if (best.type !== 'Augmentation') budget -= best.cost;
+        augBudget -= best.cost;
+        liveMembers[best.member] = applyEquipmentToMember(cloneMemberState(liveMembers[best.member]), equipments.find(e => e.name === best.equipmentName));
     }
 
     if (!order.length) return;
@@ -1121,6 +1200,161 @@ function computeWantedGain(g, taskName, m) {
     const tm = Math.max(0.005, Math.pow(g.territory * 100, task.territory?.wanted ?? 0) / 100);
     if (task.baseWanted < 0) return 0.4 * task.baseWanted * sw * tm;
     return Math.min(100, (7 * task.baseWanted) / Math.pow(3 * sw * tm, 0.8));
+}
+
+function getOptimizationWeights(myGangInfo, factionRep = 0) {
+    if (options['reputation-focus']) return { respect: 1, money: 0 };
+    if (options['money-focus'])      return { respect: 0.2, money: 0.8 };
+    const repGap = requiredRep > 0
+        ? Math.max(0, Math.min(1, (requiredRep - factionRep) / requiredRep))
+        : 0;
+    const recruitGap = myGangMembers.length < 12 && myGangInfo.respectForNextRecruit > 0
+        ? Math.max(0, Math.min(1, (myGangInfo.respectForNextRecruit - myGangInfo.respect) / myGangInfo.respectForNextRecruit))
+        : 0;
+    const territoryGap = Math.max(0, 1 - (myGangInfo.territory ?? 1));
+    let respect = 0.35 + (myGangMembers.length < 12 ? 0.20 : 0) + 0.20 * recruitGap + 0.15 * repGap + 0.10 * territoryGap;
+    respect = Math.max(0.2, Math.min(0.9, respect));
+    return { respect, money: 1 - respect };
+}
+
+function formatOptimizationGoal(weights) {
+    return `for respect ${(weights.respect * 100).toFixed(0)}% / money ${(weights.money * 100).toFixed(0)}%`;
+}
+
+function getTaskRateScales(g, members, taskNames) {
+    let respect = 0, money = 0, wantedRecovery = 0, power = 0;
+    for (const m of members) {
+        power = Math.max(power, computeMemberPower(m));
+        wantedRecovery = Math.max(wantedRecovery, -Math.min(0, computeWantedGain(g, strWantedReduction, m)));
+        for (const task of taskNames) {
+            respect = Math.max(respect, computeRespectGain(g, task, m));
+            money = Math.max(money, computeMoneyGain(g, task, m));
+        }
+    }
+    return {
+        respect: Math.max(respect, 1e-9),
+        money: Math.max(money, 1e-9),
+        wantedRecovery: Math.max(wantedRecovery, 1e-9),
+        power: Math.max(power, 1e-9),
+    };
+}
+
+function computeTaskObjectiveScore(rate, weights, scales) {
+    return (weights.respect * (rate.respect / scales.respect)) +
+        (weights.money * (rate.money / scales.money));
+}
+
+function optimizeWantedBudget(memberOptions, wantedBudget) {
+    if (!memberOptions.length) return { score: 0, wanted: 0, respect: 0, money: 0, assignments: {} };
+    const bucketSize = wantedBudget > 0 ? Math.max(wantedBudget / TASK_OPTIMIZER_BUCKETS, 1e-5) : 1;
+    const budgetBuckets = wantedBudget > 0 ? Math.max(0, Math.floor(wantedBudget / bucketSize)) : 0;
+    let states = Array.from({ length: budgetBuckets + 1 }, () => null);
+    states[0] = { score: 0, wanted: 0, respect: 0, money: 0, assignments: {} };
+
+    for (const entry of memberOptions) {
+        const next = Array.from({ length: budgetBuckets + 1 }, () => null);
+        for (let bucket = 0; bucket <= budgetBuckets; bucket++) {
+            const state = states[bucket];
+            if (!state) continue;
+            for (const option of entry.options) {
+                const extraWanted = Math.max(0, option.wanted - entry.baseline.wanted);
+                const costBuckets = wantedBudget > 0
+                    ? Math.ceil(extraWanted / bucketSize - 1e-12)
+                    : (extraWanted > 0 ? budgetBuckets + 1 : 0);
+                const nextBucket = bucket + costBuckets;
+                if (nextBucket > budgetBuckets) continue;
+                const candidate = {
+                    score: state.score + (option.score - entry.baseline.score),
+                    wanted: state.wanted + (option.wanted - entry.baseline.wanted),
+                    respect: state.respect + (option.respect - entry.baseline.respect),
+                    money: state.money + (option.money - entry.baseline.money),
+                    assignments: { ...state.assignments, [entry.member]: option.name },
+                };
+                if (candidate.wanted > wantedBudget + 1e-9) continue;
+                const current = next[nextBucket];
+                if (!current ||
+                    candidate.score > current.score + 1e-9 ||
+                    (Math.abs(candidate.score - current.score) <= 1e-9 &&
+                     candidate.wanted < current.wanted - 1e-9)) {
+                    next[nextBucket] = candidate;
+                }
+            }
+        }
+        states = next;
+    }
+
+    return states.filter(Boolean).reduce((best, state) =>
+        !best ||
+        state.score > best.score + 1e-9 ||
+        (Math.abs(state.score - best.score) <= 1e-9 && state.wanted < best.wanted - 1e-9)
+            ? state : best,
+        null) ?? { score: 0, wanted: 0, respect: 0, money: 0, assignments: {} };
+}
+
+function cloneMemberState(m) {
+    return { ...m };
+}
+
+function getMemberAscensionMult(points) {
+    return Math.max(Math.pow(points / 2000, 0.5), 1);
+}
+
+function calculateMemberSkill(exp, mult = 1) {
+    return Math.max(Math.floor(mult * (32 * Math.log(exp + 534.5) - 200)), 1);
+}
+
+function applyEquipmentToMember(member, equip) {
+    if (!member || !equip) return member;
+    for (const stat of ['hack', 'str', 'def', 'dex', 'agi', 'cha']) {
+        if (equip.stats?.[stat] != null)
+            member[stat + '_mult'] = (member[stat + '_mult'] ?? 1) * equip.stats[stat];
+    }
+    for (const stat of ['hack', 'str', 'def', 'dex', 'agi', 'cha']) {
+        const totalMult = (member[stat + '_mult'] ?? 1) * getMemberAscensionMult(member[stat + '_asc_points'] ?? 0);
+        member[stat] = calculateMemberSkill(member[stat + '_exp'] ?? 0, totalMult);
+    }
+    return member;
+}
+
+function computeMemberPower(member) {
+    return ((member.hack ?? 0) + (member.str ?? 0) + (member.def ?? 0) +
+        (member.dex ?? 0) + (member.agi ?? 0) + (member.cha ?? 0)) / 95;
+}
+
+function estimateEquipmentRoi(member, equip, g, weights, scales, ascResult) {
+    const taskNames = allTaskNames.filter(t => ![strWantedReduction, trainTask(), isHackGang ? 'Train Hacking' : 'Train Charisma', 'Territory Warfare'].includes(t));
+    const beforeScore = taskNames.reduce((best, task) => Math.max(best, computeTaskObjectiveScore({
+        respect: computeRespectGain(g, task, member),
+        money: computeMoneyGain(g, task, member),
+    }, weights, scales)), 0);
+    const beforeVigilante = -Math.min(0, computeWantedGain(g, strWantedReduction, member));
+    const beforePower = computeMemberPower(member);
+
+    const upgraded = applyEquipmentToMember(cloneMemberState(member), equip);
+    const afterScore = taskNames.reduce((best, task) => Math.max(best, computeTaskObjectiveScore({
+        respect: computeRespectGain(g, task, upgraded),
+        money: computeMoneyGain(g, task, upgraded),
+    }, weights, scales)), 0);
+    const afterVigilante = -Math.min(0, computeWantedGain(g, strWantedReduction, upgraded));
+    const afterPower = computeMemberPower(upgraded);
+
+    let value = afterScore - beforeScore;
+    if ((g.wantedPenalty ?? 1) < (1 - WANTED_PENALTY_THRESH))
+        value += GEAR_RECOVERY_WEIGHT * ((afterVigilante - beforeVigilante) / scales.wantedRecovery);
+    if ((g.territory ?? 1) < 1)
+        value += GEAR_POWER_WEIGHT * ((afterPower - beforePower) / scales.power);
+
+    if (equip.type !== 'Augmentation') {
+        const statsList = [...importantStats, 'cha'];
+        const maxAscPts = Math.max(...statsList.map(s => member?.[s + '_asc_points'] ?? 0));
+        const threshold = optimalAscendThreshold(maxAscPts);
+        const maxAscResult = Math.max(...statsList.map(s => ascResult?.[s] ?? 1));
+        if (maxAscResult >= threshold * 0.98) value *= TEMP_GEAR_ASC_PENALTY;
+    } else {
+        value *= 1.35;
+    }
+
+    return { value, score: value / Math.max(equip.cost, 1) };
 }
 
 function shuffleArray(arr) {
