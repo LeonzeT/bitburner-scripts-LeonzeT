@@ -1,1 +1,0 @@
-[["disable-follow-player", true], ["aug-budget", 0.3]]

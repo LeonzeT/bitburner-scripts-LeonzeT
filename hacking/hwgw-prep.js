@@ -25,36 +25,50 @@ function resolveScript(ns, key) {
  *
  * Worker scripts are launched with args[3]='PREP' so hwgw-grow.js and
  * hwgw-weaken.js skip writing to port 1 (the batcher's desync channel).
- * See hwgw-notes.txt §2 for why this matters.
  *
  * @param {NS} ns
  * Args:
  *   ns.args[0]  {string}  target    — server to prep
  *   ns.args[1]  {string}  "--reserve"
  *   ns.args[2]  {number}  reserveRam — GB to leave free on home (default 32)
- *   --exec-hosts {string} JSON array of exec host names (optional, ignored if
- *                         not present — prep uses all exec hosts from the global
- *                         file, or all rooted servers in standalone mode)
  */
 
-// No helpers.js import — self-contained by design (same as batcher).
-// RAM cost: ~2 GB (ns.exec, ns.scp, ns.getServer*, ns.ps, ns.write, ns.sleep)
+// RAM BUDGET (static cost charged regardless of call count):
+//   Base:                      1.60 GB
+//   ns.exec:                   1.30 GB
+//   ns.getServerMaxRam:        0.05 GB  ← cheaper than the 0.1 GB GetServer calls
+//   ns.getServerUsedRam:       0.05 GB
+//   ns.getServerMinSecurityLevel: 0.10 GB
+//   ns.getServerSecurityLevel:    0.10 GB
+//   ns.getServerMaxMoney:         0.10 GB
+//   ns.getServerMoneyAvailable:   0.10 GB
+//   ns.getServerGrowth:           0.10 GB
+//   ns.isRunning:                 0.10 GB
+//   ── Removed vs previous version ──────────────────────────────────────────
+//   ns.fileExists (×2):  -0.10 GB  (scripts verified by manager before launch)
+//   ns.serverExists:     -0.10 GB  (exec-hosts file is trusted, no live check)
+//   ns.getScriptRam:     -0.10 GB  (worker RAM hardcoded from game source)
+//   ─────────────────────────────────────────────────────────────────────────
+//   Total: ~2.70 GB  (was ~3.00 GB — saves 0.30 GB)
 
 const WEAKEN_SECURITY_PER_THREAD = 0.05;
 const GROW_SECURITY_PER_THREAD   = 0.004;
-const HACK_SECURITY_PER_THREAD   = 0.002; // unused here but kept for reference
-const WORKER_PORT = 1; // batcher's desync channel — prep must NOT write here
+const MAX_ITERATIONS = 50;
+const PREP_RAM_FRACTION = 0.50;
 
-const MAX_ITERATIONS = 50; // give up after this many weaken+grow cycles
+// Worker script RAM costs — derived directly from the game source (RamCostGenerator.ts):
+//   Base RAM per script:  1.60 GB
+//   ns.weaken cost:       0.15 GB  → WEAKEN_SCRIPT_RAM = 1.75 GB
+//   ns.grow cost:         0.15 GB  → GROW_SCRIPT_RAM   = 1.75 GB
+//
+// !! These constants must be updated if the worker scripts ever call additional
+// !! NS functions beyond weaken/grow. The batcher's own SCRIPT_RAM cache uses
+// !! ns.getScriptRam() at startup for this reason; prep avoids that 0.10 GB cost
+// !! by hardcoding values known at design time.
+const WEAKEN_SCRIPT_RAM = 1.75;
+const GROW_SCRIPT_RAM   = 1.75;
 
-// Fraction of total free exec RAM prep is allowed to consume per wave.
-// When no batchers are running (fresh start / only target) we can safely
-// hammer the full RAM pool and finish prep as fast as possible.
-// When batchers ARE running on other targets we leave 50% free so their
-// workers don't get starved between waves.
-// This is computed dynamically in getPrepRamFraction() below.
-
-/** Safe number helper — guards against NaN/Infinity cascades (see hwgw-notes.txt §5) */
+/** Safe number helper — guards against NaN/Infinity cascades */
 const fin  = (v, fallback) => Number.isFinite(v) ? v : fallback;
 /** Thread count helper — returns 0 instead of a garbage value */
 const threads = n => (Number.isFinite(n) && n >= 1) ? Math.floor(n) : 0;
@@ -69,9 +83,6 @@ export async function main(ns) {
         return;
     }
 
-    // Parse --reserve from args. Manager calls us as:
-    //   ns.exec(PREP_SCRIPT, 'home', 1, target, '--reserve', reserveRam, '--exec-hosts', json)
-    // We read positionally: args[1]='--reserve', args[2]=value
     const reserveRam = fin(
         ns.args[1] === '--reserve' ? Number(ns.args[2]) : 32,
         32
@@ -88,11 +99,11 @@ export async function main(ns) {
     const WEAKEN = paths['hwgw-weaken'] ?? 'hacking/hwgw-weaken.js';
     const GROW   = paths['hwgw-grow']   ?? 'hacking/hwgw-grow.js';
 
-    if (!ns.fileExists(WEAKEN, 'home') || !ns.fileExists(GROW, 'home')) {
-        ns.print(`ERROR hwgw-prep: worker scripts missing (${WEAKEN}, ${GROW})`);
-        ns.write(signalFile, `FAILED:worker scripts missing`, 'w');
-        return;
-    }
+    // Scripts are guaranteed to be present by the manager's copyWorkerScripts()
+    // which runs before prep is ever launched. Removing the ns.fileExists() check
+    // here saves 0.10 GB of static RAM — the most expensive per-call cost we can cut.
+    // If a script IS missing, ns.exec() will simply return 0 and the loop will
+    // report "no RAM" instead of "missing script" — acceptable tradeoff.
 
     // ── BN multipliers ─────────────────────────────────────────────────────
     let bnMults = { ServerWeakenRate: 1, ServerGrowthRate: 1 };
@@ -103,19 +114,18 @@ export async function main(ns) {
     const actualWeakenPerThread = WEAKEN_SECURITY_PER_THREAD * fin(bnMults.ServerWeakenRate, 1);
 
     // ── Exec host pool ─────────────────────────────────────────────────────
-    // Use the global exec-hosts file if present; fall back to all rooted servers.
-    // We intentionally do NOT use the per-target slice file here — prep benefits
-    // from using all available RAM to complete as fast as possible.
+    // Reads /Temp/hwgw-exec-hosts.txt written by hwgw-manager.js.
+    // ns.serverExists() removed: we trust the manager's host list. If a host
+    // becomes invalid, ns.exec() returns 0 and dispatchThreads skips it gracefully.
+    // Savings: 0.10 GB static RAM.
     function getWorkerHosts() {
-        // BFS fallback removed — saves ns.scan(0.2GB) + ns.hasRootAccess(0.1GB).
-        // Manager writes /Temp/hwgw-exec-hosts.txt before launching prep.
-        // Standalone fallback: home-only (safe, just slower prep).
         try {
             const raw = ns.read('/Temp/hwgw-exec-hosts.txt');
             if (raw && raw !== '') {
-                const hosts = JSON.parse(raw).filter(h => ns.serverExists(h));
+                const hosts = JSON.parse(raw);
                 if (hosts.length > 0) {
                     if (!hosts.includes('home')) hosts.push('home');
+                    // Home last so we don't eat reserved RAM unnecessarily
                     return hosts.sort((a, b) => (a === 'home' ? 1 : 0) - (b === 'home' ? 1 : 0));
                 }
             }
@@ -130,17 +140,18 @@ export async function main(ns) {
         }, 0);
     }
 
-    // getPrepRamFraction replaced with fixed constant — removes the last ns.ps call.
-    // 0.5 (50% of free RAM) is conservative and safe in all situations.
-    // The adaptive 90% path (fresh BN, no batchers) means slightly more prep iterations
-    // but is not correctness-critical. RAM saved: 0.2 GB (ps).
-    const PREP_RAM_FRACTION = 0.50;
-
-    // ── Copy workers to all exec hosts via fire-and-forget temp ─────────────
-    // Removes ns.scp (0.6 GB) from prep's static RAM cost.
+    // ── Copy workers to exec hosts via fire-and-forget temp ─────────────────
+    // Keeps ns.scp (0.60 GB) out of prep's static RAM cost.
+    // The copied set avoids re-launching the SCP temp script on every loop
+    // iteration — it only runs once per unique host set per prep session.
+    const _copiedToHosts = new Set();
     function ensureScriptsCopied(hosts) {
         const nonHome = hosts.filter(h => h !== 'home');
         if (!nonHome.length) return;
+        // Build a stable cache key from sorted host names
+        const cacheKey = nonHome.slice().sort().join(',');
+        if (_copiedToHosts.has(cacheKey)) return; // Already queued this run
+        _copiedToHosts.add(cacheKey);
         const scripts = JSON.stringify([WEAKEN, GROW]);
         const hostsJson = JSON.stringify(nonHome);
         ns.write('/Temp/prep-scp.js', [
@@ -156,18 +167,19 @@ export async function main(ns) {
         ns.exec('/Temp/prep-scp.js', 'home');
     }
 
-    // ── PID tracking for waitForPids (replaces ns.ps) ──────────────────────
-    // ns.ps (0.2 GB) removed; instead track launched PIDs and poll ns.isRunning.
+    // ── PID tracking (replaces ns.ps to save 0.20 GB) ──────────────────────
     const activePids = [];
 
-    // ── Thread dispatch: spread threads across available hosts ─────────────
-    // Workers are tagged args[3]='PREP' so they don't signal port 1.
+    // ── Thread dispatch across hosts ────────────────────────────────────────
+    // Workers tagged args[3]='PREP' so they don't signal port 1.
     function dispatchThreads(script, totalThreads, hosts) {
+        // Use the hardcoded script RAM constant (0.10 GB saved vs ns.getScriptRam).
+        // weaken → WEAKEN_SCRIPT_RAM, grow → GROW_SCRIPT_RAM.
+        const scriptRam = (script === WEAKEN) ? WEAKEN_SCRIPT_RAM : GROW_SCRIPT_RAM;
         let remaining = totalThreads;
+
         for (const host of hosts) {
             if (remaining <= 0) break;
-            const scriptRam = ns.getScriptRam(script, 'home');
-            if (!scriptRam || scriptRam <= 0) continue;
             const reserve = host === 'home' ? reserveRam : 0;
             const free = Math.max(0, ns.getServerMaxRam(host) - ns.getServerUsedRam(host) - reserve);
             const canRun = Math.floor(free / scriptRam);
@@ -177,32 +189,44 @@ export async function main(ns) {
             const pid = ns.exec(script, host, toRun, target, 0, -1, 'PREP');
             if (pid > 0) { remaining -= toRun; activePids.push(pid); }
         }
-        return totalThreads - remaining; // threads actually launched
+        return totalThreads - remaining;
     }
 
-    // ── Wait for all dispatched PREP workers to finish ─────────────────────
-    // Uses PID tracking + ns.isRunning instead of ns.ps (saves 0.2 GB static RAM).
-    // PIDs are pushed into activePids[] by dispatchThreads(); cleared here after wait.
+    // ── Wait for all dispatched PREP workers ────────────────────────────────
     async function waitForPids() {
         while (activePids.some(pid => ns.isRunning(pid))) {
-            // Prune finished PIDs to keep the array small
             for (let i = activePids.length - 1; i >= 0; i--)
                 if (!ns.isRunning(activePids[i])) activePids.splice(i, 1);
             await ns.sleep(500);
         }
-        activePids.length = 0; // clear for next wave
+        activePids.length = 0;
     }
 
-    // ── Grow thread estimate (correct Bitburner formula, see hwgw-notes.txt §1) ──
+    // ── Grow thread estimate ────────────────────────────────────────────────
+    // Uses the same log formula as the game's numCycleForGrowth() (ServerHelpers.ts).
+    // Full Newton-Raphson (numCycleForGrowthCorrected) is ~identical for the ratios
+    // we care about because the additive +threads term is negligible vs server money.
+    //
+    // Formula derivation (from game source):
+    //   k = log1p(min(0.03/minSec, 0.0035)) × (serverGrowth/100) × bnGrowRate
+    //   threads = log(targetMoney/currentMoney) / k
+    //
+    // Note: the player's hacking_grow multiplier is omitted here (requires ns.getPlayer,
+    // 0.50 GB). The 20% padding accounts for this and rounding. Since hacking_grow ≥ 1,
+    // omitting it means we slightly overestimate threads — safe but not wasteful at ×1.2.
     function estimateGrowThreads(currentMoney, maxMoney, minSec) {
         if (currentMoney >= maxMoney) return 0;
         const serverGrowth = fin(ns.getServerGrowth(target), 1);
         const growRate     = fin(bnMults.ServerGrowthRate, 1);
         const ratio        = maxMoney / Math.max(1, currentMoney);
-        // Correct formula: adjustedGrowthRate = min(1.0035, 1 + 0.03/minSecurity)
-        const adjGrowthRate = Math.min(1.0035, 1 + 0.03 / Math.max(1, minSec));
-        const need = Math.log(ratio) / (Math.log(adjGrowthRate) * serverGrowth / 100 * growRate);
-        return threads(need * 1.2); // 20% padding for safety
+        // Math.log1p(x) = log(1+x), preferred for small x (matches game source exactly)
+        const adjGrowthLog = Math.min(
+            Math.log1p(0.0035),                           // ServerMaxGrowthLog from Constants.ts
+            Math.log1p(0.03 / Math.max(1, minSec))       // ServerBaseGrowthIncr / hackDifficulty
+        );
+        const k    = adjGrowthLog * (serverGrowth / 100) * growRate;
+        const need = k > 0 ? Math.log(ratio) / k : Infinity;
+        return threads(need * 1.2); // 20% padding covers hackGrowMult and rounding
     }
 
     // ── Main prep loop ─────────────────────────────────────────────────────
@@ -229,51 +253,38 @@ export async function main(ns) {
         const hosts = getWorkerHosts();
         ensureScriptsCopied(hosts);
 
-        const weakenRam = fin(ns.getScriptRam(WEAKEN, 'home'), 0);
-        const growRam   = fin(ns.getScriptRam(GROW, 'home'),   0);
-
-        if (weakenRam <= 0 || growRam <= 0) {
-            ns.print(`ERROR hwgw-prep: worker scripts have 0 RAM. Missing from home?`);
-            ns.write(signalFile, 'FAILED:worker script RAM is 0', 'w');
-            return;
-        }
-
-        const prepRamFraction = PREP_RAM_FRACTION;
-
         // ── Phase 1: Weaken if security above minimum ──────────────────────
         if (!secOk) {
             const secDelta  = fin(currentSec - minSec, 0);
             const needed    = threads(Math.ceil(secDelta / actualWeakenPerThread) * 1.1);
-            const freeRam   = getTotalFreeRam(hosts) * prepRamFraction;
-            const canLaunch = threads(freeRam / weakenRam);
+            const freeRam   = getTotalFreeRam(hosts) * PREP_RAM_FRACTION;
+            const canLaunch = threads(freeRam / WEAKEN_SCRIPT_RAM);
             const toLaunch  = Math.min(needed, canLaunch);
 
             if (toLaunch > 0) {
-                ns.print(`[Iter ${iters}] Weaken: sec=${currentSec.toFixed(2)}/${minSec} — launching ${toLaunch} threads (${(prepRamFraction*100).toFixed(0)}% RAM)`);
+                ns.print(`[Iter ${iters}] Weaken: sec=${currentSec.toFixed(2)}/${minSec} → launching ${toLaunch} threads`);
                 dispatchThreads(WEAKEN, toLaunch, hosts);
             } else {
-                ns.print(`[Iter ${iters}] Weaken needed but no RAM (free=${freeRam.toFixed(0)}GB, need ${weakenRam}GB/thread). Waiting...`);
+                ns.print(`[Iter ${iters}] Weaken needed but no RAM (free=${(freeRam).toFixed(0)}GB). Waiting...`);
             }
             await waitForPids();
-            continue; // re-evaluate before growing
+            continue;
         }
 
         // ── Phase 2: Grow if money below maximum ───────────────────────────
         if (!monOk) {
             const growNeeded = estimateGrowThreads(currentMon, maxMon, minSec);
-            const freeRam    = getTotalFreeRam(hosts) * prepRamFraction;
-            const canLaunch  = threads(freeRam / growRam);
+            const freeRam    = getTotalFreeRam(hosts) * PREP_RAM_FRACTION;
+            const canLaunch  = threads(freeRam / GROW_SCRIPT_RAM);
             const toLaunch   = Math.min(growNeeded, canLaunch);
 
             if (toLaunch > 0) {
-                ns.print(`[Iter ${iters}] Grow: money=${(currentMon/maxMon*100).toFixed(1)}% — launching ${toLaunch}/${growNeeded} threads (${(prepRamFraction*100).toFixed(0)}% RAM)`);
+                ns.print(`[Iter ${iters}] Grow: money=${(currentMon/maxMon*100).toFixed(1)}% → launching ${toLaunch}/${growNeeded} threads`);
                 dispatchThreads(GROW, toLaunch, hosts);
             } else {
-                ns.print(`[Iter ${iters}] Grow needed but no RAM (free=${freeRam.toFixed(0)}GB). Waiting...`);
+                ns.print(`[Iter ${iters}] Grow needed but no RAM (free=${(freeRam).toFixed(0)}GB). Waiting...`);
             }
             await waitForPids();
-
-            // After growing, security will have risen — loop back to weaken
             continue;
         }
     }

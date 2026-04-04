@@ -55,6 +55,13 @@ const HACK_SECURITY_PER_THREAD   = 0.002;
 const WORKER_PORT = 1; // W1, H, W2, G completion reports
 const PREP_PORT   = 2; // Prep done/failed signals
 
+// Home server RAM policy — mirrors hwgw-prep.js.
+// Only pull home into the exec pool when it has >1 TB of RAM installed,
+// and even then always leave that first 1 TB completely untouched.
+// World servers are always preferred (home is sorted last in getWorkerHosts).
+const HOME_RAM_THRESHOLD = 1024; // GB — home excluded from pool below this
+const HOME_RAM_RESERVE   = 1024; // GB — floor reserve on home (above --reserve)
+
 // Script paths — resolved from /script-paths.json at startup.
 // Falls back to bare filenames if the JSON doesn't exist (standalone mode).
 // Uses ns.read() only (0 GB) so this adds no RAM overhead.
@@ -356,13 +363,6 @@ export async function main(ns) {
                 timestamp:   Date.now(),
             }), 'w');
         } catch { /* non-critical */ }
-
-        if (params.maxBatches < 1) {
-            log(`WARNING: Insufficient RAM for even one batch of "${target}". ` +
-                      `Try a target with shorter weaken time, or free up more RAM.`);
-            await ns.sleep(30000); // Wait and hope RAM becomes available
-            continue;
-        }
 
         // ── Step 3: Clear the worker completion port ──────────────────────────
         // Drain leftover messages for THIS target from a previous run.
@@ -785,7 +785,7 @@ function launchWorker(ns, script, threads, target, delay, batchId, role, hosts, 
         // on a remote host, that host is simply skipped — manager will re-copy on next refresh.
         const maxRam  = ns.getServerMaxRam(host);
         const usedRam = ns.getServerUsedRam(host);
-        const reserve = host === "home" ? reserveRam : 0;
+        const reserve = host === "home" ? Math.max(reserveRam, HOME_RAM_RESERVE) : 0;
         const freeRam = Math.max(0, maxRam - usedRam - reserve);
         const canFit  = Math.floor(freeRam / scriptRam);
 
@@ -1071,7 +1071,8 @@ function getWorkerHosts(ns, execHosts) {
     const hosts = execHosts && execHosts.size > 0
         ? [...execHosts].filter(h => ns.serverExists(h))
         : ['home']; // safe fallback: home-only when no partition active
-    if (!hosts.includes('home')) hosts.push('home');
+    if (!hosts.includes('home') && ns.getServerMaxRam('home') > HOME_RAM_THRESHOLD)
+        hosts.push('home');
     return hosts.sort((a, b) => (a === "home" ? 1 : 0) - (b === "home" ? 1 : 0));
 }
 
@@ -1083,7 +1084,7 @@ function getWorkerHosts(ns, execHosts) {
 function getTotalFreeRam(ns, reserveRam, hosts) {
     let total = 0;
     for (const host of hosts) {
-        const reserve = host === "home" ? reserveRam : 0;
+        const reserve = host === "home" ? Math.max(reserveRam, HOME_RAM_RESERVE) : 0;
         total += Math.max(0, ns.getServerMaxRam(host) - ns.getServerUsedRam(host) - reserve);
     }
     return total;

@@ -1,1 +1,0 @@
-[["disable-hacknet",true], ["no-tail-windows", true]]
