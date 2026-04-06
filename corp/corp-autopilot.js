@@ -3,6 +3,7 @@ export async function main(ns) {
     const flags = ns.flags([
         ["no-tail",   false],
         ["self-fund", false],
+        ["income-mode", false],
         ["debug",     false],
     ]);
 
@@ -11,6 +12,7 @@ export async function main(ns) {
     try { ns.clearLog(); } catch {}
 
     const api = ns.corporation;
+    const incomeMode = !!flags["income-mode"];
 
     const SNAPSHOT_FILE = "/Temp/dashboard-corp.txt";
     const UPDATE_MS     = 5000;
@@ -108,13 +110,50 @@ export async function main(ns) {
 
     const MIN_ROUND1 = 34e9;
     const MIN_ROUND2 = 5e12;
+    const MIN_ROUND3 = 2e12;
+    const MIN_ROUND4 = 5e12;
+    const ROUND3_ACCEPT_FUNDS_MULT = 2.0;
+    const ROUND4_ACCEPT_FUNDS_MULT = 1.6;
+    const ROUND3_ACCEPT_REVENUE_HOURS = 24;
+    const ROUND4_ACCEPT_REVENUE_HOURS = 48;
+    const INCOME_MODE_ROUND3_MIN = 8e12;
+    const INCOME_MODE_ROUND4_MIN = 20e12;
+    const INCOME_MODE_ROUND3_FUNDS_MULT = 3.0;
+    const INCOME_MODE_ROUND4_FUNDS_MULT = 2.5;
+    const INCOME_MODE_ROUND3_REVENUE_HOURS = 72;
+    const INCOME_MODE_ROUND4_REVENUE_HOURS = 120;
+    const DEBUG_STATUS_INTERVAL = 6;
+    const BUYBACK_RESERVE = 100e9;
+    const BUYBACK_RESERVE_PCT = 0.35;
+    const BUYBACK_MIN_SHARES = 1e6;
+    const POST_R3_SMART_FACTORIES_TARGET = 14;
+    const POST_R3_SMART_STORAGE_TARGET = 16;
+    const POST_R3_SALES_BOTS_TARGET = 8;
+    const POST_R3_WILSON_TARGET = 3;
+    const POST_R3_TOB_ADVERT_TARGET = 5;
+    const POST_R3_WAREHOUSE_TARGET = 8;
+    const POST_R3_AGRI_OFFICE_TARGET = 24;
+    const POST_R3_TOB_HQ_OFFICE_TARGET = 45;
+    const POST_R3_TOB_SUPPORT_OFFICE_TARGET = 30;
+    const POST_R3_CHEM_OFFICE_TARGET = 12;
+    const PRE_IPO_SMART_FACTORIES_TARGET = 16;
+    const PRE_IPO_SMART_STORAGE_TARGET = 18;
+    const PRE_IPO_SALES_BOTS_TARGET = 10;
+    const PRE_IPO_WILSON_TARGET = 4;
+    const PRE_IPO_TOB_ADVERT_TARGET = 6;
+    const PRE_IPO_WAREHOUSE_TARGET = 10;
+    const PRE_IPO_AGRI_OFFICE_TARGET = 30;
+    const PRE_IPO_TOB_HQ_OFFICE_TARGET = 60;
+    const PRE_IPO_TOB_SUPPORT_OFFICE_TARGET = 45;
+    const PRE_IPO_CHEM_OFFICE_TARGET = 15;
     const RP_TARGET_AGRI = 700;
     const RP_TARGET_CHEM = 390;
     const BOOST_MATS = ["Real Estate", "Hardware", "Robots", "AI Cores"];
-    const BOOST_SPACE_RATIO = { [AGRI]: 0.70, [CHEM]: 0.70 };
+    const BOOST_SPACE_RATIO = { [AGRI]: 0.70, [CHEM]: 0.70, [TOB]: 0.70 };
     const FALLBACK_BOOST_FACTORS = {
         [AGRI]: [0.72, 0.20, 0.30, 0.30],
         [CHEM]: [0.25, 0.20, 0.25, 0.20],
+        [TOB]:  [0.15, 0.15, 0.20, 0.15],
     };
     const FALLBACK_BOOST_SIZES = [0.005, 0.06, 0.5, 0.1];
 
@@ -125,6 +164,13 @@ export async function main(ns) {
         nextProductSeq:   1,
         exportsSetUp:     false,
         agriRpReady:      false,     // true once Agri RP >= 55 in round 1
+        loopCount:        0,
+        lastDeferredKey:  "",
+        lastIpoDeferredKey: "",
+        lastStatusSig:    "",
+        seenFinishedProducts: {},
+        stalledProductSales: {},
+        lastOwnershipNotice: "",
     };
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -160,7 +206,13 @@ export async function main(ns) {
     }
 
     function getBoostConfig(divName) {
-        const industry = divName === AGRI ? "Agriculture" : divName === CHEM ? "Chemical" : null;
+        const industry = divName === AGRI
+            ? "Agriculture"
+            : divName === CHEM
+                ? "Chemical"
+                : divName === TOB
+                    ? "Tobacco"
+                    : null;
         if (!industry) return null;
 
         const data = safe(() => api.getIndustryData(industry), null);
@@ -199,18 +251,35 @@ export async function main(ns) {
         return changed;
     }
 
-    function refreshBoostMaterials(divName) {
+    function stopBoostMaterialBuys(divName) {
         const div = getDivision(divName);
-        if (!div || !hasUnlock("Warehouse API")) return;
-        if (divName === AGRI && !state.agriRpReady) return;
+        if (!div) return;
         for (const city of div.cities ?? []) {
-            const wh = getWarehouse(divName, city);
-            if (!wh) continue;
-            applyBoostMaterials(divName, city);
+            for (const mat of BOOST_MATS) {
+                safe(() => api.buyMaterial(divName, city, mat, 0));
+            }
         }
     }
 
+    function refreshBoostMaterials(divName, corp) {
+        const div = getDivision(divName);
+        if (!div || !hasUnlock("Warehouse API")) return;
+        if (divName === AGRI && !state.agriRpReady) return;
+        if (spendingRecoveryMode(corp)) {
+            stopBoostMaterialBuys(divName);
+            return false;
+        }
+        let changed = false;
+        for (const city of div.cities ?? []) {
+            const wh = getWarehouse(divName, city);
+            if (!wh) continue;
+            changed = applyBoostMaterials(divName, city) || changed;
+        }
+        return changed;
+    }
+
     function log(msg) { ns.print(msg); }
+    function debug(msg) { if (flags["debug"]) log(`[debug] ${msg}`); }
 
     function money(n) {
         const abs = Math.abs(n);
@@ -221,9 +290,161 @@ export async function main(ns) {
         return `$${n.toFixed(0)}`;
     }
 
+    function operatingProfit(corp) { return (corp?.revenue ?? 0) - (corp?.expenses ?? 0); }
     function recoveryMode(corp) { return (corp?.funds ?? 0) < 0; }
+    function spendingRecoveryMode(corp) { return recoveryMode(corp) || operatingProfit(corp) < 0; }
 
     function isPublic(corp) { return !!(corp?.public); }
+    function getTotalShares(corp) { return Math.max(0, Number(corp?.totalShares ?? 0)); }
+    function getOwnedShares(corp) { return Math.max(0, Number(corp?.numShares ?? 0)); }
+    function getIssuedShares(corp) {
+        const issued = Number(corp?.issuedShares ?? NaN);
+        if (Number.isFinite(issued) && issued >= 0) return issued;
+        const total = getTotalShares(corp);
+        const owned = getOwnedShares(corp);
+        return Math.max(0, total - owned);
+    }
+    function getOwnershipPct(corp) {
+        const total = getTotalShares(corp);
+        return total > 0 ? getOwnedShares(corp) / total : 0;
+    }
+    function buybackSharePrice(corp) {
+        const price = Number(corp?.sharePrice ?? 0);
+        return price > 0 ? price * 1.1 : Infinity;
+    }
+    function getBuybackReserve(corp) {
+        const funds = corp?.funds ?? 0;
+        return Math.max(BUYBACK_RESERVE, funds * BUYBACK_RESERVE_PCT);
+    }
+    function formatShares(n) {
+        return Number.isFinite(n) ? Math.floor(n).toLocaleString("en-US") : "0";
+    }
+    function currentOfferRound(corp) { return safe(() => api.getInvestmentOffer(), null)?.round ?? (isPublic(corp) ? 5 : 0); }
+
+    function getFundingStage(corp) {
+        if (isPublic(corp)) return "public";
+        const round = currentOfferRound(corp);
+        if (state.readyToIPO || round > 4) return "pre-ipo";
+        if (round >= 4) return "post-r3";
+        return "default";
+    }
+
+    function getStageTargets(corp) {
+        switch (getFundingStage(corp)) {
+            case "post-r3":
+                return {
+                    smartFactories: POST_R3_SMART_FACTORIES_TARGET,
+                    smartStorage: POST_R3_SMART_STORAGE_TARGET,
+                    salesBots: POST_R3_SALES_BOTS_TARGET,
+                    wilson: POST_R3_WILSON_TARGET,
+                    tobAdvert: POST_R3_TOB_ADVERT_TARGET,
+                    warehouse: POST_R3_WAREHOUSE_TARGET,
+                    agriOffice: POST_R3_AGRI_OFFICE_TARGET,
+                    tobHqOffice: POST_R3_TOB_HQ_OFFICE_TARGET,
+                    tobSupportOffice: POST_R3_TOB_SUPPORT_OFFICE_TARGET,
+                    chemOffice: POST_R3_CHEM_OFFICE_TARGET,
+                };
+            case "pre-ipo":
+                return {
+                    smartFactories: PRE_IPO_SMART_FACTORIES_TARGET,
+                    smartStorage: PRE_IPO_SMART_STORAGE_TARGET,
+                    salesBots: PRE_IPO_SALES_BOTS_TARGET,
+                    wilson: PRE_IPO_WILSON_TARGET,
+                    tobAdvert: PRE_IPO_TOB_ADVERT_TARGET,
+                    warehouse: PRE_IPO_WAREHOUSE_TARGET,
+                    agriOffice: PRE_IPO_AGRI_OFFICE_TARGET,
+                    tobHqOffice: PRE_IPO_TOB_HQ_OFFICE_TARGET,
+                    tobSupportOffice: PRE_IPO_TOB_SUPPORT_OFFICE_TARGET,
+                    chemOffice: PRE_IPO_CHEM_OFFICE_TARGET,
+                };
+            default:
+                return null;
+        }
+    }
+
+    function minOfficeSize(divName) {
+        const div = getDivision(divName);
+        if (!div) return { hq: 0, support: 0 };
+        let hq = 0;
+        let support = Infinity;
+        for (const city of CITIES) {
+            if (!(div.cities ?? []).includes(city)) return { hq, support: 0 };
+            const size = getOffice(divName, city)?.size ?? 0;
+            if (city === HQ_CITY) hq = size;
+            else support = Math.min(support, size);
+        }
+        return { hq, support: support === Infinity ? 0 : support };
+    }
+
+    function minWarehouseLevel(divName) {
+        const div = getDivision(divName);
+        if (!div) return 0;
+        let min = Infinity;
+        for (const city of CITIES) {
+            if (!(div.cities ?? []).includes(city)) return 0;
+            const level = getWarehouse(divName, city)?.level ?? 0;
+            min = Math.min(min, level);
+        }
+        return min === Infinity ? 0 : min;
+    }
+
+    function getStageMinOfficeTarget(divName, city, corp) {
+        const targets = getStageTargets(corp);
+        if (!targets) return 0;
+        if (divName === AGRI) return targets.agriOffice;
+        if (divName === TOB) return city === HQ_CITY ? targets.tobHqOffice : targets.tobSupportOffice;
+        if (divName === CHEM) return targets.chemOffice;
+        return 0;
+    }
+
+    function getWarehouseTargetLevel(divName, corp) {
+        const targets = getStageTargets(corp);
+        return targets?.warehouse ?? 1;
+    }
+
+    function getStageUpgradeTarget(upgradeName, corp) {
+        const targets = getStageTargets(corp);
+        if (!targets) return 0;
+        if (upgradeName === U.smartFactories) return targets.smartFactories;
+        if (upgradeName === U.smartStorage) return targets.smartStorage;
+        if (upgradeName === U.salesBots) return targets.salesBots;
+        if (upgradeName === U.wilson) return targets.wilson;
+        return 0;
+    }
+
+    function getStageAdvertTarget(divName, corp) {
+        const targets = getStageTargets(corp);
+        if (!targets || divName !== TOB) return 0;
+        return targets.tobAdvert;
+    }
+
+    function getStageMissing(corp, stageName = getFundingStage(corp)) {
+        const targets = getStageTargets(corp);
+        if (!targets || (stageName !== "post-r3" && stageName !== "pre-ipo")) return [];
+        const missing = [];
+        if (operatingProfit(corp) <= 0) missing.push("profit>0");
+        if ((safe(() => api.getUpgradeLevel(U.smartFactories), 0)) < targets.smartFactories) missing.push(`SF${targets.smartFactories}`);
+        if ((safe(() => api.getUpgradeLevel(U.smartStorage), 0)) < targets.smartStorage) missing.push(`SS${targets.smartStorage}`);
+        if ((safe(() => api.getUpgradeLevel(U.salesBots), 0)) < targets.salesBots) missing.push(`SalesBots${targets.salesBots}`);
+        if ((safe(() => api.getUpgradeLevel(U.wilson), 0)) < targets.wilson) missing.push(`Wilson${targets.wilson}`);
+        if ((safe(() => api.getHireAdVertCount(TOB), 0)) < targets.tobAdvert) missing.push(`TobAdv${targets.tobAdvert}`);
+        if (!hasRes(TOB, "Market-TA.II")) missing.push("TA2");
+        if (minWarehouseLevel(AGRI) < targets.warehouse) missing.push(`AgriWh${targets.warehouse}`);
+        if (minWarehouseLevel(TOB) < targets.warehouse) missing.push(`TobWh${targets.warehouse}`);
+        if (minWarehouseLevel(CHEM) < targets.warehouse) missing.push(`ChemWh${targets.warehouse}`);
+        const agri = minOfficeSize(AGRI);
+        const tob = minOfficeSize(TOB);
+        const chem = minOfficeSize(CHEM);
+        if (agri.hq < targets.agriOffice || agri.support < targets.agriOffice) missing.push(`AgriOff${targets.agriOffice}`);
+        if (tob.hq < targets.tobHqOffice) missing.push(`TobHQ${targets.tobHqOffice}`);
+        if (tob.support < targets.tobSupportOffice) missing.push(`TobSup${targets.tobSupportOffice}`);
+        if (chem.hq < targets.chemOffice || chem.support < targets.chemOffice) missing.push(`ChemOff${targets.chemOffice}`);
+        return missing;
+    }
+
+    function isStageReady(corp, stageName) {
+        return getStageMissing(corp, stageName).length === 0;
+    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Corporation creation
@@ -281,13 +502,18 @@ export async function main(ns) {
     // ─────────────────────────────────────────────────────────────────────────
 
     function manageGlobalUpgrades(corp) {
-        if (recoveryMode(corp)) return;
+        if (spendingRecoveryMode(corp)) return;
         const funds = corp.funds ?? 0;
         for (const upg of NORMAL_UPGRADES) {
             const level = safe(() => api.getUpgradeLevel(upg.name), 0);
             if (level >= upg.maxLevel) continue;
             const cost = safe(() => api.getUpgradeLevelCost(upg.name), Infinity);
             if (!Number.isFinite(cost)) continue;
+            const stageTarget = getStageUpgradeTarget(upg.name, corp);
+            if (level < stageTarget) {
+                if (funds > cost * 2) safe(() => api.levelUpgrade(upg.name));
+                continue;
+            }
             if (funds > cost * upg.spendMult) safe(() => api.levelUpgrade(upg.name));
         }
     }
@@ -299,7 +525,7 @@ export async function main(ns) {
     // ─────────────────────────────────────────────────────────────────────────
 
     function manageWilsonAndAdverts(divName, corp) {
-        if (recoveryMode(corp)) return;
+        if (spendingRecoveryMode(corp)) return;
         const funds    = corp.funds ?? 0;
         const revenue  = corp.revenue ?? 0;
         const inRound3 = (safe(() => api.getInvestmentOffer(), null)?.round ?? 0) >= 3
@@ -309,7 +535,11 @@ export async function main(ns) {
         // Its price doubles every level (priceMult=2), so check carefully.
         if (inRound3 || revenue > 1e10) {
             const wilsonCost = safe(() => api.getUpgradeLevelCost(U.wilson), Infinity);
-            if (Number.isFinite(wilsonCost) && funds > wilsonCost * 2) {
+            const wilsonLevel = safe(() => api.getUpgradeLevel(U.wilson), 0);
+            const wilsonTarget = getStageUpgradeTarget(U.wilson, corp);
+            if (Number.isFinite(wilsonCost) && wilsonLevel < wilsonTarget && funds > wilsonCost * 2) {
+                safe(() => api.levelUpgrade(U.wilson));
+            } else if (Number.isFinite(wilsonCost) && funds > wilsonCost * 2) {
                 safe(() => api.levelUpgrade(U.wilson));
             }
         }
@@ -333,6 +563,11 @@ export async function main(ns) {
                 safe(() => api.hireAdVert(divName));
             }
         } else {
+            const stageTarget = getStageAdvertTarget(divName, corp);
+            if (count < stageTarget && funds > advCost * 2.5) {
+                safe(() => api.hireAdVert(divName));
+                return;
+            }
             // Round 3+: buy Advert aggressively with 20% of funds.
             if (funds > advCost && advCost < funds * 0.2) {
                 safe(() => api.hireAdVert(divName));
@@ -371,29 +606,27 @@ export async function main(ns) {
     // Target office size per division and revenue tier.
     function cityTargetSize(divName, city, corp) {
         const rev = corp?.revenue ?? 0;
+        let baseTarget = 9;
 
         // Chemical is a support division — keep it small to avoid wasting funds.
         // Docs: "Don't invest much funds on [Chemical's] Office upgrades."
-        if (divName === CHEM) return 9;
-
-        if (divName === AGRI) {
-            if (rev < 1e8)  return 3;
-            if (rev < 1e9)  return city === HQ_CITY ? 9  : 3;
-            if (rev < 1e10) return city === HQ_CITY ? 15 : 9;
-            if (rev < 1e12) return city === HQ_CITY ? 30 : 15;
-            if (rev < 1e14) return city === HQ_CITY ? 45 : 30;
-            return city === HQ_CITY ? 60 : 45;
+        if (divName === CHEM) baseTarget = 9;
+        else if (divName === AGRI) {
+            if (rev < 1e8)  baseTarget = 3;
+            else if (rev < 1e9)  baseTarget = city === HQ_CITY ? 9  : 3;
+            else if (rev < 1e10) baseTarget = city === HQ_CITY ? 15 : 9;
+            else if (rev < 1e12) baseTarget = city === HQ_CITY ? 30 : 15;
+            else if (rev < 1e14) baseTarget = city === HQ_CITY ? 45 : 30;
+            else baseTarget = city === HQ_CITY ? 60 : 45;
+        } else if (divName === TOB) {
+            if (rev < 1e9)  baseTarget = city === HQ_CITY ? 9  : 3;
+            else if (rev < 1e10) baseTarget = city === HQ_CITY ? 18 : 9;
+            else if (rev < 1e12) baseTarget = city === HQ_CITY ? 30 : 18;
+            else if (rev < 1e14) baseTarget = city === HQ_CITY ? 60 : 30;
+            else baseTarget = city === HQ_CITY ? 90 : 45;
         }
 
-        if (divName === TOB) {
-            if (rev < 1e9)  return city === HQ_CITY ? 9  : 3;
-            if (rev < 1e10) return city === HQ_CITY ? 18 : 9;
-            if (rev < 1e12) return city === HQ_CITY ? 30 : 18;
-            if (rev < 1e14) return city === HQ_CITY ? 60 : 30;
-            return city === HQ_CITY ? 90 : 45;
-        }
-
-        return 9;
+        return Math.max(baseTarget, getStageMinOfficeTarget(divName, city, corp));
     }
 
     // Job distribution per division and role.
@@ -488,7 +721,7 @@ export async function main(ns) {
 
             // Upgrade office size if below target.
             // BUG FIX: getOfficeSizeUpgradeCost takes the INCREASE amount, not the target size.
-            if (currentSize < target && !recoveryMode(corp)) {
+            if (currentSize < target && !spendingRecoveryMode(corp)) {
                 const increase = target - currentSize;
                 const cost = safe(() => api.getOfficeSizeUpgradeCost(divName, city, increase), Infinity);
                 if (Number.isFinite(cost) && (corp.funds ?? 0) > cost * 2) {
@@ -498,7 +731,7 @@ export async function main(ns) {
 
             // Hire all available slots (no arbitrary cap).
             const afterSize = getOffice(divName, city)?.size ?? currentSize;
-            if (employees < afterSize && !recoveryMode(corp)) {
+            if (employees < afterSize && !spendingRecoveryMode(corp)) {
                 for (let i = employees; i < afterSize; i++) {
                     safe(() => api.hireEmployee(divName, city, JOBS.unassigned));
                 }
@@ -528,20 +761,25 @@ export async function main(ns) {
     function ensureWarehouses(divName, corp) {
         const div = getDivision(divName);
         if (!div) return;
+        const stageTarget = getWarehouseTargetLevel(divName, corp);
 
         for (const city of div.cities ?? []) {
             const wh = getWarehouse(divName, city);
             if (!wh) {
                 // No warehouse yet — buy one.
-                if ((corp?.funds ?? 0) > 5e9 && !recoveryMode(corp)) {
+                if ((corp?.funds ?? 0) > 5e9 && !spendingRecoveryMode(corp)) {
                     safe(() => api.purchaseWarehouse(divName, city));
                 }
+                continue;
+            }
+            if ((wh.level ?? 0) < stageTarget && (corp?.funds ?? 0) > 1e9 && !spendingRecoveryMode(corp)) {
+                safe(() => api.upgradeWarehouse(divName, city, 1));
                 continue;
             }
             // Upgrade if over 80% full to avoid production stalls.
             const size = wh.size ?? 0;
             if (size > 0 && (wh.sizeUsed ?? 0) / size > 0.80
-                    && (corp?.funds ?? 0) > 1e9 && !recoveryMode(corp)) {
+                    && (corp?.funds ?? 0) > 1e9 && !spendingRecoveryMode(corp)) {
                 safe(() => api.upgradeWarehouse(divName, city, 1));
             }
         }
@@ -683,6 +921,33 @@ export async function main(ns) {
         return `Tobac-v${seq}`;
     }
 
+    function tobaccoProductVersion(name) {
+        const match = /^Tobac-v(\d+)$/.exec(name);
+        const version = match ? Number(match[1]) : NaN;
+        return Number.isFinite(version) ? version : 0;
+    }
+
+    function getWeakestFinishedProduct(names) {
+        let candidate = null;
+        let candidateRating = Infinity;
+        let candidateVersion = Infinity;
+        for (const pName of names) {
+            const product = safe(() => api.getProduct(TOB, HQ_CITY, pName), null);
+            if (!product || (product.developmentProgress ?? 0) < 100) continue;
+            const rating = Number(product.rating ?? Infinity);
+            const version = tobaccoProductVersion(pName);
+            if (
+                rating < candidateRating ||
+                (rating === candidateRating && version < candidateVersion)
+            ) {
+                candidate = pName;
+                candidateRating = rating;
+                candidateVersion = version;
+            }
+        }
+        return candidate;
+    }
+
     function maxProducts(divName) {
         let cap = 3;
         if (hasRes(divName, "uPgrade: Capacity.I"))  cap++;
@@ -715,10 +980,38 @@ export async function main(ns) {
                 safe(() => api.setProductMarketTA1(TOB, pName, true));
             }
             // Set sell amount MAX. Price: "MP" if no TA active, TA overrides it anyway.
-            safe(() => api.sellProduct(TOB, HQ_CITY, pName, "MAX", "MP", true));
+            for (const city of div.cities ?? []) {
+                safe(() => api.sellProduct(TOB, city, pName, "MAX", "MP", true));
+            }
+            if (!state.seenFinishedProducts[pName]) {
+                state.seenFinishedProducts[pName] = true;
+                log(`Product ${pName} finished; sales enabled in ${(div.cities ?? []).length} Tobacco cities.`);
+            }
+            let totalStored = 0;
+            let totalSell = 0;
+            for (const city of div.cities ?? []) {
+                const info = safe(() => api.getProduct(TOB, city, pName), null);
+                totalStored += Number(info?.stored ?? 0);
+                totalSell += Number(info?.actualSellAmount ?? 0);
+            }
+            if (totalStored >= 1000 && totalSell <= 1) {
+                const stallKey = `${pName}:${Math.floor(totalStored / 1000)}`;
+                if (state.stalledProductSales[pName] !== stallKey) {
+                    state.stalledProductSales[pName] = stallKey;
+                    log(`Product ${pName} has stock=${totalStored.toFixed(0)} but sell=${totalSell.toFixed(1)}/s; sell config re-applied.`);
+                }
+            } else {
+                delete state.stalledProductSales[pName];
+            }
+        }
+        for (const pName of Object.keys(state.seenFinishedProducts)) {
+            if (!names.includes(pName)) delete state.seenFinishedProducts[pName];
+        }
+        for (const pName of Object.keys(state.stalledProductSales)) {
+            if (!names.includes(pName)) delete state.stalledProductSales[pName];
         }
 
-        if (recoveryMode(corp)) return;
+        if (spendingRecoveryMode(corp)) return;
 
         // Design and marketing investment.
         // Docs: "It's fine to spend 1% of your current funds for them. Their exponent is 0.1."
@@ -731,7 +1024,9 @@ export async function main(ns) {
 
         // Start a product if we have a free slot and nothing developing.
         if (names.length < cap && developing.length === 0 && invest >= 1e8) {
-            safe(() => api.makeProduct(TOB, HQ_CITY, nextProductName(TOB), invest/2, invest/2));
+            const nextName = nextProductName(TOB);
+            safe(() => api.makeProduct(TOB, HQ_CITY, nextName, invest/2, invest/2));
+            log(`Started product ${nextName} with ${money(invest)} total investment.`);
             return;
         }
 
@@ -740,14 +1035,13 @@ export async function main(ns) {
         //        always better than the old ones and generate much more profit."
         // No flatProfitTicks gate — always cycle for maximum product improvement.
         if (names.length >= cap && developing.length === 0 && finished.length > 0) {
-            let oldest = null, oldestSeq = Infinity;
-            for (const pName of finished) {
-                const seq = parseInt(pName.slice(7), 10);
-                if (Number.isFinite(seq) && seq < oldestSeq) { oldestSeq = seq; oldest = pName; }
-            }
-            if (oldest && invest >= 1e8) {
-                safe(() => api.discontinueProduct(TOB, oldest));
-                safe(() => api.makeProduct(TOB, HQ_CITY, nextProductName(TOB), invest/2, invest/2));
+            const weakest = getWeakestFinishedProduct(finished);
+            if (weakest && invest >= 1e8) {
+                const nextName = nextProductName(TOB);
+                safe(() => api.discontinueProduct(TOB, weakest));
+                delete state.seenFinishedProducts[weakest];
+                safe(() => api.makeProduct(TOB, HQ_CITY, nextName, invest/2, invest/2));
+                log(`Retired ${weakest}; started ${nextName} with ${money(invest)} total investment.`);
             }
         }
     }
@@ -756,74 +1050,166 @@ export async function main(ns) {
     // Investment + IPO + Dividends
     // ─────────────────────────────────────────────────────────────────────────
 
-    function shouldAcceptInvestment(offer, corp) {
+    function getInvestmentAcceptReason(offer, corp) {
         const round      = offer?.round ?? 0;
         const funds      = corp?.funds ?? 0;
         const revenue    = corp?.revenue ?? 0;
         const offerFunds = offer?.funds ?? 0;
 
-        if (funds < 0) return true; // Emergency: always accept if in debt
-        if (round <= 0 || round > 4) return false;
+        if (funds < 0) return "emergency debt";
+        if (round <= 0 || round > 4) return null;
 
         if (round === 1) {
-            return offerFunds >= MIN_ROUND1;
+            return offerFunds >= MIN_ROUND1 ? `round1 floor ${money(MIN_ROUND1)}` : null;
         }
 
         if (round === 2) {
             const agri = getDivision(AGRI);
             const chem = getDivision(CHEM);
             const tob = getDivision(TOB);
-            if (!agri || !chem || !tob) return false;
-            if ((agri.researchPoints ?? 0) < RP_TARGET_AGRI) return false;
-            if ((chem.researchPoints ?? 0) < RP_TARGET_CHEM) return false;
-            return offerFunds >= MIN_ROUND2;
+            if (!agri || !chem || !tob) return null;
+            if ((agri.researchPoints ?? 0) < RP_TARGET_AGRI) return null;
+            if ((chem.researchPoints ?? 0) < RP_TARGET_CHEM) return null;
+            return offerFunds >= MIN_ROUND2 ? `round2 floor ${money(MIN_ROUND2)}` : null;
         }
 
-        // Hard floors per round - accept as soon as we hit them.
-        const floors = { 3: 250e9, 4: 1e12 };
-        if (offerFunds >= (floors[round] ?? Infinity)) return true;
+        if (round === 4 && !isStageReady(corp, "post-r3")) return null;
 
-        // Accept if offer beats our cash on hand by the round-dependent multiplier.
-        const mults = { 3: 1.4, 4: 1.2 };
-        if (offerFunds >= Math.max(10e9, funds * (mults[round] ?? 1.5))) return true;
-
-        // Accept if offer is worth several hours of revenue.
-        const hrs = { 3: 12, 4: 24 };
-        if (offerFunds >= revenue * 3600 * (hrs[round] ?? 8)) return true;
-
-        return false;
+        const floors = incomeMode
+            ? { 3: INCOME_MODE_ROUND3_MIN, 4: INCOME_MODE_ROUND4_MIN }
+            : { 3: MIN_ROUND3, 4: MIN_ROUND4 };
+        const mults = incomeMode
+            ? { 3: INCOME_MODE_ROUND3_FUNDS_MULT, 4: INCOME_MODE_ROUND4_FUNDS_MULT }
+            : { 3: ROUND3_ACCEPT_FUNDS_MULT, 4: ROUND4_ACCEPT_FUNDS_MULT };
+        const hrs = incomeMode
+            ? { 3: INCOME_MODE_ROUND3_REVENUE_HOURS, 4: INCOME_MODE_ROUND4_REVENUE_HOURS }
+            : { 3: ROUND3_ACCEPT_REVENUE_HOURS, 4: ROUND4_ACCEPT_REVENUE_HOURS };
+        const threshold = Math.max(
+            floors[round] ?? Infinity,
+            funds * (mults[round] ?? 2.0),
+            revenue * 3600 * (hrs[round] ?? 24),
+        );
+        return offerFunds >= threshold ? `round${round} threshold ${money(threshold)}` : null;
     }
 
     function manageInvestments(corp) {
         if (isPublic(corp)) return;
         const offer = safe(() => api.getInvestmentOffer(), null);
         if (!offer) return;
+        if ((offer.round ?? 0) > 4) state.readyToIPO = true;
 
-        if (shouldAcceptInvestment(offer, corp)) {
+        const reason = getInvestmentAcceptReason(offer, corp);
+        if (reason) {
             const ok = safe(() => api.acceptInvestmentOffer(), false);
             if (ok) {
-                log(`Accepted round ${offer.round} for ${money(offer.funds ?? 0)}.`);
+                log(`Accepted round ${offer.round} for ${money(offer.funds ?? 0)} (${reason}).`);
+                state.lastDeferredKey = "";
                 if ((offer.round ?? 0) >= 4) state.readyToIPO = true;
+            }
+        } else if ((offer.round ?? 0) >= 3) {
+            const stage = getFundingStage(corp);
+            const missing = getStageMissing(corp, stage).join(",") || "none";
+            const deferredKey = `${offer.round}|${stage}|${missing}`;
+            if (deferredKey !== state.lastDeferredKey) {
+                state.lastDeferredKey = deferredKey;
+                log(
+                    `Deferred round ${offer.round} offer ${money(offer.funds ?? 0)} ` +
+                    `(stage=${stage}, missing=${missing}, funds=${money(corp?.funds ?? 0)}, ` +
+                    `profit=${money(operatingProfit(corp))}/s).`
+                );
             }
         }
 
         if (state.readyToIPO && !isPublic(corp)) {
+            if (!isStageReady(corp, "pre-ipo")) {
+                const ipoMissing = getStageMissing(corp, "pre-ipo").join(",") || "none";
+                if (ipoMissing !== state.lastIpoDeferredKey) {
+                    state.lastIpoDeferredKey = ipoMissing;
+                    log(`IPO deferred (missing=${ipoMissing}, profit=${money(operatingProfit(corp))}/s).`);
+                }
+                return;
+            }
             // Docs FAQ: "How many shares should I issue? 0"
             if (safe(() => api.goPublic(0), false)) {
                 state.readyToIPO = false;
                 state.lastDividendRate = -1;
+                state.lastIpoDeferredKey = "";
                 log("Went public.");
             }
         }
     }
 
+    function manageBuybacks(corp) {
+        if (!isPublic(corp) || spendingRecoveryMode(corp)) return;
+        const issuedShares = getIssuedShares(corp);
+        if (issuedShares <= 0) {
+            const ownership = getOwnershipPct(corp);
+            const noticeKey = `${Math.floor(ownership * 1000)}|0`;
+            if (ownership < 0.25 && noticeKey !== state.lastOwnershipNotice) {
+                state.lastOwnershipNotice = noticeKey;
+                log(`Buybacks unavailable: issuedShares=0 and ownership=${(ownership * 100).toFixed(1)}%. Round-investment dilution cannot be reversed on this corp.`);
+            }
+            return;
+        }
+        state.lastOwnershipNotice = "";
+        const sharePrice = buybackSharePrice(corp);
+        if (!Number.isFinite(sharePrice) || sharePrice <= 0) return;
+
+        const ownership = getOwnershipPct(corp);
+        const funds = corp?.funds ?? 0;
+        const reserve = getBuybackReserve(corp);
+        const spendable = Math.max(0, funds - reserve);
+        if (spendable <= sharePrice * BUYBACK_MIN_SHARES) return;
+
+        let spendPct = 0.15;
+        if (ownership < 0.25) spendPct = 0.50;
+        else if (ownership < 0.50) spendPct = 0.35;
+        else if (ownership < 0.75) spendPct = 0.20;
+
+        const budget = spendable * spendPct;
+        const shares = Math.min(issuedShares, Math.floor(budget / sharePrice));
+        if (shares < BUYBACK_MIN_SHARES) return;
+
+        const ok = safe(() => api.buyBackShares(shares), false);
+        if (ok) {
+            log(`Bought back ${formatShares(shares)} shares at ~${money(sharePrice)} each (ownership ${(ownership * 100).toFixed(1)}%).`);
+        }
+    }
+
     function targetDividendRate(corp) {
         if (!isPublic(corp)) return 0;
-        const profit = (corp.revenue ?? 0) - (corp.expenses ?? 0);
+        const profit = operatingProfit(corp);
         const margin = (corp.revenue ?? 0) > 0 ? profit / corp.revenue : 0;
-        if (recoveryMode(corp))                                   return 0;
-        if (margin > 0.55 && (corp.funds ?? 0) > 1e12)           return 0.25;
-        if (margin > 0.30 && (corp.funds ?? 0) > 1e10)           return 0.10;
+        const ownership = getOwnershipPct(corp);
+        const issuedShares = getIssuedShares(corp);
+        const funds = corp.funds ?? 0;
+        if (profit <= 0 || recoveryMode(corp))                    return 0;
+        if (incomeMode) {
+            if (issuedShares > 0) {
+                if (ownership < 0.25)                             return 0;
+                if (ownership < 0.50)                             return (margin > 0.35 && funds > 1e10) ? 0.10 : 0.05;
+                if (ownership < 0.75)                             return (margin > 0.40 && funds > 2e10) ? 0.20 : 0.10;
+                if (margin > 0.55 && funds > 5e10)               return 0.35;
+                if (margin > 0.35 && funds > 2e10)               return 0.20;
+                return 0.10;
+            }
+            if (margin > 0.60 && funds > 5e10)                   return 0.50;
+            if (margin > 0.45 && funds > 2e10)                   return 0.35;
+            if (margin > 0.30 && funds > 1e10)                   return 0.20;
+            return 0.10;
+        }
+        if (issuedShares <= 0 && ownership <= 0.15) {
+            if (margin > 0.55 && funds > 2e10)                   return 0.20;
+            if (margin > 0.35 && funds > 1e10)                   return 0.15;
+            return 0.10;
+        }
+        if (issuedShares > 0) {
+            if (ownership < 0.25)                                 return 0;
+            if (ownership < 0.50)                                 return (margin > 0.45 && funds > 5e12) ? 0.05 : 0;
+            if (ownership < 0.75)                                 return margin > 0.35 ? 0.10 : 0.05;
+        }
+        if (margin > 0.55 && funds > 1e12)                       return 0.25;
+        if (margin > 0.30 && funds > 1e10)                       return 0.10;
         return 0.05;
     }
 
@@ -919,6 +1305,10 @@ export async function main(ns) {
             expenses:   corp?.expenses ?? 0,
             profit:     (corp?.revenue ?? 0) - (corp?.expenses ?? 0),
             public:     isPublic(corp ?? {}),
+            ownershipPct: getOwnershipPct(corp),
+            ownedShares: getOwnedShares(corp),
+            issuedShares: getIssuedShares(corp),
+            totalShares: getTotalShares(corp),
             dividendRate: corp?.dividendRate ?? 0,
             fundingRound: safe(() => api.getInvestmentOffer()?.round, 0),
             wilsonLevel:  safe(() => api.getUpgradeLevel(U.wilson), 0),
@@ -936,12 +1326,48 @@ export async function main(ns) {
         safe(() => ns.write(SNAPSHOT_FILE, JSON.stringify(snap), "w"));
     }
 
+    function logDebugStatus(corp, refillFlags = {}) {
+        state.loopCount++;
+        const lossBrake = spendingRecoveryMode(corp);
+        const offer = safe(() => api.getInvestmentOffer(), null);
+        const stage = getFundingStage(corp);
+        const missing = getStageMissing(corp, stage).join(",");
+        const refills = Object.entries(refillFlags)
+            .filter(([, active]) => !!active)
+            .map(([name]) => name)
+            .join(",");
+        const ownershipPct = (getOwnershipPct(corp) * 100).toFixed(1);
+        const issuedShares = formatShares(getIssuedShares(corp));
+        const statusSig = `${stage}|${missing || 'none'}|${lossBrake ? '1' : '0'}|${refills || 'none'}`;
+        if (!lossBrake && statusSig === state.lastStatusSig && state.loopCount % DEBUG_STATUS_INTERVAL !== 0) return;
+        state.lastStatusSig = statusSig;
+        log(
+            `Status: funds=${money(corp?.funds ?? 0)} rev=${money(corp?.revenue ?? 0)}/s ` +
+            `exp=${money(corp?.expenses ?? 0)}/s profit=${money(operatingProfit(corp))}/s ` +
+            `offer=r${offer?.round ?? 0}:${money(offer?.funds ?? 0)} ` +
+            `own=${ownershipPct}% issued=${issuedShares} ` +
+            `mode=${incomeMode ? 'income' : 'default'} ` +
+            `stage=${stage} missing=${missing || 'none'} ` +
+            `lossBrake=${lossBrake ? 'on' : 'off'} boostRefill=${refills || 'none'} ` +
+            `div=${(corp?.dividendRate ?? 0).toFixed(2)}`
+        );
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Main loop
     // ─────────────────────────────────────────────────────────────────────────
 
     log(`Corp manager started | BN=${safe(() => ns.getResetInfo().currentNode, "?")} | ` +
-        `SF10.1=${safe(() => ns.singularity?.getOwnedSourceFiles?.()?.some(s => s.n===10), false)}`);
+        `SF10.1=${safe(() => ns.singularity?.getOwnedSourceFiles?.()?.some(s => s.n===10), false)} | ` +
+        `mode=${incomeMode ? 'income' : 'default'}`);
+    if (incomeMode) {
+        log(
+            `Income mode enabled: round3>=${money(INCOME_MODE_ROUND3_MIN)} ` +
+            `or ${INCOME_MODE_ROUND3_FUNDS_MULT.toFixed(1)}x funds/${INCOME_MODE_ROUND3_REVENUE_HOURS}h revenue; ` +
+            `round4>=${money(INCOME_MODE_ROUND4_MIN)} ` +
+            `or ${INCOME_MODE_ROUND4_FUNDS_MULT.toFixed(1)}x funds/${INCOME_MODE_ROUND4_REVENUE_HOURS}h revenue.`
+        );
+    }
 
     ns.atExit(() => { try { ns.write(SNAPSHOT_FILE, "", "w"); } catch {} });
 
@@ -978,11 +1404,13 @@ export async function main(ns) {
             bootstrapTobacco(corp);
         }
 
-        refreshBoostMaterials(AGRI);
-        refreshBoostMaterials(CHEM);
+        const agriBoostRefill = refreshBoostMaterials(AGRI, corp);
+        const chemBoostRefill = refreshBoostMaterials(CHEM, corp);
+        const tobBoostRefill = refreshBoostMaterials(TOB, corp);
 
         manageValuationDummies(corp);
         manageInvestments(corp);
+        manageBuybacks(corp);
 
         // Global upgrades after divisions are alive.
         if (!recoveryMode(corp)) {
@@ -990,6 +1418,7 @@ export async function main(ns) {
         }
 
         manageDividends(corp);
+        logDebugStatus(corp, { agri: agriBoostRefill, chem: chemBoostRefill, tob: tobBoostRefill });
         writeSnapshot(corp);
         await ns.sleep(UPDATE_MS);
     }
