@@ -1034,15 +1034,10 @@ export async function main(ns) {
                 } catch { hasExecHosts = false; }
             }
             if (hasExecHosts) {
-                // Scale --min-money with hack level so low-level runs don't get locked out of
-                // weaker servers, while high-level runs ignore junk targets automatically.
-                const hackLvl = player.skills.hacking;
-                const minMoney = hackLvl >= 1000 ? 1e9
-                               : hackLvl >= 500  ? 1e8
-                               : hackLvl >= 100  ? 1e7
-                               : 0;
+                // Let hwgw-manager derive its own min-money threshold from the
+                // current hack level and BN multipliers, so every launch path
+                // stays in sync and low-money BNs don't get filtered out.
                 const hwgwArgs = ['--quiet'];
-                if (minMoney > 0) hwgwArgs.push('--min-money', minMoney);
                 launchScriptHelper(ns, hwgwScript, hwgwArgs, false);
             }
         }

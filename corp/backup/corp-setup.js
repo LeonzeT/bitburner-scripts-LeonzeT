@@ -45,6 +45,14 @@ function resetSetupState(ns) {
     try { ns.rm(SETUP_ROUTE_FILE, 'home'); } catch { }
 }
 
+function getTargetForPhase(ns, phase, done) {
+    if (done || phase >= 10) return getAutopilotScript(ns);
+    if (phase <= 2) return getRound1Script(ns);
+    if (phase <= 3) return getRound2BuildoutScript(ns);
+    if (phase <= 4) return getRound2WaitScript(ns);
+    return getRound3Script(ns);
+}
+
 function hasDivision(ns, name) {
     try {
         return new Set(ns.corporation.getCorporation().divisions ?? []).has(name);
@@ -75,6 +83,146 @@ function isRound2HighBudgetShellReady(ns) {
     }
 }
 
+function inferTargetFromCorpState(ns, phase, done) {
+    const fallback = getTargetForPhase(ns, phase, done);
+    const c = ns.corporation;
+    const info = {
+        target: fallback,
+        reason: `saved phase fallback (${phase})`,
+        savedPhase: phase,
+        offerRound: null,
+        hasCorp: false,
+        divisions: [],
+        public: false,
+        warehouseApi: false,
+        officeApi: false,
+        exportUnlock: false,
+    };
+
+    try {
+        info.hasCorp = c?.hasCorporation?.() ?? false;
+    } catch (error) {
+        info.reason = `corp API error while checking corporation: ${error?.message ?? error}`;
+        return info;
+    }
+    if (!info.hasCorp) {
+        info.target = getRound1Script(ns);
+        info.reason = 'no corporation';
+        return info;
+    }
+
+    let corp = null;
+    try {
+        corp = c.getCorporation();
+        info.public = !!corp?.public;
+        info.divisions = Array.isArray(corp?.divisions) ? corp.divisions.slice() : [];
+    } catch (error) {
+        info.reason = `corp API error while reading corporation state: ${error?.message ?? error}`;
+        return info;
+    }
+
+    if (info.public || done || phase >= 10) {
+        info.target = getAutopilotScript(ns);
+        info.reason = info.public ? 'corporation is public' : (done ? 'setup marked done' : `saved phase ${phase} >= 10`);
+        return info;
+    }
+
+    let hasWarehouseApi = false;
+    let hasOfficeApi = false;
+    let hasExport = false;
+    try {
+        hasWarehouseApi = c.hasUnlock('Warehouse API');
+        hasOfficeApi = c.hasUnlock('Office API');
+        hasExport = c.hasUnlock('Export');
+        info.warehouseApi = hasWarehouseApi;
+        info.officeApi = hasOfficeApi;
+        info.exportUnlock = hasExport;
+    } catch (error) {
+        info.reason = `corp API error while reading unlocks: ${error?.message ?? error}`;
+        return info;
+    }
+
+    const hasAgri = info.divisions.includes(DIV_AGRI);
+    const hasChem = info.divisions.includes(DIV_CHEM);
+    const hasTob = info.divisions.includes(DIV_TOBACCO);
+    const hasLatePrivateSignals = hasChem || hasTob || hasExport;
+
+    try {
+        const rawRound = Number(c.getInvestmentOffer().round ?? NaN);
+        info.offerRound = Number.isFinite(rawRound) ? rawRound : null;
+    } catch (error) {
+        info.reason = `investment offer read failed: ${error?.message ?? error}`;
+    }
+
+    if (Number.isFinite(info.offerRound)) {
+        if (info.offerRound <= 2 && phase >= 5 && hasLatePrivateSignals) {
+            info.target = ROUND3_SCRIPT;
+            info.reason = `investment round ${info.offerRound} conflicts with saved late phase ${phase}; using the phase-5+ worker`;
+            return info;
+        }
+        if (info.offerRound <= 1 && hasLatePrivateSignals) {
+            if (phase >= 4) info.target = ROUND2_WAIT_SCRIPT;
+            else info.target = isRound2HighBudgetShellReady(ns) ? ROUND2_WAIT_SCRIPT : ROUND2_BUILDOUT_SCRIPT;
+            info.reason = `investment round ${info.offerRound} conflicts with late private-stage structure`;
+            return info;
+        }
+        if (info.offerRound <= 1) {
+            info.target = ROUND1_SCRIPT;
+            info.reason = `investment round ${info.offerRound}`;
+            return info;
+        }
+        if (info.offerRound <= 2) {
+            info.target = isRound2HighBudgetShellReady(ns) ? ROUND2_WAIT_SCRIPT : ROUND2_BUILDOUT_SCRIPT;
+            info.reason = info.target === ROUND2_WAIT_SCRIPT
+                ? 'investment round 2 shell ready'
+                : 'investment round 2 shell incomplete';
+            return info;
+        }
+        info.target = ROUND3_SCRIPT;
+        info.reason = `investment round ${info.offerRound}`;
+        return info;
+    }
+
+    if (phase >= 5) {
+        info.target = ROUND3_SCRIPT;
+        info.reason = `${info.reason}; using saved late phase ${phase}`;
+        return info;
+    }
+    if (hasChem || hasTob || hasExport) {
+        info.target = isRound2HighBudgetShellReady(ns) ? ROUND2_WAIT_SCRIPT : ROUND2_BUILDOUT_SCRIPT;
+        info.reason = `${info.reason}; inferred late private-stage corp from divisions/unlocks`;
+        return info;
+    }
+    if (!hasWarehouseApi || !hasOfficeApi) {
+        info.target = ROUND1_SCRIPT;
+        info.reason = 'missing Warehouse API or Office API';
+        return info;
+    }
+    if (!hasAgri) {
+        info.target = ROUND1_SCRIPT;
+        info.reason = 'Agriculture division missing';
+        return info;
+    }
+    return info;
+}
+
+function shouldRetryInference(info, phase, done) {
+    if (!info?.hasCorp || info.public || done || phase <= 0) return false;
+    if (info.target !== ROUND1_SCRIPT) return false;
+    return info.reason === 'investment round 1'
+        || info.reason === 'Agriculture division missing'
+        || info.reason === 'missing Warehouse API or Office API'
+        || (!Number.isFinite(info.offerRound) && (info.divisions?.length ?? 0) === 0);
+}
+
+function getTargetPriority(target) {
+    if (target === AUTOPILOT_SCRIPT) return 5;
+    if (target === ROUND3_SCRIPT) return 4;
+    if (target === ROUND2_WAIT_SCRIPT) return 3;
+    if (target === ROUND2_BUILDOUT_SCRIPT) return 2;
+    return 1;
+}
+
 function normalizeScriptPath(path) {
     const raw = String(path ?? '').trim();
     if (!raw) return '';
@@ -91,161 +239,6 @@ function isRunning(ns, target) {
 }
 
 export async function main(ns) {
-    // Resolve script paths once — all routing decisions use these.
-    const ROUND1_SCRIPT = getRound1Script(ns);
-    const ROUND2_BUILDOUT_SCRIPT = getRound2BuildoutScript(ns);
-    const ROUND2_WAIT_SCRIPT = getRound2WaitScript(ns);
-    const ROUND3_SCRIPT = getRound3Script(ns);
-    const AUTOPILOT_SCRIPT = getAutopilotScript(ns);
-
-    function getTargetForPhase(phase, done) {
-        if (done || phase >= 10) return AUTOPILOT_SCRIPT;
-        if (phase <= 2) return ROUND1_SCRIPT;
-        if (phase <= 3) return ROUND2_BUILDOUT_SCRIPT;
-        if (phase <= 4) return ROUND2_WAIT_SCRIPT;
-        return ROUND3_SCRIPT;
-    }
-
-    function inferTargetFromCorpState(phase, done) {
-        const fallback = getTargetForPhase(phase, done);
-        const c = ns.corporation;
-        const info = {
-            target: fallback,
-            reason: `saved phase fallback (${phase})`,
-            savedPhase: phase,
-            offerRound: null,
-            hasCorp: false,
-            divisions: [],
-            public: false,
-            warehouseApi: false,
-            officeApi: false,
-            exportUnlock: false,
-        };
-
-        try {
-            info.hasCorp = c?.hasCorporation?.() ?? false;
-        } catch (error) {
-            info.reason = `corp API error while checking corporation: ${error?.message ?? error}`;
-            return info;
-        }
-        if (!info.hasCorp) {
-            info.target = ROUND1_SCRIPT;
-            info.reason = 'no corporation';
-            return info;
-        }
-
-        let corp = null;
-        try {
-            corp = c.getCorporation();
-            info.public = !!corp?.public;
-            info.divisions = Array.isArray(corp?.divisions) ? corp.divisions.slice() : [];
-        } catch (error) {
-            info.reason = `corp API error while reading corporation state: ${error?.message ?? error}`;
-            return info;
-        }
-
-        if (info.public || done || phase >= 10) {
-            info.target = AUTOPILOT_SCRIPT;
-            info.reason = info.public ? 'corporation is public' : (done ? 'setup marked done' : `saved phase ${phase} >= 10`);
-            return info;
-        }
-
-        let hasWarehouseApi = false;
-        let hasOfficeApi = false;
-        let hasExport = false;
-        try {
-            hasWarehouseApi = c.hasUnlock('Warehouse API');
-            hasOfficeApi = c.hasUnlock('Office API');
-            hasExport = c.hasUnlock('Export');
-            info.warehouseApi = hasWarehouseApi;
-            info.officeApi = hasOfficeApi;
-            info.exportUnlock = hasExport;
-        } catch (error) {
-            info.reason = `corp API error while reading unlocks: ${error?.message ?? error}`;
-            return info;
-        }
-
-        const hasAgri = info.divisions.includes(DIV_AGRI);
-        const hasChem = info.divisions.includes(DIV_CHEM);
-        const hasTob = info.divisions.includes(DIV_TOBACCO);
-        const hasLatePrivateSignals = hasChem || hasTob || hasExport;
-
-        try {
-            const rawRound = Number(c.getInvestmentOffer().round ?? NaN);
-            info.offerRound = Number.isFinite(rawRound) ? rawRound : null;
-        } catch (error) {
-            info.reason = `investment offer read failed: ${error?.message ?? error}`;
-        }
-
-        if (Number.isFinite(info.offerRound)) {
-            if (info.offerRound <= 2 && phase >= 5 && hasLatePrivateSignals) {
-                info.target = ROUND3_SCRIPT;
-                info.reason = `investment round ${info.offerRound} conflicts with saved late phase ${phase}; using the phase-5+ worker`;
-                return info;
-            }
-            if (info.offerRound <= 1 && hasLatePrivateSignals) {
-                info.target = phase >= 4 ? ROUND2_WAIT_SCRIPT
-                    : (isRound2HighBudgetShellReady(ns) ? ROUND2_WAIT_SCRIPT : ROUND2_BUILDOUT_SCRIPT);
-                info.reason = `investment round ${info.offerRound} conflicts with late private-stage structure`;
-                return info;
-            }
-            if (info.offerRound <= 1) {
-                info.target = ROUND1_SCRIPT;
-                info.reason = `investment round ${info.offerRound}`;
-                return info;
-            }
-            if (info.offerRound <= 2) {
-                info.target = isRound2HighBudgetShellReady(ns) ? ROUND2_WAIT_SCRIPT : ROUND2_BUILDOUT_SCRIPT;
-                info.reason = info.target === ROUND2_WAIT_SCRIPT
-                    ? 'investment round 2 shell ready'
-                    : 'investment round 2 shell incomplete';
-                return info;
-            }
-            info.target = ROUND3_SCRIPT;
-            info.reason = `investment round ${info.offerRound}`;
-            return info;
-        }
-
-        if (phase >= 5) {
-            info.target = ROUND3_SCRIPT;
-            info.reason = `${info.reason}; using saved late phase ${phase}`;
-            return info;
-        }
-        if (hasChem || hasTob || hasExport) {
-            info.target = isRound2HighBudgetShellReady(ns) ? ROUND2_WAIT_SCRIPT : ROUND2_BUILDOUT_SCRIPT;
-            info.reason = `${info.reason}; inferred late private-stage corp from divisions/unlocks`;
-            return info;
-        }
-        if (!hasWarehouseApi || !hasOfficeApi) {
-            info.target = ROUND1_SCRIPT;
-            info.reason = 'missing Warehouse API or Office API';
-            return info;
-        }
-        if (!hasAgri) {
-            info.target = ROUND1_SCRIPT;
-            info.reason = 'Agriculture division missing';
-            return info;
-        }
-        return info;
-    }
-
-    function shouldRetryInference(info, phase, done) {
-        if (!info?.hasCorp || info.public || done || phase <= 0) return false;
-        if (info.target !== ROUND1_SCRIPT) return false;
-        return info.reason === `investment round 1`
-            || info.reason === 'Agriculture division missing'
-            || info.reason === 'missing Warehouse API or Office API'
-            || (!Number.isFinite(info.offerRound) && (info.divisions?.length ?? 0) === 0);
-    }
-
-    function getTargetPriority(target) {
-        if (target === AUTOPILOT_SCRIPT) return 5;
-        if (target === ROUND3_SCRIPT) return 4;
-        if (target === ROUND2_WAIT_SCRIPT) return 3;
-        if (target === ROUND2_BUILDOUT_SCRIPT) return 2;
-        return 1;
-    }
-
     function getLauncherSnapshot(label = '') {
         const parts = [];
         if (label) parts.push(`label=${label}`);
@@ -325,11 +318,11 @@ export async function main(ns) {
 
         const phase = readPhase(ns);
         const done = isSetupDone(ns);
-        let inference = inferTargetFromCorpState(phase, done);
+        let inference = inferTargetFromCorpState(ns, phase, done);
         let bestInference = inference;
         for (let attempt = 0; attempt < 12 && shouldRetryInference(inference, phase, done); attempt++) {
             await ns.sleep(500);
-            inference = inferTargetFromCorpState(phase, done);
+            inference = inferTargetFromCorpState(ns, phase, done);
             if (getTargetPriority(inference.target) >= getTargetPriority(bestInference.target)) {
                 bestInference = inference;
             }

@@ -30,11 +30,40 @@ function writeGatherScript(ns) {
 export async function main(ns) {
     const d = {}, safe = f => { try { return f(); } catch { return undefined; } };
 
-    let hasTix = false, has4S = false;
-    try { hasTix = ns.stock.hasTixApiAccess(); } catch {}
-    try { has4S  = ns.stock.has4SDataTixApi(); } catch {}
+    const stock = ns.stock ?? {};
+    const stockFlag = (...names) => {
+        for (const name of names) {
+            try {
+                const fn = stock[name];
+                if (typeof fn === "function") return !!fn.call(stock);
+            } catch {}
+        }
+        return undefined;
+    };
 
-    if (hasTix) {
+    const hasWse    = stockFlag("hasWseAccount", "hasWSEAccount");
+    const hasTix    = stockFlag("hasTixApiAccess", "hasTIXAPIAccess");
+    const has4SData = stockFlag("has4SData");
+    const has4S     = stockFlag("has4SDataTixApi", "has4SDataTIXAPI");
+
+    d.hasWse = hasWse;
+    d.hasTix = hasTix;
+    d.has4SData = has4SData;
+    d.has4SApi = has4S;
+    try {
+        const raw = ns.read("/Temp/bitNode-multipliers.txt");
+        const mults = raw && raw !== "" ? JSON.parse(raw) : {};
+        d.stockCosts = {
+            wse: 200e6,
+            tix: 5e9,
+            s4d: 1e9 * (Number(mults.FourSigmaMarketDataCost) || 1),
+            s4a: 25e9 * (Number(mults.FourSigmaMarketDataApiCost) || 1),
+        };
+    } catch {
+        d.stockCosts = { wse: 200e6, tix: 5e9, s4d: 1e9, s4a: 25e9 };
+    }
+
+    if (hasWse && hasTix) {
         try {
             const syms = safe(() => ns.stock.getSymbols()) ?? [];
             const allStocks = [];
@@ -49,13 +78,15 @@ export async function main(ns) {
                 const shortPnL = pos[2] > 0 ? (pos[3] - price) * pos[2] : 0;
                 tv += pos[2] > 0 ? pos[2] * pos[3] : 0;
                 tc += pos[2] > 0 ? pos[2] * price  : 0;
+                const shortExposure = pos[2] * pos[3];
                 allStocks.push({
                     sym, price, maxSh, forecast,
                     longSh: pos[0], longAvg: pos[1], longVal: lv, longCost: lc, longPnL: lv - lc,
                     shortSh: pos[2], shortAvg: pos[3], shortPnL,
+                    exposure: Math.max(lv, shortExposure),
                 });
             }
-            allStocks.sort((a, b) => b.longVal - a.longVal || (b.forecast ?? 0.5) - (a.forecast ?? 0.5));
+            allStocks.sort((a, b) => (b.exposure ?? 0) - (a.exposure ?? 0) || (b.forecast ?? 0.5) - (a.forecast ?? 0.5));
             d.stocks = { allStocks, has4S, totalVal: tv, totalPnL: tv - tc };
         } catch { d.stocks = null; }
     } else {

@@ -30,6 +30,7 @@ const FACTIONS_FILE   = '/Temp/dashboard-factions.txt';
 const SHORTCUTS_FILE  = '/Temp/dashboard-shortcuts.txt';
 const SERVERS_FILE    = '/Temp/dashboard-servers.txt';
 const STOCKS_FILE     = '/Temp/dashboard-stocks.txt';
+const CORP_FILE       = '/Temp/dashboard-corp-ui.txt';
 const GANGS_FILE      = '/Temp/dashboard-gangs.txt';
 const SLEEVES_FILE    = '/Temp/dashboard-sleeves.txt';
 
@@ -40,6 +41,7 @@ const ON_DEMAND_TABS = {
     Shortcuts: 'dashboard-shortcuts.js',
     Servers:   'dashboard-servers.js',
     Stocks:    'dashboard-stocks.js',
+    Corp:      'dashboard-corp.js',
     Gang:      'dashboard-gangs.js',
     Sleeves:   'dashboard-sleeves.js',
 };
@@ -78,6 +80,21 @@ function fts(sec) {
     if (h > 0) return h + 'h ' + m + 'm';
     if (m > 0) return m + 'm ' + s + 's';
     return s + 's';
+}
+function hwgwAutoMinMoney(hackLevel, bnMults = {}) {
+    const effectiveHackLevel = Math.max(0, Number(hackLevel ?? 0) * Math.max(0.01, Number(bnMults.HackingLevelMultiplier ?? 1)));
+    let baseThreshold = 0;
+    if (effectiveHackLevel >= 1000) baseThreshold = 1e9;
+    else if (effectiveHackLevel >= 500) baseThreshold = 1e8;
+    else if (effectiveHackLevel >= 250) baseThreshold = 2e7;
+    else if (effectiveHackLevel >= 100) baseThreshold = 1e7;
+    else if (effectiveHackLevel >= 50) baseThreshold = 1e6;
+    else return 0;
+    const serverMoneyScale = Math.max(0.01, Number(bnMults.ServerMaxMoney ?? 1));
+    const raw = baseThreshold * serverMoneyScale;
+    const power = Math.max(0, Math.floor(Math.log10(raw)) - 1);
+    const unit = 10 ** power;
+    return Math.max(unit, Math.round(raw / unit) * unit);
 }
 
 // ── CSS ───────────────────────────────────────────────────────────────────────
@@ -326,14 +343,14 @@ export async function main(ns) {
         const [mQuiet,   setMQuiet]   = React.useState(true);
         const [showAdv,  setShowAdv]  = React.useState(false);
         const hackLevel = data.player?.skills?.hacking ?? 0;
-        const defaultMinMoney = hackLevel >= 1000 ? '1e9' : hackLevel >= 500 ? '1e8' : hackLevel >= 100 ? '1e7' : '0';
+        const defaultMinMoney = hwgwAutoMinMoney(hackLevel, data.bnMults);
         const buildMgrArgs = () => {
             const a = [];
             if (mTargets.trim() && mTargets !== '0') a.push('--targets', mTargets.trim());
             if (mHackPct.trim()) a.push('--hack-percent', mHackPct.trim());
             if (mReserve.trim()) a.push('--reserve-ram',  mReserve.trim());
             if (mPeriod.trim())  a.push('--period',       mPeriod.trim());
-            const mm = mMinMon.trim() || defaultMinMoney;
+            const mm = mMinMon.trim();
             if (mm && mm !== '0') a.push('--min-money', mm);
             if (mQuiet) a.push('--quiet');
             return a;
@@ -403,7 +420,7 @@ export async function main(ns) {
                 h('span', { className: managerRunning ? 'nd-hi' : 'nd-dim', style:{ flex:1, fontSize:12 } },
                     managerRunning ? '● Manager running' : '○ Manager stopped'),
                 managerRunning
-                    ? h(Btn, { sm:true, color:'red', cmd:{ type:'killManager' } }, 'Stop')
+                    ? h(Btn, { sm:true, color:'red', cmd:{ type:'killHwgw' } }, 'Stop')
                     : h('button', { className:'nd-btn nd-btn-sm',
                         onClick: () => enqueue({ type:'launchManager', args:buildMgrArgs() }) }, 'Launch'),
                 h('button', { className:'nd-btn nd-btn-sm', onClick: () => setShowAdv(v => !v) },
@@ -416,7 +433,7 @@ export async function main(ns) {
                 h(InRow, { label:'--reserve-ram',  val:mReserve, setter:setMReserve, placeholder:'32' }),
                 h(InRow, { label:'--period',       val:mPeriod,  setter:setMPeriod,  placeholder:'200' }),
                 h(InRow, { label:'--min-money',    val:mMinMon,  setter:setMMinMon,
-                    placeholder: 'auto (' + defaultMinMoney + ')' }),
+                    placeholder: defaultMinMoney > 0 ? 'auto (' + fm(defaultMinMoney) + ')' : 'auto (none)' }),
                 h('div', { style:{ display:'flex', alignItems:'center', gap:5, marginTop:4 } },
                     h('input', { type:'checkbox', id:'nd-quiet-chk', checked:mQuiet,
                         onChange: e => setMQuiet(e.target.checked) }),
@@ -900,7 +917,7 @@ export async function main(ns) {
 
     // ── Tab: Stocks ───────────────────────────────────────────────────────────
     function StocksTab({ data }) {
-        const { stocks, player } = data;
+        const { stocks, player, hasWse, hasTix } = data;
         const money = player?.money ?? 0;
         const [sub,  setSub]  = React.useState('Portfolio');
         const [qtys, setQtys] = React.useState({});
@@ -980,16 +997,22 @@ export async function main(ns) {
                 h('thead', null, h('tr', null,
                     h('th',null,'Sym'), h('th',null,'Price'),
                     has4S && h('th',null,'Forecast'),
-                    h('th',null,'Owned'), h('th',null,'Qty'), h('th',null,'Cost'), h('th',null,''))),
+                    h('th',null,'Position'), h('th',null,'Qty'), h('th',null,'Cost'), h('th',null,''))),
                 h('tbody', null, (allStocks ?? []).map(s => {
                     const rawQty = qtys[s.sym] ?? '';
                     const qty = Math.floor(Number(rawQty));
-                    const buyCost = qty > 0 ? qty * s.price * 1.0005 : 0;
+                    const buyCost = qty > 0 ? qty * s.price + 100e3 : 0;
                     const canBuy = qty > 0 && qty <= s.maxSh - s.longSh && buyCost <= money && !isNaN(qty);
+                    const positionText = [
+                        s.longSh > 0 ? 'L ' + fn(s.longSh) : null,
+                        s.shortSh > 0 ? 'S ' + fn(s.shortSh) : null,
+                    ].filter(Boolean).join(' / ');
+                    const positionColor = s.longSh > 0 || s.shortSh > 0 ? '#7aac7a' : '#1d3d1d';
                     return h('tr', { key:s.sym },
                         h('td',null,s.sym), h('td',null,fm(s.price)),
                         has4S && h('td',null, h(FcBar, { fc:s.forecast })),
-                        h('td', { style:{ color:s.longSh>0?'#7aac7a':'#1d3d1d' } },
+                        h('td', { style:{ color:positionColor } },
+                            positionText ? positionText :
                             s.longSh > 0 ? fn(s.longSh) : '—'),
                         h('td',null, h('input', { className:'nd-input nd-input-sm', type:'text', placeholder:'qty',
                             value:rawQty, onChange: e => setQty(s.sym, e.target.value) })),
@@ -1001,6 +1024,8 @@ export async function main(ns) {
                             }, 'Buy'),
                             s.longSh > 0 && h(Btn, { sm:true, color:'red',
                                 cmd:{ type:'sellStock', sym:s.sym, qty:s.longSh } }, 'Sell'),
+                            s.shortSh > 0 && h(Btn, { sm:true, color:'red',
+                                cmd:{ type:'sellShortStock', sym:s.sym, qty:s.shortSh } }, 'Cover'),
                         )),
                     );
                 }))
@@ -1022,7 +1047,14 @@ export async function main(ns) {
                 infilBestMoney, infilBestRep,
                 infilCompany: activeCompany, infilCity: activeCity,
                 infilReward: activeReward, infilFaction: activeFaction } = data;
-        const money = player?.money ?? 0, sc = stockCosts ?? {};
+        const mults = data.bnMults ?? {};
+        const money = player?.money ?? 0;
+        const sc = {
+            wse: stockCosts?.wse ?? 200e6,
+            tix: stockCosts?.tix ?? 5e9,
+            s4d: stockCosts?.s4d ?? 1e9 * (Number(mults.FourSigmaMarketDataCost) || 1),
+            s4a: stockCosts?.s4a ?? 25e9 * (Number(mults.FourSigmaMarketDataApiCost) || 1),
+        };
         const loading = !shortcutsLoaded
             ? h('div', { style:{ color:'#2d5a2d', fontSize:11, marginBottom:6 } }, 'Loading...')
             : null;
@@ -1276,6 +1308,112 @@ export async function main(ns) {
     }
 
     // ── Gang: expandable member rows ─────────────────────────────────────────
+    function CorpTab({ data }) {
+        const { corpLoaded, corpExists, corpName, state: corpState,
+                funds, revenue, expenses, profit,
+                public: isPublic, ownershipPct, ownedShares, issuedShares, totalShares,
+                sharePrice, dividendRate, fundingRound, offerFunds,
+                setupDone, setupPhase, corpLauncherRunning, corpSetupRunning, corpAutopilotRunning,
+                divisions, upgrades, economicMode, agriRpReady, exportsSetUp, corpSnapshotFresh } = data;
+
+        if (!corpLoaded) return h('div', { className:'nd-empty' }, 'Loading...');
+
+        const Pill = ({ label, on, warn }) => h('span', {
+            className: 'nd-pill' + (on ? ' nd-pill-hi' : warn ? ' nd-pill-warn' : ''),
+        }, label);
+
+        const scriptRow = h('div', { className:'nd-row-ac', style:{ marginTop:4 } },
+            h('span', { className:'nd-lbl', style:{ minWidth:72 } }, 'Scripts'),
+            h(Pill, { label:'corp.js' + (corpLauncherRunning ? ' on' : ' off'), on:corpLauncherRunning }),
+            h(Pill, { label:'setup' + (corpSetupRunning ? ' on' : ' off'), on:corpSetupRunning }),
+            h(Pill, { label:'autopilot' + (corpAutopilotRunning ? ' on' : ' off'), on:corpAutopilotRunning }),
+            corpSnapshotFresh != null && h(Pill, {
+                label:'snapshot ' + (corpSnapshotFresh ? 'fresh' : 'stale'),
+                on:!!corpSnapshotFresh,
+                warn:!corpSnapshotFresh,
+            }),
+        );
+
+        if (!corpExists) {
+            return h(React.Fragment, null,
+                h(Sec, { title:'Corporation' }),
+                h(Row, { label:'Status', val: corpSetupRunning ? 'Setting up' : 'No corporation yet', color:corpSetupRunning ? 'warn' : undefined }),
+                h(Row, { label:'Setup Phase', val: setupPhase != null ? String(setupPhase) : '...' }),
+                h(Row, { label:'Setup Done', val: setupDone ? 'Yes' : 'No', color:setupDone ? 'hi' : undefined }),
+                scriptRow,
+            );
+        }
+
+        const divs = divisions ?? [];
+        const upgradeRows = [
+            ['Wilson Analytics', upgrades?.wilson],
+            ['Smart Factories', upgrades?.smartFactories],
+            ['Smart Storage', upgrades?.smartStorage],
+            ['SalesBots', upgrades?.salesBots],
+        ].filter(([, val]) => val != null);
+
+        return h(React.Fragment, null,
+            h(Sec, { title:'Corporation' }),
+            h(Row, { label:'Name', val: corpName ?? '...', color:'hi' }),
+            h(Row, { label:'Status', val: (isPublic ? 'Public' : 'Private') + (corpState ? '  |  ' + corpState : ''), color:isPublic ? 'hi' : 'warn' }),
+            h(Row, { label:'Funds', val: fm(funds), color:'hi' }),
+            h(Row, { label:'Profit / sec', val: fm(profit), color:profit >= 0 ? 'hi' : 'bad' }),
+            h(Row, { label:'Revenue / sec', val: fm(revenue) }),
+            h(Row, { label:'Expenses / sec', val: fm(expenses), color:expenses > revenue ? 'bad' : undefined }),
+
+            h(Sec, { title:'Ownership' }),
+            h(Row, { label:'Ownership', val: ownershipPct != null ? fp(ownershipPct, 1) : '...' }),
+            h(Row, { label:'Owned Shares', val: ownedShares != null ? fn(ownedShares) : '...' }),
+            h(Row, { label:'Issued Shares', val: issuedShares != null ? fn(issuedShares) : '...' }),
+            h(Row, { label:'Total Shares', val: totalShares != null ? fn(totalShares) : '...' }),
+            sharePrice != null && h(Row, { label:'Share Price', val: fm(sharePrice) }),
+            h(Row, { label:'Dividend Rate', val: dividendRate != null ? fp(dividendRate, 2) : '...' }),
+            offerFunds != null && fundingRound > 0 && !isPublic && h(Row, {
+                label:'Investment Offer',
+                val:'Round ' + fundingRound + '  |  ' + fm(offerFunds),
+                color:'warn',
+            }),
+
+            h(Sec, { title:'Automation' }),
+            h(Row, { label:'Setup Phase', val: setupPhase != null ? String(setupPhase) : '...' }),
+            h(Row, { label:'Setup Done', val: setupDone ? 'Yes' : 'No', color:setupDone ? 'hi' : undefined }),
+            economicMode && h(Row, { label:'Mode', val: economicMode }),
+            agriRpReady != null && h(Row, { label:'Agri RP Ready', val: agriRpReady ? 'Yes' : 'No', color:agriRpReady ? 'hi' : undefined }),
+            exportsSetUp != null && h(Row, { label:'Exports Set Up', val: exportsSetUp ? 'Yes' : 'No', color:exportsSetUp ? 'hi' : undefined }),
+            scriptRow,
+
+            upgradeRows.length > 0 && h(React.Fragment, null,
+                h(Sec, { title:'Upgrades' }),
+                ...upgradeRows.map(([label, val]) => h(Row, { key:label, label, val: fn(val) })),
+            ),
+
+            h(Sec, { title:'Divisions (' + divs.length + ')' }),
+            divs.length === 0
+                ? h('div', { className:'nd-empty' }, 'No divisions')
+                : divs.map(div => h(Card, { key:div.name, title:div.name, defaultOpen:divs.length <= 2 },
+                    h(Row, { label:'Type', val: div.type ?? '...' }),
+                    h(Row, { label:'Cities', val: fn(div.cities ?? 0) }),
+                    h(Row, { label:'Employees', val: fn(div.employees ?? 0) }),
+                    h(Row, { label:'Research', val: fn(div.rp ?? 0) }),
+                    h(Row, { label:'Products', val: fn(div.products ?? 0) }),
+                    div.productPipeline && h(Row, { label:'Pipeline', val: div.productPipeline }),
+                    div.advertCount != null && h(Row, { label:'AdVerts', val: fn(div.advertCount) }),
+                    div.minOfficeSize != null && h(Row, {
+                        label:'Office Size',
+                        val: div.maxOfficeSize > div.minOfficeSize
+                            ? fn(div.minOfficeSize) + '  ->  ' + fn(div.maxOfficeSize)
+                            : fn(div.minOfficeSize),
+                    }),
+                    div.minWarehouseLevel != null && h(Row, {
+                        label:'Warehouse',
+                        val: div.maxWarehouseLevel > div.minWarehouseLevel
+                            ? fn(div.minWarehouseLevel) + '  ->  ' + fn(div.maxWarehouseLevel)
+                            : fn(div.minWarehouseLevel),
+                    }),
+                )),
+        );
+    }
+
     function MemberTable({ members, isHacking, ascensionResults }) {
         const [expanded, setExpanded] = React.useState(null);
         const toggle = name => setExpanded(e => e === name ? null : name);
@@ -1584,10 +1722,10 @@ export async function main(ns) {
     }
 
     const STATUS_TABS = ['Player','HWGW','Darknet','Servers','Stocks'];
-    const MGMT_TABS   = ['Gang','Factions','Sleeves','Shortcuts'];
+    const MGMT_TABS   = ['Corp','Gang','Factions','Sleeves','Shortcuts'];
     const TABS = [...STATUS_TABS, ...MGMT_TABS];
     const TAB_MAP = { HWGW:HwgwTab, Darknet:DarknetTab, Player:PlayerTab,
-        Gang:GangTab, Factions:FactionsTab, Servers:ServersTab, Stocks:StocksTab,
+        Corp:CorpTab, Gang:GangTab, Factions:FactionsTab, Servers:ServersTab, Stocks:StocksTab,
         Sleeves:SleevesTab, Shortcuts:ShortcutsTab };
 
     function Dashboard() {
@@ -1684,6 +1822,7 @@ export async function main(ns) {
             const rawS = ns.read(SHORTCUTS_FILE);
             const rawR = ns.read(SERVERS_FILE);
             const rawT = ns.read(STOCKS_FILE);
+            const rawC = ns.read(CORP_FILE);
             const rawG = ns.read(GANGS_FILE);
             const rawSl = ns.read(SLEEVES_FILE);
             const base  = raw   && raw   !== '' ? JSON.parse(raw)   : {};
@@ -1691,9 +1830,10 @@ export async function main(ns) {
             const shcut = rawS  && rawS  !== '' ? JSON.parse(rawS)  : {};
             const srvs  = rawR  && rawR  !== '' ? JSON.parse(rawR)  : {};
             const stks  = rawT  && rawT  !== '' ? JSON.parse(rawT)  : {};
+            const corp  = rawC  && rawC  !== '' ? JSON.parse(rawC)  : {};
             const gangs = rawG  && rawG  !== '' ? JSON.parse(rawG)  : {};
             const slvs  = rawSl && rawSl !== '' ? JSON.parse(rawSl) : {};
-            if (pushData) pushData({ ...base, ...facs, ...shcut, ...srvs, ...stks, ...gangs, ...slvs });
+            if (pushData) pushData({ ...base, ...facs, ...shcut, ...srvs, ...stks, ...corp, ...gangs, ...slvs });
         } catch (e) { ns.print('Data parse error: ' + (e?.message ?? e)); }
 
         await ns.sleep(1000);

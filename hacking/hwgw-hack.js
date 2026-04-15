@@ -26,6 +26,7 @@
 /** @param {NS} ns */
 export async function main(ns) {
     ns.disableLog("hack");
+    ns.disableLog("sleep");
 
     const [target, delay, batchId, role, stockFlag] = ns.args;
 
@@ -43,5 +44,13 @@ export async function main(ns) {
     const moneyStolen = await ns.hack(target, stockFlag ? { stock: true } : undefined);
 
     const port = ns.getPortHandle(1);
-    port.tryWrite(`${role}:${batchId}:${moneyStolen.toFixed(2)}:${target}`);
+    const message = `${role}:${batchId}:${moneyStolen.toFixed(2)}:${target}`;
+    if (!port.tryWrite(message)) {
+        const deadline = Date.now() + 2000;
+        while (Date.now() < deadline) {
+            await ns.sleep(25);
+            if (port.tryWrite(message)) return;
+        }
+        ns.print(`WARN hwgw-hack: completion port stayed full for batch ${batchId} on ${target}`);
+    }
 }

@@ -70,6 +70,8 @@ let SCRIPTS = null;
 // launchWorker() runs 4× per batch scheduled (potentially thousands of times per minute)
 // and calculateBatchParams() runs once per prep cycle. Both use these constants.
 let SCRIPT_RAM = { hack: 0, grow: 0, weaken: 0 };
+const safeTempTag = (value) => String(value).replace(/[^A-Za-z0-9_-]/g, "_");
+const targetTempFile = (target, name, ext = "js") => `/Temp/hwgw-${name}-${safeTempTag(target)}.${ext}`;
 
 function resolveScripts(ns) {
     if (SCRIPTS) return SCRIPTS;
@@ -101,6 +103,8 @@ let _hackPctCache = 0;
  * The result is cached in _hackPctCache so the temp script only runs once per session.
  */
 async function fetchHackPct(ns, target) {
+    const hackPctScript = targetTempFile(target, "hackpct-once");
+    const hackPctFile = targetTempFile(target, "hackpct", "txt");
     // Try manager's hackdata cache first (written every 5 min, covers all targets)
     try {
         const raw = ns.read('/Temp/hackdata-cache.txt');
@@ -111,17 +115,17 @@ async function fetchHackPct(ns, target) {
     } catch {}
     // Cache miss — write and exec a one-shot temp that calls ns.hackAnalyze
     // The temp script bears the 1.0 GB RAM cost only for its brief lifetime.
-    ns.write('/Temp/hwgw-hackpct-once.js', [
+    ns.write(hackPctScript, [
         'export async function main(ns) {',
         '  const pct = ns.hackAnalyze(ns.args[0]);',
-        '  ns.write("/Temp/hwgw-hackpct.txt", String(pct), "w");',
+        `  ns.write(${JSON.stringify(hackPctFile)}, String(pct), "w");`,
         '}',
     ].join('\n'), 'w');
-    const pid = ns.exec('/Temp/hwgw-hackpct-once.js', 'home', 1, target);
+    const pid = ns.exec(hackPctScript, 'home', 1, target);
     if (pid) {
         const dl = Date.now() + 5000;
         while (ns.isRunning(pid) && Date.now() < dl) await ns.sleep(50);
-        try { _hackPctCache = parseFloat(ns.read('/Temp/hwgw-hackpct.txt')) || 0; } catch {}
+        try { _hackPctCache = parseFloat(ns.read(hackPctFile)) || 0; } catch {}
     }
     return _hackPctCache;
 }
@@ -732,7 +736,8 @@ function scheduleBatch(ns, target, batchId, loopIndex, batchBaseTime, params, re
         // Fire-and-forget temp to avoid ns.ps+ns.kill static RAM cost in batcher.
         const _rbHosts = JSON.stringify(getWorkerHosts(ns, execHosts));
         const _rbScripts = JSON.stringify(Object.values(SCRIPTS));
-        ns.write('/Temp/hwgw-rollback.js', [
+        const rollbackScript = targetTempFile(target, `rollback-${batchId}`);
+        ns.write(rollbackScript, [
             'export async function main(ns) {',
             `  const batchId = ${batchId};`,
             `  const hosts   = ${_rbHosts};`,
@@ -742,7 +747,7 @@ function scheduleBatch(ns, target, batchId, loopIndex, batchBaseTime, params, re
             '      if (scripts.includes(proc.filename) && proc.args[2]===batchId) ns.kill(proc.pid);',
             '}',
         ].join('\n'), 'w');
-        ns.exec('/Temp/hwgw-rollback.js', 'home');
+        ns.exec(rollbackScript, 'home');
         return false;
     }
 
@@ -901,6 +906,11 @@ async function ensurePrepped(ns, target, reserveRam, logFn, logErrorFn, logQuiet
     // hwgw-prep.js writes /Temp/hwgw-prep-{target}.txt = "DONE" or "FAILED:reason".
     // Clear any stale signal from a previous prep run before starting.
     const signalFile = `/Temp/hwgw-prep-${target}.txt`;
+    const prepCheckScript = targetTempFile(target, "prep-check");
+    const prepCheckFile = targetTempFile(target, "prep-running", "txt");
+    const prepCheckScript2 = targetTempFile(target, "prep-check2");
+    const prepCheckFile2 = targetTempFile(target, "prep-running2", "txt");
+    const prepArgs = [target, "--reserve", reserveRam, "--quiet"];
     ns.write(signalFile, "", "w"); // clear stale signal
 
     // Drain port 2 of any stale signals too (legacy prep instances might still write there)
@@ -916,7 +926,7 @@ async function ensurePrepped(ns, target, reserveRam, logFn, logErrorFn, logQuiet
 
     if (!managerRunning) {
         // Standalone mode -- launch our own prep.
-        const pid = ns.exec(SCRIPTS.prep, "home", 1, target, "--reserve", reserveRam);
+        const pid = ns.exec(SCRIPTS.prep, "home", 1, ...prepArgs);
         if (pid === 0) {
             logErrorFn(`ERROR: Failed to launch hwgw-prep.js on home. Not enough RAM?`);
             return false;
@@ -928,22 +938,23 @@ async function ensurePrepped(ns, target, reserveRam, logFn, logErrorFn, logQuiet
         // prep script is actively running for this target; if not, self-launch.
         // Check via temp script instead of ns.ps (0.2 GB static cost).
         // Fire-and-forget: writes "1" or "0" to file, batcher reads it after brief wait.
-        ns.write('/Temp/hwgw-prep-check.js', [
+        ns.write(prepCheckScript, [
             'export async function main(ns) {',
-            '  const t = ns.args[0]; const prep = "hacking/hwgw-prep.js";',
+            '  const t = ns.args[0];',
+            `  const prep = ${JSON.stringify(SCRIPTS.prep)};`,
             '  const r = ns.ps("home").some(p => p.filename.endsWith(prep) && p.args.includes(t));',
-            '  ns.write("/Temp/hwgw-prep-running.txt", r ? "1" : "0", "w");',
+            `  ns.write(${JSON.stringify(prepCheckFile)}, r ? "1" : "0", "w");`,
             '}',
         ].join('\n'), 'w');
-        const checkPid = ns.exec('/Temp/hwgw-prep-check.js', 'home', 1, target);
+        const checkPid = ns.exec(prepCheckScript, 'home', 1, target);
         let prepRunning = false;
         if (checkPid) {
             const dlCheck = Date.now() + 3000;
             while (ns.isRunning(checkPid) && Date.now() < dlCheck) await ns.sleep(50);
-            prepRunning = ns.read('/Temp/hwgw-prep-running.txt') === '1';
+            prepRunning = ns.read(prepCheckFile) === '1';
         }
         if (!prepRunning) {
-            const pid = ns.exec(SCRIPTS.prep, "home", 1, target, "--reserve", reserveRam);
+            const pid = ns.exec(SCRIPTS.prep, "home", 1, ...prepArgs);
             if (pid > 0)
                 logQuietFn(`Launched prep (desync recovery, PID ${pid})`);
             else
@@ -973,21 +984,22 @@ async function ensurePrepped(ns, target, reserveRam, logFn, logErrorFn, logQuiet
         // If the prep script has died without writing a signal, self-launch a new one.
         // Check via a temp script to avoid ns.ps static RAM cost.
         if (signal === "") {
-            ns.write('/Temp/hwgw-prep-check2.js', [
+            ns.write(prepCheckScript2, [
                 'export async function main(ns) {',
                 '  const t = ns.args[0];',
-                '  const r = ns.ps("home").some(p => p.filename.endsWith("hacking/hwgw-prep.js") && p.args.includes(t));',
-                '  ns.write("/Temp/hwgw-prep-running2.txt", r ? "1" : "0", "w");',
+                `  const prep = ${JSON.stringify(SCRIPTS.prep)};`,
+                '  const r = ns.ps("home").some(p => p.filename.endsWith(prep) && p.args.includes(t));',
+                `  ns.write(${JSON.stringify(prepCheckFile2)}, r ? "1" : "0", "w");`,
                 '}',
             ].join('\n'), 'w');
-            const chkPid = ns.exec('/Temp/hwgw-prep-check2.js', 'home', 1, target);
+            const chkPid = ns.exec(prepCheckScript2, 'home', 1, target);
             if (chkPid) {
                 const dl2 = Date.now() + 3000;
                 while (ns.isRunning(chkPid) && Date.now() < dl2) await ns.sleep(50);
             }
-            if (ns.read('/Temp/hwgw-prep-running2.txt') !== '1') {
+            if (ns.read(prepCheckFile2) !== '1') {
                 logQuietFn(`Prep for "${target}" vanished without signaling. Re-launching...`);
-                const pid = ns.exec(SCRIPTS.prep, "home", 1, target, "--reserve", reserveRam);
+                const pid = ns.exec(SCRIPTS.prep, "home", 1, ...prepArgs);
                 if (pid === 0)
                     logErrorFn(`ERROR: Re-launch of prep failed. Not enough RAM?`);
             }
@@ -1015,7 +1027,8 @@ function killInFlightWorkers(ns, target, logFn) {
     // Fire-and-forget temp script — removes ns.ps(0.2GB)+ns.kill(0.5GB)+ns.scan(0.2GB)
     // from batcher's static RAM cost. The temp script bears those costs for its brief lifetime.
     const scripts = JSON.stringify(Object.values(SCRIPTS).filter(s => s !== SCRIPTS.prep));
-    ns.write('/Temp/hwgw-kill-inflight.js', [
+    const killScript = targetTempFile(target, "kill-inflight");
+    ns.write(killScript, [
         'export async function main(ns) {',
         '  const target  = ns.args[0];',
         `  const scripts = ${scripts};`,
@@ -1034,7 +1047,7 @@ function killInFlightWorkers(ns, target, logFn) {
         '  }',
         '}',
     ].join('\n'), 'w');
-    ns.exec('/Temp/hwgw-kill-inflight.js', 'home', 1, target);
+    ns.exec(killScript, 'home', 1, target);
     logFn(`Launched kill sweep for in-flight workers on "${target}"`);
 }
 

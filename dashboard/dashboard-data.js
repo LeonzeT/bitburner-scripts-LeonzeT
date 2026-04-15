@@ -53,7 +53,7 @@ const FORWARD_CMDS = new Set([
     'buyAug',
     'workForFaction','donateToFaction',
     'upgradeServer','deleteServer','purchaseServer',
-    'buyStock','sellStock',
+    'buyStock','sellStock','sellShortStock',
     'ascendMember',
     'setSleeveTask','clearSleeveOverride','clearAllSleeveOverrides',
 ]);
@@ -71,6 +71,7 @@ const LOCAL_CMDS = {
     setForceTarget:   (ns, cmd) => ns.write('/Temp/hwgw-force-target.txt', cmd.target ?? '', 'w'),
     // Kill by PID — delegated to temp script so dashboard-data.js avoids ns.ps (0.2 GB) + ns.kill (0.5 GB)
     killManager:      (ns) => killByName(ns, 'hacking/hwgw-manager.js'),
+    killHwgw:         (ns) => killHwgw(ns),
     killCrawler:      (ns) => killByName(ns, 'darknet/darknet-crawler.js'),
     clearWffOverride: (ns) => ns.write('/Temp/wff-override.txt', '', 'w'),
     // Launch commands — exec only, no singularity RAM needed
@@ -124,6 +125,37 @@ function killByName(ns, suffix) {
         'export async function main(ns) {',
         `  const p = ns.ps("home").find(p => p.filename.endsWith("${suffix}"));`,
         '  if (p) ns.kill(p.pid);',
+        '}',
+    ].join('\n'), 'w');
+    ns.exec(KILL_SCRIPT, 'home');
+}
+
+function killHwgw(ns) {
+    ns.write(KILL_SCRIPT, [
+        'export async function main(ns) {',
+        '  const targets = new Set(["hwgw-manager.js", "hwgw-batcher.js", "hwgw-prep.js", "hwgw-hack.js", "hwgw-grow.js", "hwgw-weaken.js"]);',
+        '  const seen = new Set();',
+        '  const queue = ["home"];',
+        '  while (queue.length > 0) {',
+        '    const host = queue.shift();',
+        '    if (!host || seen.has(host)) continue;',
+        '    seen.add(host);',
+        '    try {',
+        '      for (const next of ns.scan(host)) {',
+        '        if (!seen.has(next)) queue.push(next);',
+        '      }',
+        '    } catch {}',
+        '  }',
+        '  for (const host of seen) {',
+        '    let procs = [];',
+        '    try { procs = ns.ps(host); } catch {}',
+        '    for (const p of procs) {',
+        '      const base = String(p.filename ?? "").split("/").pop();',
+        '      if (targets.has(base)) ns.kill(p.pid);',
+        '    }',
+        '  }',
+        '  try { ns.write("/Temp/hwgw-status.txt", "", "w"); } catch {}',
+        '  try { ns.write("/Temp/hwgw-exec-hosts.txt", "[]", "w"); } catch {}',
         '}',
     ].join('\n'), 'w');
     ns.exec(KILL_SCRIPT, 'home');

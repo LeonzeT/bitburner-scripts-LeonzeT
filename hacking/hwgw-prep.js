@@ -72,16 +72,21 @@ const GROW_SCRIPT_RAM   = 1.75;
 const fin  = (v, fallback) => Number.isFinite(v) ? v : fallback;
 /** Thread count helper — returns 0 instead of a garbage value */
 const threads = n => (Number.isFinite(n) && n >= 1) ? Math.floor(n) : 0;
+const safeTempTag = (value) => String(value).replace(/[^A-Za-z0-9_-]/g, '_');
 
 /** @param {NS} ns */
 export async function main(ns) {
     ns.disableLog('ALL');
 
     const target = ns.args[0];
+    const quiet = ns.args.includes('--quiet');
     if (!target || typeof target !== 'string') {
         ns.print('ERROR hwgw-prep: no target specified.');
         return;
     }
+
+    const log = (msg) => { if (!quiet) ns.print(msg); };
+    const logAlways = (msg) => ns.print(msg);
 
     const reserveRam = fin(
         ns.args[1] === '--reserve' ? Number(ns.args[2]) : 32,
@@ -89,6 +94,7 @@ export async function main(ns) {
     );
 
     const signalFile = `/Temp/hwgw-prep-${target}.txt`;
+    const prepScpScript = `/Temp/hwgw-prep-scp-${safeTempTag(target)}.js`;
 
     // ── Script path resolution ─────────────────────────────────────────────
     let paths = {};
@@ -114,13 +120,16 @@ export async function main(ns) {
     const actualWeakenPerThread = WEAKEN_SECURITY_PER_THREAD * fin(bnMults.ServerWeakenRate, 1);
 
     // ── Exec host pool ─────────────────────────────────────────────────────
-    // Reads /Temp/hwgw-exec-hosts.txt written by hwgw-manager.js.
+    // Reads /Temp/hwgw-exec-hosts-{target}.txt when available, falling back to
+    // the global /Temp/hwgw-exec-hosts.txt written by hwgw-manager.js.
     // ns.serverExists() removed: we trust the manager's host list. If a host
     // becomes invalid, ns.exec() returns 0 and dispatchThreads skips it gracefully.
     // Savings: 0.10 GB static RAM.
     function getWorkerHosts() {
         try {
-            const raw = ns.read('/Temp/hwgw-exec-hosts.txt');
+            const targetSliceRaw = ns.read(`/Temp/hwgw-exec-hosts-${target}.txt`);
+            const globalRaw = ns.read('/Temp/hwgw-exec-hosts.txt');
+            const raw = (targetSliceRaw && targetSliceRaw !== '') ? targetSliceRaw : globalRaw;
             if (raw && raw !== '') {
                 const hosts = JSON.parse(raw);
                 if (hosts.length > 0) {
@@ -154,7 +163,7 @@ export async function main(ns) {
         _copiedToHosts.add(cacheKey);
         const scripts = JSON.stringify([WEAKEN, GROW]);
         const hostsJson = JSON.stringify(nonHome);
-        ns.write('/Temp/prep-scp.js', [
+        ns.write(prepScpScript, [
             'export async function main(ns) {',
             `  const scripts = ${scripts};`,
             `  const hosts   = ${hostsJson};`,
@@ -164,7 +173,7 @@ export async function main(ns) {
             '        ns.scp(script, host, "home");',
             '}',
         ].join('\n'), 'w');
-        ns.exec('/Temp/prep-scp.js', 'home');
+        ns.exec(prepScpScript, 'home');
     }
 
     // ── PID tracking (replaces ns.ps to save 0.20 GB) ──────────────────────
@@ -230,7 +239,7 @@ export async function main(ns) {
     }
 
     // ── Main prep loop ─────────────────────────────────────────────────────
-    ns.print(`Prepping "${target}"...`);
+    log(`Prepping "${target}"...`);
 
     let iters = 0;
     while (iters < MAX_ITERATIONS) {
@@ -245,7 +254,7 @@ export async function main(ns) {
         const monOk = maxMon > 0 && currentMon / maxMon >= 0.99;
 
         if (secOk && monOk) {
-            ns.print(`"${target}" is prepped. Writing DONE signal.`);
+            log(`"${target}" is prepped. Writing DONE signal.`);
             ns.write(signalFile, 'DONE', 'w');
             return;
         }
@@ -262,10 +271,10 @@ export async function main(ns) {
             const toLaunch  = Math.min(needed, canLaunch);
 
             if (toLaunch > 0) {
-                ns.print(`[Iter ${iters}] Weaken: sec=${currentSec.toFixed(2)}/${minSec} → launching ${toLaunch} threads`);
+                log(`[Iter ${iters}] Weaken: sec=${currentSec.toFixed(2)}/${minSec} → launching ${toLaunch} threads`);
                 dispatchThreads(WEAKEN, toLaunch, hosts);
             } else {
-                ns.print(`[Iter ${iters}] Weaken needed but no RAM (free=${(freeRam).toFixed(0)}GB). Waiting...`);
+                log(`[Iter ${iters}] Weaken needed but no RAM (free=${(freeRam).toFixed(0)}GB). Waiting...`);
             }
             await waitForPids();
             continue;
@@ -279,16 +288,16 @@ export async function main(ns) {
             const toLaunch   = Math.min(growNeeded, canLaunch);
 
             if (toLaunch > 0) {
-                ns.print(`[Iter ${iters}] Grow: money=${(currentMon/maxMon*100).toFixed(1)}% → launching ${toLaunch}/${growNeeded} threads`);
+                log(`[Iter ${iters}] Grow: money=${(currentMon/maxMon*100).toFixed(1)}% → launching ${toLaunch}/${growNeeded} threads`);
                 dispatchThreads(GROW, toLaunch, hosts);
             } else {
-                ns.print(`[Iter ${iters}] Grow needed but no RAM (free=${(freeRam).toFixed(0)}GB). Waiting...`);
+                log(`[Iter ${iters}] Grow needed but no RAM (free=${(freeRam).toFixed(0)}GB). Waiting...`);
             }
             await waitForPids();
             continue;
         }
     }
 
-    ns.print(`ERROR hwgw-prep: "${target}" not prepped after ${MAX_ITERATIONS} iterations.`);
+    logAlways(`ERROR hwgw-prep: "${target}" not prepped after ${MAX_ITERATIONS} iterations.`);
     ns.write(signalFile, `FAILED:exceeded ${MAX_ITERATIONS} iterations`, 'w');
 }

@@ -116,6 +116,33 @@ export async function main(ns) {
         }));
     } catch { d.darkwebPrograms = []; }
 
+    const stock = ns.stock ?? {};
+    const stockFlag = (...names) => {
+        for (const name of names) {
+            try {
+                const fn = stock[name];
+                if (typeof fn === "function") return !!fn.call(stock);
+            } catch {}
+        }
+        return undefined;
+    };
+    d.hasWse    = stockFlag("hasWseAccount", "hasWSEAccount");
+    d.hasTix    = stockFlag("hasTixApiAccess", "hasTIXAPIAccess");
+    d.has4SData = stockFlag("has4SData");
+    d.has4SApi  = stockFlag("has4SDataTixApi", "has4SDataTIXAPI");
+    try {
+        const raw = ns.read("/Temp/bitNode-multipliers.txt");
+        const mults = raw && raw !== "" ? JSON.parse(raw) : {};
+        d.stockCosts = {
+            wse: 200e6,
+            tix: 5e9,
+            s4d: 1e9 * (Number(mults.FourSigmaMarketDataCost) || 1),
+            s4a: 25e9 * (Number(mults.FourSigmaMarketDataApiCost) || 1),
+        };
+    } catch {
+        d.stockCosts = { wse: 200e6, tix: 5e9, s4d: 1e9, s4a: 25e9 };
+    }
+
     // ── Infiltration locations with difficulty + reward ─────────────────────
     //
     // Difficulty formula (src/Infiltration/formulas/game.ts):

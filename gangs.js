@@ -166,6 +166,16 @@ async function initialize(ns) {
 
     allTaskNames  = await getNsDataThroughFile(ns, 'ns.gang.getTaskNames()');
     allTaskStats  = await getGangDict(ns, allTaskNames, 'getTaskStats');
+    // Pre-calculate weight factors for performance
+    for (const taskName in allTaskStats) {
+        const task = allTaskStats[taskName];
+        task.hackWeightFactor = task.hackWeight / 100;
+        task.strWeightFactor = task.strWeight / 100;
+        task.defWeightFactor = task.defWeight / 100;
+        task.dexWeightFactor = task.dexWeight / 100;
+        task.agiWeightFactor = task.agiWeight / 100;
+        task.chaWeightFactor = task.chaWeight / 100;
+    }
     multGangSoftcap = (await tryGetBitNodeMultipliers(ns)).GangSoftcap;
 
     myGangMembers = await getNsDataThroughFile(ns, 'ns.gang.getMemberNames()');
@@ -636,22 +646,28 @@ async function optimizeGangCrime(ns, myGangInfo) {
     // Pre-compute every member × every task rate
     // Members in chaTrainSet are locked to Train Charisma/Hacking
     // Members in combatBootcampSet or combatTrainSet are locked to Train Combat
-    const memberTaskRates = Object.fromEntries(
-        Object.values(dictMembers).map(m => [m.name,
-            chaTrainSet.has(m.name)
-                ? [{ name: trainTaskName, respect: 0, money: 0, wanted: 0, both: 0 }]
-                : (combatBootcampSet.has(m.name) || combatTrainSet.has(m.name))
-                    ? [{ name: trainTask(), respect: 0, money: 0, wanted: 0, both: 0 }]
-                    : vjSet.has(m.name)
-                    ? [{ name: strWantedReduction, respect: 0, money: 0, wanted: -vjPerMemberRate, both: 0 }]
-                    : allTaskNames.map(t => ({
-                    name:    t,
-                    respect: computeRespectGain(myGangInfo, t, m),
-                    money:   computeMoneyGain(myGangInfo, t, m),
-                    wanted:  computeWantedGain(myGangInfo, t, m),
-                })).filter(t => t.wanted <= 0 || t.money > 0 || t.respect > 0)
-        ])
-    );
+    const memberTaskRates = {};
+    for (const m of Object.values(dictMembers)) {
+        const memberName = m.name;
+        let rates;
+
+        if (chaTrainSet.has(memberName)) {
+            rates = [{ name: trainTaskName, respect: 0, money: 0, wanted: 0, both: 0 }];
+        } else if (combatBootcampSet.has(memberName) || combatTrainSet.has(memberName)) {
+            rates = [{ name: trainTask(), respect: 0, money: 0, wanted: 0, both: 0 }];
+        } else if (vjSet.has(memberName)) {
+            rates = [{ name: strWantedReduction, respect: 0, money: 0, wanted: -vjPerMemberRate, both: 0 }];
+        } else {
+            rates = allTaskNames.map(t => ({
+                name:    t,
+                respect: computeRespectGain(myGangInfo, t, m),
+                money:   computeMoneyGain(myGangInfo, t, m),
+                wanted:  computeWantedGain(myGangInfo, t, m),
+            })).filter(t => t.wanted <= 0 || t.money > 0 || t.respect > 0);
+        }
+
+        memberTaskRates[memberName] = rates;
+    }
 
     if (optStat === 'both')
         Object.values(memberTaskRates).flat().forEach(v => v.both = v.money / 1000 + v.respect);
@@ -747,19 +763,28 @@ async function optimizeGangCrime(ns, myGangInfo) {
 async function fixWantedGainRate(ns, myGangInfo, tolerance = 0) {
     let lastRate = myGangInfo.wantedLevelGainRate;
     log(ns, `WARNING: Wanted gaining too fast (${lastRate.toPrecision(3)} > ${tolerance.toPrecision(3)}), assigning vigilante...`, false, 'warning');
-    for (const m of shuffleArray(myGangMembers.slice())) {
-        if (!['Mug People','Deal Drugs','Strongarm Civilians','Run a Con','Armed Robbery',
-            'Traffick Illegal Arms','Human Trafficking','Terrorism',
-            'Ransomware','Phishing','Identity Theft','DDoS Attacks',
-            'Plant Virus','Fraud & Counterfeiting','Money Laundering','Cyberterrorism'
-        ].includes(assignedTasks[m])) continue;
-        assignedTasks[m] = strWantedReduction;
-        await updateMemberActivities(ns);
-        myGangInfo = await waitForGameUpdate(ns, myGangInfo);
-        if (myGangInfo.wantedLevelGainRate < tolerance) return;
-        if (myGangInfo.wantedLevelGainRate === lastRate)
-            log(ns, `WARNING: Rolling back ${m} to ${strWantedReduction} had no effect.`, false, 'warning');
-        lastRate = myGangInfo.wantedLevelGainRate;
+    const shuffledMembers = shuffleArray(myGangMembers.slice());
+    for (const m of shuffledMembers) {
+        const task = assignedTasks[m];
+        if (task === 'Mug People' || task === 'Deal Drugs' || task === 'Strongarm Civilians' ||
+            task === 'Run a Con' || task === 'Armed Robbery' || task === 'Traffick Illegal Arms' ||
+            task === 'Human Trafficking' || task === 'Terrorism' || task === 'Ransomware' ||
+            task === 'Phishing' || task === 'Identity Theft' || task === 'DDoS Attacks' ||
+            task === 'Plant Virus' || task === 'Fraud & Counterfeiting' || task === 'Money Laundering' ||
+            task === 'Cyberterrorism') {
+            assignedTasks[m] = strWantedReduction;
+            await updateMemberActivities(ns);
+            myGangInfo = await waitForGameUpdate(ns, myGangInfo);
+            if (myGangInfo.wantedLevelGainRate < tolerance) return;
+            if (myGangInfo.wantedLevelGainRate === lastRate) {
+                log(ns, `WARNING: Rolling back ${m} to ${strWantedReduction} had no effect.`, false, 'warning');
+                // Revert the assignment since it had no effect
+                assignedTasks[m] = task;
+                await updateMemberActivities(ns);
+                myGangInfo = await waitForGameUpdate(ns, myGangInfo);
+            }
+            lastRate = myGangInfo.wantedLevelGainRate;
+        }
     }
 }
 
@@ -947,14 +972,18 @@ async function tryUpgradeMembers(ns, dictMembers) {
     let budget    = Math.min(0.99, (options['equipment-budget']     ?? DEFAULT_EQUIP_BUDGET))   * cash * budgetMult;
     let augBudget = Math.min(0.99, (options['augmentations-budget'] ?? DEFAULT_AUG_BUDGET))     * cash * budgetMult;
 
+    // Pre-filter relevant equipment to avoid checking in inner loop
+    const relevantEquipments = equipments.filter(equip =>
+        Object.keys(equip.stats ?? {}).some(s =>
+            importantStats.some(i => s.includes(i)) || s.includes('cha'))
+    );
+
     const order = [];
-    for (const equip of equipments) {
+    for (const equip of relevantEquipments) {
         if (augBudget <= 0) break;
         for (const m of Object.values(dictMembers)) {
             if (augBudget <= 0) break;
-            const isRelevant = Object.keys(equip.stats ?? {}).some(s =>
-                importantStats.some(i => s.includes(i)) || s.includes('cha'));
-            const perceivedCost = equip.cost * (isRelevant ? 1 : OFF_STAT_COST_PENALTY);
+            const perceivedCost = equip.cost; // Already filtered as relevant
             if (perceivedCost > augBudget) continue;
             if (equip.type !== 'Augmentation' && perceivedCost > budget) continue;
             if (m.upgrades.includes(equip.name) || m.augmentations.includes(equip.name)) continue;
@@ -1096,12 +1125,12 @@ const getWantedPenalty   = g => g.respect / (g.respect + g.wantedLevel);
 const getTerritoryPenalty = g => (0.2 * g.territory + 0.8) * multGangSoftcap;
 
 function getStatWeight(task, m) {
-    return (task.hackWeight / 100) * m['hack'] +
-        (task.strWeight / 100) * m.str +
-        (task.defWeight / 100) * m.def +
-        (task.dexWeight / 100) * m.dex +
-        (task.agiWeight / 100) * m.agi +
-        (task.chaWeight / 100) * m.cha;
+    return task.hackWeightFactor * m['hack'] +
+        task.strWeightFactor * m.str +
+        task.defWeightFactor * m.def +
+        task.dexWeightFactor * m.dex +
+        task.agiWeightFactor * m.agi +
+        task.chaWeightFactor * m.cha;
 }
 
 function computeRespectGain(g, taskName, m) {

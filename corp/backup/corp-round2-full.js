@@ -1,0 +1,8099 @@
+﻿/**
+ * Corporation round-2 bootstrap.
+ *
+ * Handles phases 3-4 only:
+ * - launch the post-round-1 Chemical and Tobacco shell
+ * - manage the round-2 buildout and accept the round-2 investment
+ *
+ * When round 2 is done, this script writes phase 5 and chains back to
+ * /corp/corp-setup.js.
+ *
+ * @param {NS} ns
+ */
+import { formatMoney } from '/helpers.js';
+import {
+    PRIVATE_STAGE_TARGETS,
+    PRIVATE_STAGE_STRETCH_TARGETS,
+    clamp,
+    formatEta,
+    estimateFundsWaitSeconds,
+    combineRelativeGains,
+    getPrivateOfferThreshold,
+} from '/corp/corp-optimizer-shared.js';
+
+// Names
+const CORP_NAME = 'Nite-Corp';
+const DIV_TOBACCO = 'Tobacco';
+const DIV_AGRI = 'Agriculture';
+const DIV_CHEM = 'Chemical';
+const IND_TOBACCO = 'Tobacco';
+const IND_AGRI = 'Agriculture';
+const IND_CHEM = 'Chemical';
+
+// Geography
+const CITIES = ['Aevum', 'Chongqing', 'Sector-12', 'New Tokyo', 'Ishima', 'Volhaven'];
+const HQ_CITY = 'Sector-12';
+const PHASE3_CHEM_START_CITIES = [HQ_CITY];
+const PHASE3_TOB_START_CITIES = [HQ_CITY];
+const DELAY_TOBACCO_UNTIL_POST_ROUND2 = true;
+
+// Investment thresholds
+// Emergency fallback floor if the main round-1 route underperforms.
+const MIN_ROUND1 = 34e9;
+const MIN_ROUND2 = 5e12;
+const ROUND2_INVESTMENT_SHARE_PCT = 0.35;
+const ROUND2_INVESTMENT_MULTIPLIER = 2;
+const ROUND2_EFFECTIVE_OFFER_MULT = ROUND2_INVESTMENT_SHARE_PCT * ROUND2_INVESTMENT_MULTIPLIER;
+const ROUND2_OW_MULT_BASE = 1.0079741404289038;
+const ROUND1_USE_CUSTOM_SUPPLY = true;
+const ROUND1_SUPPLY_BUFFER_CYCLES = 2.5;
+const ROUND1_SUPPLY_SEED = { Water: 75, Chemicals: 30 };
+const ROUND2_BN3_AGRI_INPUT_CAP_MULT = 1.5;
+const ROUND2_BN3_AGRI_INPUT_PRESSURE_PCT = 0.90;
+const ROUND1_ROUTE_TARGET = 435e9;
+const ROUND1_ROUTE_SOFT_FLOOR = 420e9;
+const ROUND1_ROUTE_STAGNATION_LIMIT = 36;
+const ROUND1_ROUTE_FREEZE_RATIO = 0.98;
+const ROUND1_ROUTE_SMART_STORAGE_TARGET = 4;
+const ROUND1_ROUTE_ADVERT_TARGET = 5;
+const ROUND1_ROUTE_WAREHOUSE_TARGET = 6;
+const ROUND1_ROUTE_PREBOOST_WAREHOUSE = ROUND1_ROUTE_WAREHOUSE_TARGET;
+const ROUND1_ROUTE_DYNAMIC_BOOST_MAX_TOTAL_USAGE_PCT = 0.985;
+const ROUND1_ROUTE_INITIAL_BOOST_MAX_TOTAL_USAGE_PCT = 0.96;
+const ROUND1_ROUTE_INITIAL_BOOST_PROD_CYCLES = 0.55;
+const ROUND1_ROUTE_INITIAL_BOOST_INPUT_LEEWAY = 1.15;
+const ROUND1_ROUTE_INITIAL_BOOST_SAFETY_PCT = 0.015;
+const ROUND1_ROUTE_INITIAL_BOOST_MIN_INPUT_SPACE = 60.48;
+const ROUND1_ROUTE_INITIAL_SUPPLY_SPACE = { Water: 54, Chemicals: 21.6 };
+const ROUND1_ROUTE_INITIAL_BOOST_EXPECTED_RATIO_CAP = 2.5;
+const ROUND1_ROUTE_INITIAL_BOOST_DEBT = 50e9;
+const ROUND1_ROUTE_INITIAL_BOOST_SCALE_CAP = 0.90;
+const ROUND1_ROUTE_INITIAL_BOOST_CHUNK_FRACTION = 0.45;
+const ROUND1_ROUTE_INITIAL_BOOST_MAX_PASSES = 6;
+const ROUND1_ROUTE_DYNAMIC_BOOST_PROD_CYCLES = 0.35;
+const ROUND1_ROUTE_DYNAMIC_BOOST_PROD_LEEWAY = 1.08;
+const ROUND1_ROUTE_DYNAMIC_BOOST_INPUT_LEEWAY = 1.08;
+const ROUND1_ROUTE_DYNAMIC_BOOST_SAFETY_PCT = 0.01;
+const ROUND1_ROUTE_PREBOOST_SURPLUS_ADVERT_TARGET = 5;
+const ROUND1_ROUTE_PREBOOST_SURPLUS_SMART_FACTORIES_TARGET = 1;
+const ROUND1_ROUTE_PREBOOST_SURPLUS_SMART_STORAGE_TARGET = ROUND1_ROUTE_SMART_STORAGE_TARGET;
+const ROUND1_ROUTE_PREBOOST_SURPLUS_SALES_BOTS_TARGET = 4;
+const ROUND1_ROUTE_PREBOOST_SURPLUS_FOCUS_WIRES_TARGET = 1;
+const ROUND1_ROUTE_PREBOOST_CASH_FLOOR = 0;
+const ROUND1_SMART_STORAGE_COST_MULT = 1.06;
+const ROUND1_ADVERT_COST_MULT = 1.06;
+const ROUND1_ROUTE_PREP_RESERVE_BUFFER = 0.25e9;
+const ROUND1_ROUTE_STARTUP_SUPPLY_BUFFER_CYCLES = 3.0;
+const ROUND1_ROUTE_AGRI_SUPPLY_BUFFER_CYCLES = 3.0;
+const ROUND1_ROUTE_LATE_WINDOW_SOFT_FLOOR_PCT = 0.90;
+const ROUND1_REINVEST_STRETCH_TRIGGER = 235e9;
+const ROUND1_REINVEST_STRETCH_STAGNATION = 8;
+const ROUND1_REINVEST_OFFICE = 6;
+const ROUND1_REINVEST_OFFICE_STRETCH = 8;
+const ROUND1_REINVEST_WAREHOUSE = 6;
+const ROUND1_REINVEST_ADVERT = 6;
+const ROUND1_REINVEST_ADVERT_STRETCH = 7;
+const ROUND1_REINVEST_SMART_FACTORIES = 2;
+const ROUND1_REINVEST_SMART_FACTORIES_STRETCH = 4;
+const ROUND1_REINVEST_SMART_STORAGE = 5;
+const ROUND1_REINVEST_RESERVE_MIN = 6e9;
+const ROUND1_REINVEST_TRIGGER = 230e9;
+const ROUND1_REINVEST_TRIGGER_STAGNATION = 10;
+const ROUND1_REINVEST_MAX_ACTIONS = 2;
+const ROUND1_REINVEST_MAX_CAPACITY_ACTIONS = 1;
+const ROUND1_REINVEST_MATERIAL_DEBT = 24e9;
+const ROUND1_REINVEST_MATERIAL_DEBT_STRETCH = 40e9;
+const ROUND1_REINVEST_BOOST_TOPUP_TRIGGER = 400e9;
+const ROUND1_REINVEST_BOOST_TOPUP_STAGNATION = 24;
+const ROUND1_REINVEST_BOOST_TOPUP_STAGNATION_TRIGGER_PCT = 0.995;
+const ROUND1_REINVEST_BOOST_TOPUP_MAX_USAGE_PCT = 0.84;
+const ROUND1_REINVEST_BOOST_TOPUP_MAX_PEAK_PCT = 0.88;
+const ROUND1_REINVEST_BRIDGE_TOPUP_TRIGGER = 384e9;
+const ROUND1_REINVEST_BRIDGE_TOPUP_NEAR_BEST_PCT = 0.99;
+const ROUND1_REINVEST_BRIDGE_TOPUP_MAX_USAGE_PCT = 0.83;
+const ROUND1_REINVEST_BRIDGE_TOPUP_MAX_PEAK_PCT = 0.86;
+const ROUND1_REINVEST_BRIDGE_TOPUP_MAX_SPEND = 1.0e9;
+const ROUND1_ROUTE_FIXED_INITIAL_BOOST_USAGE_PCT = 0.78;
+const ROUND1_RE_PUSH_USAGE_PCT = 0.80;
+const ROUND1_RE_PUSH_MIN_SPEND = 1e9;
+const ROUND1_RE_PUSH_MAX_SPEND = 1.25e9;
+const ROUND1_RE_PUSH_MAX_SPEND_STRETCH = 4e9;
+const ROUND1_RE_PUSH_OFFER_PCT = 0.97;
+const ROUND1_RE_PUSH_SETTLE_CHECKS = 6;
+const ROUND1_ROUTE_BOOST_TRIM_PRESSURE_PCT = 0.985;
+const ROUND1_ROUTE_BOOST_TRIM_PREDICTIVE_PCT = 0.965;
+const ROUND1_ROUTE_BOOST_TRIM_RELEASE_PCT = 0.93;
+const ROUND1_ROUTE_BOOST_TRIM_KEEP_RATIO = 0.85;
+const ROUND1_ROUTE_BOOST_TRIM_STAGGER_LIMIT = 2;
+const ROUND1_ROUTE_BOOST_FULL_TRIGGER_PREDICTIVE_PCT = 0.999;
+const ROUND1_ROUTE_BOOST_FULL_TRIGGER_MIN_USAGE_PCT = 0.90;
+const ROUND1_ROUTE_BOOST_PRESSURE_SUPPLY_BUFFER_CYCLES = 2.25;
+const ROUND1_ROUTE_BOOST_PRETRIM_TRIGGER_USAGE_PCT = 0.90;
+const ROUND1_ROUTE_BOOST_PRETRIM_TRIGGER_PREDICTIVE_PCT = 0.965;
+const ROUND1_ROUTE_BOOST_PRETRIM_MIN_USAGE_FOR_PREDICTIVE_PCT = 0.85;
+const ROUND1_ROUTE_BOOST_PRETRIM_TARGET_USAGE_PCT = 0.94;
+const ROUND1_ROUTE_BOOST_PRETRIM_TARGET_PREDICTIVE_PCT = 0.985;
+const ROUND1_ROUTE_BOOST_PRETRIM_RELEASE_PCT = 0.84;
+const ROUND1_ROUTE_BOOST_PRETRIM_RELEASE_PREDICTIVE_PCT = 0.94;
+const ROUND1_ROUTE_BOOST_PRETRIM_KEEP_RATIO = 0.94;
+const ROUND1_ROUTE_BOOST_REFILL_START_PCT = 0.88;
+const ROUND1_ROUTE_BOOST_REFILL_USAGE_PCT = 0.975;
+const ROUND1_ROUTE_BOOST_REFILL_NEAR_BEST_PCT = 0.97;
+const ROUND1_ROUTE_BOOST_REFILL_STAGNATION = 0;
+const ROUND1_ROUTE_BOOST_REFILL_PROD_CYCLES = 1.0;
+const ROUND1_ROUTE_BOOST_REFILL_PROD_LEEWAY = 1.08;
+const ROUND1_ROUTE_BOOST_PRESERVE_SOFT_FLOOR_PCT = 0.85;
+const ROUND1_ROUTE_BOOST_PRESERVE_NEAR_BEST_PCT = 0.90;
+const ROUND1_ROUTE_BOOST_PRESERVE_MAX_STAGNATION = 6;
+const ROUND1_ROUTE_FROZEN_ACCEPT_TARGET_PCT = 0.985;
+const ROUND1_ROUTE_FROZEN_ACCEPT_NEAR_BEST_PCT = 0.995;
+const ROUND1_ROUTE_FROZEN_ACCEPT_MIN_STAGNATION = 1;
+const ROUND1_ROUTE_BOOST_TRIM_ORDER = ['Real Estate', 'AI Cores', 'Hardware'];
+const ROUND1_ROUTE_BOOST_TRIM_SIZES = Object.freeze({
+    'Real Estate': 0.005,
+    'AI Cores': 0.1,
+    'Hardware': 0.06,
+});
+const PHASE3_CHEM_MIN_RESERVE = 18e9;
+const PHASE3_CHEM_MID_RESERVE = 30e9;
+const PHASE3_CHEM_FREEZE_GAP = 8e9;
+const PHASE3_AGRI_TARGET_OFFICE = 8;
+const PHASE3_AGRI_TARGET_WAREHOUSE = 8;
+const PHASE3_AGRI_TARGET_ADVERT = 8;
+const PHASE3_AGRI_GLOBAL_UPGRADE_TARGET = 6;
+const PHASE3_CHEM_INITIAL_OFFICE = 3;
+const PHASE3_CHEM_INITIAL_WAREHOUSE = 2;
+const PHASE3_TOB_INITIAL_HQ_OFFICE = 6;
+const PHASE3_EXPORT_RESERVE = 2e9;
+const PHASE3_CHEM_WATER_SEED = 120;
+const PHASE3_CHEM_WATER_BUFFER_CYCLES = 3;
+const ROUND2_AGRI_OFFICE = 8;
+const ROUND2_AGRI_WAREHOUSE = 4;
+const ROUND2_AGRI_ADVERT = 8;
+const ROUND2_AGRI_SMALL_JOBS = { ops: 1, eng: 1, rnd: 2 };
+const ROUND2_AGRI_PRODUCTION_JOBS = { ops: 1, eng: 1, biz: 1, mgmt: 1 };
+const ROUND2_AGRI_JOBS = { ops: 1, eng: 2, biz: 1, mgmt: 1, rnd: 3 };
+const ROUND2_CLASSIC_AGRI_OFFICE = 9;
+const ROUND2_CLASSIC_AGRI_WAREHOUSE = 10;
+const ROUND2_CLASSIC_AGRI_JOBS = { ops: 2, eng: 2, biz: 1, mgmt: 2, rnd: 2 };
+const ROUND2_CLASSIC_AGRI_MID_JOBS = { ops: 2, eng: 2, biz: 1, mgmt: 1, rnd: 2 };
+const ROUND2_CLASSIC_AGRI_POSTFILL_SALES_JOBS = { ops: 2, eng: 2, biz: 3, mgmt: 2 };
+const ROUND2_CLASSIC_AGRI_POSTFILL_SALES_MID_JOBS = { ops: 2, eng: 2, biz: 2, mgmt: 2 };
+const ROUND2_BN3_SALESBOT_TARGET = 5;
+const ROUND2_BN3_SALESBOT_BUFFER = 10e9;
+const ROUND2_BN3_POSTFILL_SMART_STORAGE_TARGET = 12;
+const ROUND2_BN3_POSTFILL_STORAGE_AVG_PCT = 0.90;
+const ROUND2_BN3_POSTFILL_STORAGE_PEAK_PCT = 0.98;
+const ROUND2_BN3_POSTFILL_STORAGE_BUFFER = 8e9;
+const ROUND2_BN3_HIGH_BUDGET_PRESSURE_SUPPORT_PCT = 0.93;
+const ROUND2_BN3_HIGH_BUDGET_PRESSURE_FULL_SUPPORT_PCT = 0.985;
+const ROUND2_BN3_HIGH_BUDGET_PRESSURE_STOCK_CYCLES = 30;
+const ROUND2_BN3_HIGH_BUDGET_PRESSURE_STOCK_CYCLES_FULL = 55;
+const ROUND2_BN3_HIGH_BUDGET_PRESSURE_SALESBOT_TARGET = 8;
+const ROUND2_BN3_HIGH_BUDGET_PRESSURE_SMART_STORAGE_TARGET = 16;
+const ROUND2_BN3_HIGH_BUDGET_PRESSURE_WAREHOUSE_TARGET = 12;
+const ROUND2_BN3_HIGH_BUDGET_PRESSURE_WAREHOUSE_TARGET_FULL = 14;
+const ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_PCT = 0.88;   // per-city trigger (below 93% aggregate threshold)
+const ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_CAP = 13;     // max level before aggregate pressure takes over
+const ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_BUFFER = 2e9; // $2B above reserve 窶・accumulate before spending
+const ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_MIN_PROFIT = 7e6; // $7M/s profit floor 窶・don't buy on thin income
+const ROUND2_BN3_HIGH_BUDGET_PLANT_RELIEF_PCT = 0.85;        // warehouse threshold to start selling Plants
+const ROUND2_BN3_HIGH_BUDGET_CHEM_PLANT_BUFFER = 1000;       // Plants to keep in Chem for next production cycle
+const ROUND2_BN3_HIGH_BUDGET_TOB_PLANT_BUFFER = 2000;        // larger buffer for Tobacco 窶・product speed is sensitive
+const ROUND2_BN3_PRESSURE_RELIEF_MATERIAL_TARGETS = { 'Hardware': 2240, 'Robots': 77, 'AI Cores': 2016, 'Real Estate': 117120 };
+const ROUND2_BN3_LATE_SPIKE_MATERIAL_TARGETS = { 'Hardware': 2800, 'Robots': 96, 'AI Cores': 2520, 'Real Estate': 146400 };
+const ROUND2_BN3_LATE_SALESBOT_TARGET = 5;
+const ROUND2_BN3_LATE_SALESBOT_BUFFER = 4e9;
+const ROUND2_BN3_LATE_POSTFILL_SMART_STORAGE_TARGET = 14;
+const ROUND2_BN3_LATE_POSTFILL_STORAGE_BUFFER = 1e9;
+const ROUND2_TOB_HQ_OFFICE = 15;
+const ROUND2_TOB_SUPPORT_OFFICE = 3;
+const ROUND2_TOB_ADVERT = 2;
+const ROUND2_TOB_HQ_SMALL_JOBS = { ops: 1, eng: 3, biz: 1, mgmt: 1 };
+const ROUND2_TOB_HQ_MID_JOBS = { ops: 2, eng: 4, biz: 1, mgmt: 2 };
+const ROUND2_CHEM_OFFICE = 3;
+const ROUND2_TOB_HQ_JOBS = { ops: 3, eng: 7, biz: 1, mgmt: 4 };
+const ROUND2_TOB_SUPPORT_JOBS = { rnd: 3 };
+const ROUND2_CHEM_JOBS = { eng: 1, rnd: 2 };
+const ROUND2_TOB_HQ_OFFICE_AGGR = 18;
+const ROUND2_TOB_HQ_JOBS_AGGR = { ops: 3, eng: 8, biz: 1, mgmt: 4, rnd: 2 };
+const ROUND2_TOB_SUPPORT_OFFICE_AGGR = 9;
+const ROUND2_TOB_SUPPORT_JOBS_AGGR = { eng: 1, mgmt: 1, rnd: 7 };
+const ROUND2_CHEM_OFFICE_AGGR = 6;
+const ROUND2_CHEM_JOBS_AGGR = { ops: 1, eng: 2, mgmt: 1, rnd: 2 };
+const ROUND2_CHEM_JOBS_SMALL = { ops: 1, eng: 1, rnd: 1 };
+const ROUND2_CHEM_JOBS_MID = { ops: 1, eng: 2, rnd: 1 };
+const ROUND2_BN3_HIGH_BUDGET_CHEM_JOBS_SMALL = { ops: 1, eng: 1, rnd: 1 };
+const ROUND2_BN3_HIGH_BUDGET_CHEM_JOBS_MID = { ops: 1, eng: 1, mgmt: 1, rnd: 1 };
+const ROUND2_BN3_HIGH_BUDGET_CHEM_JOBS_BASE = { ops: 1, eng: 2, mgmt: 1, rnd: 1 };
+const ROUND2_CHEM_BOOTSTRAP_SUPPORT_CITIES = 2;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_POSTDONE = 9;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_PRESSURE = 12;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_PRESSURE_FULL = 18;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_POSTDONE = 5;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_PRESSURE = 6;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_PRESSURE_FULL = 8;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_POSTDONE = 6;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_PRESSURE = 9;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_PRESSURE_FULL = 12;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_BUILDOUT = 12;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_BUILDOUT = 9;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_PRELAUNCH = 3;              // minimum viable Chem city size
+const ROUND2_BN3_HIGH_BUDGET_BOOST_MAT_SAFETY_MULT = 5;              // during RE/AI liquidation: cap gating profit at 5ﾃ・expenses
+const ROUND2_BN3_HIGH_BUDGET_SCALE_RATIO_MID = 5;                    // advance to mid office size when trueProfit > 5ﾃ・total overhead
+const ROUND2_BN3_HIGH_BUDGET_SCALE_RATIO_FULL = 10;                  // advance to max office size when trueProfit > 10ﾃ・overhead (includes morale)
+const ROUND2_BN3_HIGH_BUDGET_MORALE_COST_PER_OFFICE_S = 22e3;        // estimated tea+party cost per 9+ office per second
+// Agri dynamic office sizing (high-budget buildout)
+const ROUND2_BN3_HIGH_BUDGET_AGRI_OFFICE_PRELAUNCH = 6;              // min during buildout 窶・Agri is revenue engine, needs 竕･2 per role
+const ROUND2_BN3_HIGH_BUDGET_AGRI_OFFICE_FULL = 9;                   // classic Agri target (same as ROUND2_CLASSIC_AGRI_OFFICE)
+// Tobacco HQ dynamic office sizing (high-budget buildout)
+const ROUND2_BN3_HIGH_BUDGET_TOB_HQ_PRELAUNCH = 6;                   // small dev team during early buildout
+const ROUND2_BN3_HIGH_BUDGET_TOB_HQ_MID = 9;                         // better dev speed at moderate profit
+const ROUND2_BN3_HIGH_BUDGET_TOB_HQ_FULL = 15;                       // full team when profit comfortably covers overhead
+// Tobacco support dynamic office sizing (high-budget buildout)
+const ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_PRELAUNCH = 3;              // pre-v1 R&D-only city
+const ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_MID = 6;                    // moderate production/R&D mix
+const ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_FULL = 9;                   // full support once profit is solid
+// Aliases kept for backward compat with existing Chem references
+const ROUND2_BN3_HIGH_BUDGET_CHEM_SCALE_RATIO_MID  = ROUND2_BN3_HIGH_BUDGET_SCALE_RATIO_MID;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_SCALE_RATIO_FULL = ROUND2_BN3_HIGH_BUDGET_SCALE_RATIO_FULL;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_BUILDOUT = 4;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_POSTDONE = 4;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_PRESSURE = 5;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_PRESSURE_FULL = 6;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_BUILDOUT = 3;
+const ROUND2_RESERVE_MIN = 45e9;
+const ROUND2_RESERVE_MID = 75e9;
+const ROUND2_RESERVE_HIGH = 105e9;
+const ROUND2_RESERVE_PEAK = 130e9;
+const ROUND2_FREEZE_BEST_OFFER = 1.25e12;
+const ROUND2_TOB_SUPPORT_TRIGGER = 4e11;
+const ROUND2_AGRI_OFFICE_TRIGGER = 3.5e11;
+const ROUND2_CHEM_FULL_TRIGGER = 8e11;
+const ROUND2_DUMMY_TRIGGER = 2.2e11;
+const ROUND2_DUMMY_STAGNATION_LIMIT = 2;
+const ROUND2_DUMMY_BUFFER = 60e9;
+const ROUND2_GLOBAL_UPGRADE_TARGET = 8;
+const ROUND2_GLOBAL_UPGRADE_TARGET_LATE = 10;
+const ROUND2_AGRI_WAREHOUSE_LATE = 10;
+const ROUND2_LATE_PUSH_TRIGGER = 8e11;
+const ROUND2_LATE_PUSH_RESERVE = 20e9;
+const ROUND2_LATE_PUSH_RESERVE_PCT = 0.30;
+const ROUND2_LATE_PUSH_STAGNATION = 6;
+const ROUND2_LATE_PUSH_FORCE_TRIGGER = 1.5e12;
+const ROUND2_LATE_DUMMY_TRIGGER = 9e11;
+const ROUND2_STAGNATION_ABS = 10e9;
+const ROUND2_STAGNATION_PCT = 0.01;
+const ROUND2_CLASSIC_RESERVE = 2e9;
+const ROUND2_CLASSIC_RESERVE_PCT = 0.05;
+const ROUND2_CLASSIC_DUMMY_TRIGGER = 2.5e12;
+const ROUND2_CLASSIC_DUMMY_STAGNATION = 10;
+const ROUND2_BN3_RESERVE = 2e9;
+const ROUND2_BN3_RESERVE_PCT = 0.05;
+const ROUND2_BN3_SMART_TARGET = 10;
+const ROUND2_BN3_MATERIAL_TARGETS = { 'Hardware': 2520, 'Robots': 86, 'AI Cores': 2268, 'Real Estate': 131760 }; // lowered from 2800/96/2520/146400: old classic targets were overshooting warehouse capacity and triggering pressure relief on every refill, causing a repeated ~15-20% offer crash
+const ROUND2_BN3_HEADROOM_MATERIAL_TARGETS = { 'Hardware': 2240, 'Robots': 77, 'AI Cores': 2016, 'Real Estate': 117120 }; // lowered from 2520/86/2268/131760: shifted one tier down alongside the classic targets
+const ROUND2_BN3_RE_PUSH_USAGE_PCT = 0.85;
+const ROUND2_BN3_RE_PUSH_MIN_SPEND = 1e9;
+const ROUND2_BN3_DUMMY_TRIGGER = 1.8e12;
+const ROUND2_BN3_DUMMY_BUFFER = 5e9;
+const ROUND2_BN3_DUMMY_MAX = 1;
+const ROUND2_BN3_LEAN_TOB_HQ_OFFICE = 9;
+const ROUND2_BN3_LEAN_TOB_ADVERT = 1;
+const ROUND2_BN3_HIGH_BUDGET_TOB_ADVERT = 5; // new: high-budget path has the funds to buy more adverts; 2 was leaving Tobacco with near-zero awareness and tobSell=0.0/s
+const ROUND2_BN3_LEAN_TOB_PRODUCT_RESERVE = 5e9;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_PCT = 0.0075;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_PCT_POSTDONE = 0.03;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_PCT_LATE = 0.04;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_CAP = 3e9; // raised from 1e9: double-budget runs have ~2-4ﾃ・more funds at product creation time, so a higher cap produces a better v1 quality multiplier
+const ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_CAP_POSTDONE = 2.5e9;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_CAP_LATE = 5e9;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_MIN_POSTDONE = 5e8;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_MIN_LATE = 2.5e9;
+const ROUND2_BN3_HIGH_BUDGET_FUNDS_TRIGGER = 300e9;
+const ROUND2_BN3_HIGH_BUDGET_RESERVE = 10e9;
+const ROUND2_BN3_HIGH_BUDGET_RESERVE_PCT = 0.08;
+const ROUND2_BN3_HIGH_BUDGET_POSTFILL_RESERVE = 0.25e9;
+const ROUND2_BN3_HIGH_BUDGET_POSTFILL_RESERVE_PCT = 0.01;
+const ROUND2_BN3_HIGH_BUDGET_BUILDOUT_HEALTHY_OFFER = 250e9;
+const ROUND2_BN3_HIGH_BUDGET_BUILDOUT_MIN_FUNDS = 5e9;
+const ROUND2_BN3_HIGH_BUDGET_BUILDOUT_MIN_PROFIT = 10e6;
+const ROUND2_BN3_HIGH_BUDGET_BUILDOUT_MIN_MARGIN = 0.30;
+const ROUND2_BN3_HIGH_BUDGET_BUILDOUT_RECOVERY_RESERVE = 1e9;
+const ROUND2_BN3_HIGH_BUDGET_BUILDOUT_RECOVERY_RESERVE_PCT = 0.10;
+const ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_WEAK = 1;
+const ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_STABLE = 2;
+const ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_HEALTHY = 4;
+// Post-liquidation stagnation baseline reset: the boost-mat sell-off generates a
+// temporary revenue spike that inflates lastMeaningfulRound2Offer far above the real
+// post-liquidation baseline. Once boost mats are gone and the offer has dropped more
+// than 60% below the watermark for 50+ cycles, rebase the watermark to the current
+// offer so stagnation reflects the actual trajectory (not the liquidation spike).
+const ROUND2_BN3_HIGH_BUDGET_POSTLIQ_RESET_STAGNATION = 50;
+const ROUND2_BN3_HIGH_BUDGET_POSTLIQ_RESET_RATIO = 0.40;
+const ROUND2_BN3_HIGH_BUDGET_SPIKE_PRODUCT_VERSION = 5;
+const ROUND2_BN3_HIGH_BUDGET_SPIKE_DEBT_RECOVERY_SECS = 180;
+const ROUND2_BN3_HIGH_BUDGET_SPIKE_DEBT_MIN = 5e9;
+const ROUND2_BN3_HIGH_BUDGET_SPIKE_DEBT_MAX = 25e9;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_RESERVE = 8e9;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_PCT = 0.005;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_PCT_POSTDONE = 0.0125;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_PCT_LATE = 0.02;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_CAP = 1e9;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_CAP_POSTDONE = 2.5e9;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_CAP_LATE = 5e9;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_MIN = 5e8;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_MIN_POSTDONE = 1e9;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_MIN_LATE = 2.5e9;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_TRIGGER = 400e9;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_MIN_FUNDS = 12e9;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_MIN_PROFIT = 10e6;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_MIN_MARGIN = 0.30;
+const ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_STAGNATION = 18;
+const ROUND2_BN3_HIGH_BUDGET_EARLY_WILSON_TARGET = 1;
+const ROUND2_BN3_HIGH_BUDGET_TOB_NEAR_COMPLETION_PROGRESS = 85;
+const ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_PROGRESS = 80;
+const ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_TRIGGER = 9e11;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_SUPPORT_PROGRESS = 70;
+const ROUND2_BN3_HIGH_BUDGET_CHEM_SUPPORT_TRIGGER = 8.5e11;
+const ROUND2_BN3_HIGH_BUDGET_FULL_SUPPORT_PROGRESS = 95;
+const ROUND2_BN3_HIGH_BUDGET_FULL_SUPPORT_TRIGGER = 2.2e12;
+const ROUND2_BN3_HIGH_BUDGET_SMART_SUPPLY_TRIGGER = 7e11;
+const ROUND2_BN3_LEAN_TOB_SUPPORT_TRIGGER = 2.6e12;
+const ROUND2_BN3_LEAN_TOB_SUPPORT_STAGNATION = 6;
+const ROUND2_BN3_LEAN_TOB_SUPPORT_MIN_CASH = 5e8;
+const ROUND2_BN3_LEAN_TOB_HQ_PUSH_TRIGGER = 2.75e12;
+const ROUND2_BN3_LEAN_TOB_HQ_PUSH_STAGNATION = 8;
+const ROUND2_BN3_LEAN_TOB_HQ_PUSH_OFFICE = 12;
+const ROUND2_BN3_LEAN_TOB_HQ_PUSH_ADVERT = 2;
+const ROUND2_BN3_LEAN_TOB_HQ_PUSH_BUFFER = 4e9;
+const ROUND2_BN3_LEAN_TOB_HQ_PUSH_ADVERT_BUFFER = 8e9;
+const CORP_TEA_COST = 500e3;
+const CORP_MORALE_PARTY_SPEND_MIN = 100e3;
+const CORP_MORALE_PARTY_SPEND_MAX = 250e3;
+const CORP_MORALE_UPKEEP_MIN_FUNDS = 50e6;
+const CORP_MORALE_UPKEEP_RESERVE_SECS = 60;
+const CORP_MORALE_THRESHOLD = 98;
+const CORP_ENERGY_THRESHOLD = 98;
+const CORP_MORALE_ACTION_COOLDOWN_MS = 30_000;
+// Push Smart Storage to this level before the debt-spike phase begins.
+// Higher Smart Storage = larger warehouses = more boost mats fit = bigger offer.
+const ROUND2_BN3_LEAN_TOB_SPIKE_SMART_STORAGE = 20;
+// Allow up to this much debt during the spike fill. Investment received will
+// vastly exceed the debt, so 400B is a generous but safe ceiling.
+const ROUND2_BN3_LEAN_TOB_SPIKE_DEBT_MAX = 400e9;
+// Morale/energy crisis thresholds for spike mode. Normal threshold is 98;
+// during the spike we can't afford normal upkeep 窶・only prevent collapse.
+const CORP_SPIKE_ENERGY_THRESHOLD = 45;
+const CORP_SPIKE_MORALE_THRESHOLD = 55;
+// Pre-spike dummy divisions: how many total dummies to have before the spike
+// begins (1.1^(2+N) divMult 窶・each extra dummy is ~10% more on the offer).
+const ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_TARGET = 3;
+// Cash buffer above reserve when creating pre-spike dummies.
+const ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_BUFFER = 5e9;
+// Cycles to wait after the last dummy is created before unlocking the spike.
+// Gives the offer time to absorb the cash dip from dummy creation.
+const ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_SETTLE = 15;
+const ROUND2_BN3_LEAN_TOB_PREFILL_HQ_TRIGGER = 2.0e12;
+const ROUND2_BN3_LEAN_TOB_PREFILL_HQ_STAGNATION = 4;
+const ROUND2_BN3_LEAN_TOB_PREFILL_HQ_BUFFER = 4e9;
+const ROUND2_BN3_LEAN_TOB_PREFILL_ADVERT_BUFFER = 8e9;
+const ROUND2_BN3_LATE_VALUATION_TRIGGER = 2.4e12;
+const ROUND2_BN3_LATE_VALUATION_STAGNATION = 8;
+const ROUND2_BN3_LATE_WILSON_TARGET = 1;
+const ROUND2_BN3_LATE_WILSON_BOOST_TARGET = 2;
+const ROUND2_BN3_LATE_WILSON_BUFFER = 2e9;
+const ROUND2_BN3_DYNAMIC_LATE_INTERVAL = 6;
+const ROUND2_BN3_DYNAMIC_SETTLE_CHECKS = 10;
+const ROUND2_BN3_DYNAMIC_WAIT_HORIZON_SEC = 180;
+const ROUND2_BN3_DYNAMIC_PACKAGE_MAX = 3;
+const ROUND2_BN3_DYNAMIC_WAIT_EDGE = 1.12;
+const ROUND2_BN3_DYNAMIC_NEAR_PEAK_RATIO = 0.985;
+const ROUND2_BN3_DYNAMIC_NEAR_PEAK_BIG_SPEND_PCT = 0.55;
+const ROUND2_BN3_DYNAMIC_NEAR_PEAK_MIN_REL_GAIN = 0.025;
+const ROUND2_BN3_DYNAMIC_RECOVERY_RATIO = 0.985;
+const ROUND2_BN3_DYNAMIC_RECOVERY_STAGNATION = 30;
+const ROUND2_BN3_PEAK_STABILIZE_RATIO = 0.985;
+const ROUND2_BN3_PEAK_STABILIZE_MAX_STAGNATION = 8;
+const ROUND2_BN3_PEAK_STABILIZE_DUMMY_TRIGGER = 2.75e12;
+const ROUND2_BN3_PEAK_STABILIZE_DUMMY_MAX_SPEND_PCT = 0.45;
+const ROUND2_BN3_LATE_EMPLOYEE_UPGRADE_TARGET = 1;
+const ROUND2_BN3_LATE_EMPLOYEE_UPGRADES = [
+    'FocusWires',
+    'Neural Accelerators',
+    'Speech Processor Implants',
+    'Nuoptimal Nootropic Injector Implants',
+];
+const ROUND2_BN3_TOB_ADVERTISING_FACTOR = 0.2;
+const ROUND2_BN3_TOB_DEV_VALUE_WEIGHT = 0.03;
+const ROUND2_BN3_EMPLOYEE_UPGRADE_ROLE_GAINS = {
+    FocusWires: { ops: 0.03125, eng: 0.0277777778, biz: 0, mgmt: 0.0179487179, rnd: 0.0131578947 },
+    'Neural Accelerators': { ops: 0.01875, eng: 0.0277777778, biz: 0.0210526316, mgmt: 0, rnd: 0.0394736842 },
+    'Speech Processor Implants': { ops: 0.003125, eng: 0.0027777778, biz: 0.0526315789, mgmt: 0.0512820513, rnd: 0 },
+    'Nuoptimal Nootropic Injector Implants': { ops: 0.015625, eng: 0, biz: 0, mgmt: 0.0051282051, rnd: 0.0263157895 },
+};
+const ROUND2_BN3_LATE_TOB_ADVERT_TARGET = 3;
+const ROUND2_BN3_LATE_TOB_ADVERT_BUFFER = 4e9;
+const ROUND2_BN3_LATE_TOB_ADVERT4_TRIGGER = 2.8e12;
+const ROUND2_BN3_LATE_TOB_ADVERT4_STAGNATION = 20;
+const ROUND2_BN3_LATE_TOB_ADVERT5_TRIGGER = 3.3e12;
+const ROUND2_BN3_LATE_TOB_ADVERT5_STAGNATION = 40;
+const ROUND2_BN3_LATE_TOB_ADVERT6_TRIGGER = 3.8e12;
+const ROUND2_BN3_LATE_TOB_ADVERT6_STAGNATION = 60;
+const ROUND2_BN3_LATE_SECOND_DUMMY_TRIGGER = 2.75e12;
+const ROUND2_BN3_LATE_SECOND_DUMMY_STAGNATION = 12;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_CYCLE_TOLERANCE = 1e9;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_CYCLE_STAGNATION = 12;
+const ROUND2_BN3_LEAN_TOB_PRODUCT_FREEZE_VERSION = 6;
+const ROUND2_BN3_LEAN_TOB_SPEED_HQ_TRIGGER = 1.0e12;
+const ROUND2_BN3_LEAN_TOB_SPEED_HQ_STAGNATION = 6;
+const ROUND2_BN3_LEAN_TOB_SPEED_HQ_PROGRESS = 35;
+const ROUND2_BN3_LEAN_TOB_SPEED_HQ_OFFICE = 18;
+const ROUND2_BN3_LEAN_TOB_SPEED_HQ_BUFFER = 8e9;
+const ROUND2_BN3_LEAN_TOB_SPEED_ADVERT_BUFFER = 16e9;
+const ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_TRIGGER = 1.0e12;
+const ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_STAGNATION = 6;
+const ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_PROGRESS = 85;
+const ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_MIN_CASH = 0.5e9;
+const ROUND2_BN3_LEAN_TOB_SUPPORT_JOBS_PREFINISHED = { rnd: 3 };
+const ROUND2_BN3_LEAN_TOB_POSTDONE_HQ_OFFICE = 18;
+const ROUND2_BN3_LEAN_TOB_POSTDONE_HQ_MIN_CASH = 1e9;
+const ROUND2_BN3_LEAN_TOB_POSTDONE_ADVERT = 2;
+const ROUND2_BN3_LEAN_TOB_POSTDONE_ADVERT_MIN_CASH = 1e9;
+const ROUND2_BN3_LEAN_TOB_SUPPORT_OFFICE_POSTDONE = 9;
+const ROUND2_BN3_LEAN_TOB_SUPPORT_JOBS_POSTDONE = { ops: 1, eng: 3, biz: 2, mgmt: 3 };
+const ROUND2_BN3_LATE_POSTDONE_BOOST_TRIGGER = 2.9e12;
+const ROUND2_BN3_LATE_POSTDONE_BOOST_STAGNATION = 18;
+const ROUND2_BN3_LATE_POSTDONE_HQ_BOOST_OFFICE = 21;
+const ROUND2_BN3_LATE_POSTDONE_SUPPORT_BOOST_OFFICE = 12;
+const ROUND2_BN3_LATE_POSTDONE_ADVERT_BOOST_TARGET = 6;
+const ROUND2_TOB_PLANT_DIRECT_BUFFER_CYCLES = 25;
+// Pre-spike lean-tob: profit-boosting upgrades bought in the bootstrap batch
+// with surplus funds, ordered by ROI. Buffers are intentionally high so normal
+// Tobacco investment and material fill still have priority.
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_INSIGHT_TARGET = 2;     // Project Insight 竊・faster TA-I/TA-II
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_INSIGHT_BUFFER = 15e9;
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_EMPUPG_TARGET = 1;       // FocusWires/NA/Speech/Nuopt to level 1
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_EMPUPG_BUFFER = 5e9;
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_TOB_ADVERT = 3;          // Tobacco advert (post-v1, meets spike-unlock gate)
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_TOB_ADVERT_BUFFER = 10e9;
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_WILSON_TARGET = 3;       // Wilson beyond seed (post first advert)
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_WILSON_BUFFER = 10e9;
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_SALESBOT_TARGET = 8;     // SalesBots beyond the initial 5
+const ROUND2_BN3_LEAN_TOB_PRSPIKE_SALESBOT_BUFFER = 20e9;
+const ROUND2_TOB_PLANT_EXPORT_BUFFER_CYCLES = 2;
+const ROUND2_TOB_PLANT_EXPORT_SEED = 400;
+const EXPORT_DYNAMIC_HEADROOM_MULT = 1.10;
+const EXPORT_DYNAMIC_REFILL_CYCLES = 4;
+const EXPORT_DYNAMIC_CHEM_PLANT_SEED = 600; // raised from 300: larger Plants seed in Chem breaks the low-consumption / low-export circular dependency at phase-3 startup
+const EXPORT_DYNAMIC_AGRI_CHEM_SEED = 120;
+const EXPORT_DYNAMIC_TOB_PLANT_BUFFER_CYCLES = 2.5;
+const EXPORT_DYNAMIC_TOB_PLANT_BUFFER_CYCLES_MATURE = 4.5;
+const EXPORT_DYNAMIC_CHEM_PLANT_BUFFER_CYCLES = 3.5; // raised from 2.0: more buffered stock keeps Chem fed through production dips
+const EXPORT_DYNAMIC_CHEM_PLANT_BUFFER_CYCLES_MATURE = 5.0; // raised from 3.5
+const EXPORT_DYNAMIC_CHEM_PLANT_MIN_DEMAND = 1.5;
+const EXPORT_DYNAMIC_CHEM_PLANT_MIN_DEMAND_PER_THROUGHPUT_EMPLOYEE = 0.75;
+const EXPORT_DYNAMIC_CHEM_PLANT_MIN_DEMAND_PER_OFFICE_EMPLOYEE = 0.35;
+const EXPORT_DYNAMIC_CHEM_PLANT_BUILDOUT_DEMAND_MULT = 1.35;
+const EXPORT_DYNAMIC_AGRI_CHEM_BUFFER_CYCLES = 2.5;
+const EXPORT_DYNAMIC_AGRI_CHEM_BUFFER_CYCLES_MATURE = 4.5;
+const EXPORT_DYNAMIC_TOB_PLANT_WAREHOUSE_PCT = 0.10;
+const EXPORT_DYNAMIC_TOB_PLANT_WAREHOUSE_PCT_MATURE = 0.16;
+const EXPORT_DYNAMIC_CHEM_PLANT_WAREHOUSE_PCT = 0.14; // raised from 0.08: old cap was too small, Plants buffer headroom was nearly always saturated
+const EXPORT_DYNAMIC_CHEM_PLANT_WAREHOUSE_PCT_MATURE = 0.22; // raised from 0.14
+const EXPORT_DYNAMIC_AGRI_CHEM_WAREHOUSE_PCT = 0.10;
+const EXPORT_DYNAMIC_AGRI_CHEM_WAREHOUSE_PCT_MATURE = 0.18;
+const ROUND2_BN3_PRAGMATIC_ACCEPT = 3.6e12;
+const ROUND2_BN3_PRAGMATIC_ACCEPT_FLOOR = 3.5e12;
+const ROUND2_BN3_PRAGMATIC_ACCEPT_FLOOR_HOLD_CHECKS = 4;
+const ROUND2_BN3_PRAGMATIC_ACCEPT_NEAR_BEST_RATIO = 0.97;
+const ROUND2_BN3_PRAGMATIC_ACCEPT_NEAR_BEST_STAGNATION = 10;
+const ROUND2_BN3_PRAGMATIC_ACCEPT_DECAY_RATIO = 0.95;
+const ROUND2_BN3_PRAGMATIC_ACCEPT_DECAY_STAGNATION = 20;
+const PRIVATE_STAGE_POST_R3 = 'post-r3';
+const PRIVATE_STAGE_PRE_IPO = 'pre-ipo';
+const PRIVATE_STAGE_POST_R3_RESERVE_MIN = 15e9;
+const PRIVATE_STAGE_PRE_IPO_RESERVE_MIN = 25e9;
+const PRIVATE_STAGE_RESERVE_PCT = 0.08;
+const PRIVATE_STAGE_NEGATIVE_MARGIN_RESERVE_PCT = 0.18;
+const PRIVATE_STAGE_OFFICE_STEP = 3;
+const PRIVATE_STAGE_WAIT_LOG_INTERVAL = 6;
+const PRIVATE_STAGE_ACCEPT_READY_CHECKS = 2;
+const PRIVATE_STAGE_ACCEPT_NEAR_BEST_RATIO = 0.9925;
+const PRIVATE_STAGE_ACCEPT_DECAY_RATIO = 0.985;
+const PRIVATE_STAGE_ACCEPT_STAGNATION = 6;
+const PRIVATE_STAGE_EARLY_BURST_THRESHOLD_RATIO = 0.97;
+const PRIVATE_STAGE_EARLY_BURST_ACTIONS = Object.freeze({
+    [PRIVATE_STAGE_POST_R3]: 4,
+    [PRIVATE_STAGE_PRE_IPO]: 6,
+});
+const PRIVATE_STAGE_EARLY_BURST_SPARE_FUNDS = Object.freeze({
+    [PRIVATE_STAGE_POST_R3]: 75e9,
+    [PRIVATE_STAGE_PRE_IPO]: 150e9,
+});
+const PRIVATE_STAGE_STRETCH_THRESHOLD_RATIO = 0.85;
+const PRIVATE_STAGE_STRETCH_NEAR_BEST_RATIO = 0.985;
+const PRIVATE_STAGE_STRETCH_MAX_STAGNATION = 18;
+const PRIVATE_STAGE_STRETCH_HQ_STEP = 15;
+const PRIVATE_STAGE_SURPLUS_PUSH_FUNDS_TRIGGER = 1e12;
+const PRIVATE_STAGE_SURPLUS_PUSH_THRESHOLD_RATIO = 1.15;
+const PRIVATE_STAGE_SURPLUS_PUSH_NEAR_BEST_RATIO = 0.97;
+const PRIVATE_STAGE_EMPLOYEE_UPGRADE_TARGETS = {
+    [PRIVATE_STAGE_POST_R3]: 1,
+    [PRIVATE_STAGE_PRE_IPO]: 2,
+};
+const PRIVATE_STAGE_PRE_ADVERT_UPGRADES = Object.freeze(['Wilson Analytics']);
+const PRIVATE_STAGE_POST_ADVERT_UPGRADES = Object.freeze(['Smart Factories', 'Smart Storage', 'ABC SalesBots']);
+const PRIVATE_FUNDING_ROUND_CONFIG = Object.freeze({
+    3: Object.freeze({
+        stageName: PRIVATE_STAGE_POST_R3,
+        actionLabel: 'Post-round-3 prep',
+        acceptedLabel: 'Round 3',
+    }),
+    4: Object.freeze({
+        stageName: PRIVATE_STAGE_PRE_IPO,
+        actionLabel: 'Post-round-3 scaling',
+        acceptedLabel: 'Round 4',
+    }),
+});
+const ROUND2_POST_ACCEPT_BOOTSTRAP_RESERVE = 25e9;
+const ROUND2_POST_ACCEPT_BOOTSTRAP_RESERVE_PCT = 0.02;
+const ROUND2_POST_ACCEPT_SMART_FACTORIES_TARGET = 12;
+const ROUND2_POST_ACCEPT_SMART_STORAGE_TARGET = 14;
+const ROUND2_POST_ACCEPT_WILSON_TARGET = 2;
+const ROUND2_POST_ACCEPT_TOB_ADVERT_TARGET = 4;
+const ROUND2_POST_ACCEPT_AGRI_OFFICE = 20;
+const ROUND2_POST_ACCEPT_TOB_HQ_OFFICE = 30;
+const ROUND2_POST_ACCEPT_TOB_SUPPORT_OFFICE = 20;
+const ROUND2_POST_ACCEPT_CHEM_OFFICE = 9;
+const ROUND2_POST_ACCEPT_WAREHOUSE_LEVEL = 6;
+const ROUND2_POST_ACCEPT_TOB_HQ_JOBS = { ops: 5, eng: 11, biz: 2, mgmt: 9, rnd: 3 };
+const ROUND2_POST_ACCEPT_TOB_SUPPORT_JOBS = { ops: 1, eng: 2, biz: 0, mgmt: 1, rnd: 16 };
+const ROUND2_POST_ACCEPT_AGRI_JOBS = { ops: 6, eng: 8, biz: 1, mgmt: 3, rnd: 2 };
+const ROUND2_POST_ACCEPT_CHEM_JOBS = { ops: 1, eng: 5, biz: 0, mgmt: 1, rnd: 2 };
+const ROUND2_PRODUCT_MIN_INVEST = 2e8;
+const ROUND2_PRODUCT_MAX_INVEST = 5e9;
+const ROUND2_PRODUCT_MAX_INVEST_AGGR = 12e9;
+const ROUND2_AGGR_PRODUCT_INVEST_PCT = 0.04;
+const ROUND2_AGGR_WARMUP_TARGET = 1.25e12;
+const ROUND2_AGGR_WARMUP_STAGNATION = 12;
+const ROUND2_AGGR_SMART_SUPPLY_TRIGGER = 6e11;
+const ROUND2_AGGR_ACCELERATE_TRIGGER = 4.25e11;
+const ROUND2_AGGR_TOB_HQ_WARMUP = 9;
+const ROUND2_AGGR_TOB_HQ_WARMUP_JOBS = { ops: 2, eng: 5, mgmt: 2 };
+const ROUND2_AGGR_CHEM_HQ_WARMUP = 6;
+const ROUND2_AGGR_FREEZE_PROGRESS = 45;
+const ROUND2_AGGR_EARLY_SUPPORT_PROGRESS = 60;
+const ROUND2_AGGR_EARLY_SUPPORT_TRIGGER = 1.1e12;
+
+// "Waiting for 700RP/390RP in Agriculture/Chemical respectively is enough."
+const RP_TARGET_AGRI = 700;
+const RP_TARGET_CHEM = 390;
+
+const SETUP_DONE_FLAG = '/corp-setup-done.txt';
+const SETUP_PHASE_FILE = '/corp-setup-phase.txt';
+const SETUP_ROUTE_FILE = '/corp-setup-route.txt';
+const SETUP_LOCK = '/Temp/corp-setup.lock.txt';
+
+const JOBS = {
+    ops: 'Operations', eng: 'Engineer', biz: 'Business',
+    mgmt: 'Management', rnd: 'Research & Development', unassigned: 'Unassigned',
+};
+
+const UNLOCKS = {
+    warehouseAPI: 'Warehouse API', officeAPI: 'Office API',
+    smartSupply: 'Smart Supply', export: 'Export',
+    mktDemand: 'Market Research - Demand', mktComp: 'Market Data - Competition',
+};
+
+// Maximises division production multiplier subject to warehouse space constraint.
+// At small warehouse sizes only Real Estate is worth buying (factor 0.72, size 0.005).
+// Hardware enters at S竕･106, AI Cores at S竕･121, Robots never for Agri/Chem.
+function optimalBoosts(S, factors, sizes, names) {
+    const c = [...factors], s = [...sizes], n = [...names];
+    while (c.length) {
+        const csum = c.reduce((a, b) => a + b, 0);
+        const qtys = c.map((ci, j) => {
+            const oc = csum - ci;
+            const os = s.reduce((a, sk, k) => k !== j ? a + sk : a, 0);
+            return (S - 500 * (s[j] / ci * oc - os)) / (csum / ci) / s[j];
+        });
+        const neg = qtys.reduce((w, v, i) => v < 0 && (w === -1 || v < qtys[w]) ? i : w, -1);
+        if (neg === -1) return Object.fromEntries(n.map((k, i) => [k, Math.floor(qtys[i])]));
+        c.splice(neg, 1); s.splice(neg, 1); n.splice(neg, 1);
+    }
+    return {};
+}
+
+// Source: IndustryData.ts (realEstateFactor/hardwareFactor/robotFactor/aiCoreFactor)
+// Sizes: MaterialInfo.ts
+const AGRI_FACTORS = [0.72, 0.20, 0.30, 0.30];
+const AGRI_SIZES = [0.005, 0.06, 0.5, 0.1];
+const AGRI_MATS = ['Real Estate', 'Hardware', 'Robots', 'AI Cores'];
+
+// Chemical: realEstate=0.25, hardware=0.20, robot=0.25, aiCore=0.20
+// Also produces the Chemicals Agriculture directly consumes.
+const CHEM_FACTORS = [0.25, 0.20, 0.25, 0.20];
+const CHEM_SIZES = [0.005, 0.06, 0.5, 0.1];
+const CHEM_MATS = ['Real Estate', 'Hardware', 'Robots', 'AI Cores'];
+
+// Tobacco: realEstate=0.15, hardware=0.15, robot=0.20, aiCore=0.15
+const TOB_FACTORS = [0.15, 0.15, 0.20, 0.15];
+const TOB_SIZES = [0.005, 0.06, 0.5, 0.1];
+const TOB_MATS = ['Real Estate', 'Hardware', 'Robots', 'AI Cores'];
+
+// Excluded (per docs): AutoBrew/AutoPartyManager ("useless"), Capacity.I/II ("not useful").
+// CPH4 prerequisite 'Automatic Drug Administration' is included.
+const TOB_RESEARCH = [
+    'Hi-Tech R&D Laboratory',      // +10% RP; prerequisite for all others
+    'Market-TA.I',                 // Prerequisite only
+    'Market-TA.II',                // TOP PRIORITY: optimal product pricing
+    'uPgrade: Fulcrum',            // +5% product production  [10% RP rule]
+    'Drones',                      // Prerequisite
+    'Drones - Assembly',           // +20% production  [10% RP rule]
+    'Self-Correcting Assemblers',  // +10% production  [10% RP rule]
+    'Overclock',                   // +25% int/eff; prereq for Sti.mu
+    'Sti.mu',                      // +max morale
+    'Automatic Drug Administration', // Prereq for Go-Juice + CPH4
+    'Go-Juice',                    // +max energy
+    'CPH4 Injections',             // +10% all employee stats
+];
+const MAT_RESEARCH = [
+    'Hi-Tech R&D Laboratory',
+    'Drones',
+    'Drones - Assembly',           // [10% RP rule]
+    'Self-Correcting Assemblers',  // [10% RP rule]
+    'Drones - Transport',          // +50% warehouse storage
+    'Overclock', 'Sti.mu',
+    'Automatic Drug Administration', 'Go-Juice', 'CPH4 Injections',
+];
+
+// Production research 窶・only buy when cost < 10% of RP pool (not 50%).
+// Depleting RP before product completes tanks product quality and markup.
+const PRODUCTION_RESEARCH = new Set([
+    'Drones - Assembly', 'Self-Correcting Assemblers', 'uPgrade: Fulcrum',
+]);
+
+const CYCLE_SECS = 10;
+const CYCLE_MS = 11000;
+
+const argsSchema = [['self-fund', false], ['round1-only', false], ['aggressive-round2', false], ['classic-round2', false], ['bn3-round2', false], ['legacy-round2', false], ['bn3-soft-accept', false], ['bn3-hard-5t-goal', false], ['bn3-re-push', false], ['bn3-dummy-round2', false], ['bn3-postfill-sales', false], ['bn3-salesbots', false], ['bn3-postfill-storage', false], ['bn3-headroom-fill', false], ['bn3-lean-tob-round2', false], ['bn3-no-lean-tob-round2', false], ['bn3-lean-tob-support', false], ['bn3-lean-tob-hq-push', false], ['round4', false], ['income-mode', false]];
+// autocomplete is only in corp-setup.js
+const ARG_ALIASES = Object.freeze({
+    'bn3lean-tob-round2': 'bn3-lean-tob-round2',
+    'bn3lean-tob-support': 'bn3-lean-tob-support',
+    'bn3lean-tob-hq-push': 'bn3-lean-tob-hq-push',
+});
+
+function parseOptions(ns) {
+    const defaults = Object.fromEntries(argsSchema);
+    const opts = { ...defaults };
+    for (let i = 0; i < ns.args.length; i++) {
+        const arg = ns.args[i];
+        if (typeof arg !== 'string' || !arg.startsWith('--')) continue;
+        const rawKey = arg.slice(2);
+        const key = ARG_ALIASES[rawKey] ?? rawKey;
+        if (!(key in opts)) continue;
+        const defaultValue = defaults[key];
+        if (typeof defaultValue === 'boolean') {
+            opts[key] = true;
+        } else if (i + 1 < ns.args.length) {
+            opts[key] = ns.args[++i];
+        }
+    }
+    return opts;
+}
+
+export async function main(ns) {
+    const opts = parseOptions(ns);
+    ns.disableLog('ALL');
+    ns.clearLog();
+    ns.ui.openTail();
+    const c = ns.corporation;
+    let bn3HighBudgetRound2Locked = false;
+    let bn3HighBudgetRound2StartFunds = 0;
+
+    function log(ns, message, _terminal = false, _level = 'info') {
+        ns.print(String(message));
+    }
+
+    // 笏笏 Debug mode 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    // Usage: run corp/corp-setup.js --debug
+    // Prints a full corp snapshot every cycle to the tail window.
+    const CORP_DEBUG = ns.args.includes('--debug');
+    function tryOrWarn(fn, label) {
+        try { return fn(); }
+        catch (e) {
+            if (CORP_DEBUG) log(ns, `[CORP WARN] ${label}: ${e?.message ?? e}`);
+            return undefined;
+        }
+    }
+
+    let _dbgCycle = 0;
+    function printCorpDebugDump() {
+        if (!CORP_DEBUG) return;
+        _dbgCycle++;
+        const out = [];
+        const pr  = (s) => out.push(s);
+        const fm  = (n) => { try { return formatMoney(Number(n ?? 0)); } catch { return String(n); } };
+        const pct = (u, t) => t > 0 ? `${((u / t) * 100).toFixed(0)}%` : '0%';
+        const f2  = (n) => Number.isFinite(n) ? n.toFixed(2) : '?';
+        const f0  = (n) => Number.isFinite(n) ? n.toFixed(0) : '?';
+
+        try {
+            const corp   = c.getCorporation();
+            const funds  = Number(corp.funds ?? 0);
+            const rev    = Number(corp.revenue ?? 0);
+            const exp    = Number(corp.expenses ?? 0);
+            let phaseVal = '?'; try { phaseVal = phase; } catch { }
+            let reserveVal = NaN; try { reserveVal = getBn3Round2Reserve(); } catch { }
+            const headroom = Number.isFinite(reserveVal) ? fm(funds - reserveVal) : 'n/a';
+
+            pr(`笏≫煤笏・CORP DEBUG #${_dbgCycle} 笏≫煤笏・ phase=${phaseVal}  state=${corp.state}`);
+            pr(`  funds=${fm(funds)}  rev=${fm(rev)}/s  exp=${fm(exp)}/s  profit=${fm(rev - exp)}/s`);
+
+            // Investment offer + reserve
+            try {
+                const offer = c.getInvestmentOffer();
+                pr(`  offer=${fm(offer.funds)} (rnd=${offer.round})  target=${fm(MIN_ROUND2)}  ` +
+                   `reserve=${Number.isFinite(reserveVal) ? fm(reserveVal) : 'n/a'}  headroom=${headroom}`);
+            } catch { }
+
+            // Corp-level upgrades (compact single line)
+            const UPG = [
+                ['Wilson Analytics','Wilson'], ['Smart Factories','SF'], ['Smart Storage','SS'],
+                ['ABC SalesBots','SB'], ['FocusWires','FW'], ['Neural Accelerators','NA'],
+                ['Speech Processor Implants','Speech'], ['Nuoptimal Nootropic Injector Implants','Nuopt'],
+                ['Project Insight','Insight'], ['DreamSense','Dream'],
+            ];
+            const upgLine = UPG.map(([n, a]) => { try { return `${a}:${c.getUpgradeLevel(n)}`; } catch { return null; } })
+                .filter(Boolean).join(' ');
+            pr(`  upgrades: ${upgLine}`);
+
+            // Morale upkeep last cycle
+            const teaStr   = latestTeaSpend   > 0 ? `tea=${fm(latestTeaSpend)}`   : null;
+            const partyStr = latestPartySpend  > 0 ? `party=${fm(latestPartySpend)}` : null;
+            const moraleNote = [teaStr, partyStr].filter(Boolean).join('  ');
+            if (moraleNote) pr(`  morale spend: ${moraleNote}`);
+
+            // Per-division
+            for (const [div, label] of [[DIV_AGRI,'Agri'], [DIV_TOBACCO,'Tob'], [DIV_CHEM,'Chem']]) {
+                if (!hasDiv(div)) { pr(`  [${label}] absent`); continue; }
+                try {
+                    const division = c.getDivision(div);
+                    const rp  = f0(Number(division.researchPoints ?? 0));
+                    const adv = (() => { try { return c.getHireAdVertCount(div); } catch { return '?'; } })();
+                    const aware = f0(Number(division.awareness ?? 0));
+                    const pop   = f0(Number(division.popularity ?? 0));
+                    pr(`  笏笏 [${label}]  aware=${aware}  pop=${pop}  advert=${adv}  rp=${rp}`);
+
+                    // Researches unlocked
+                    const RESEARCHES = ['Hi-Tech R&D Laboratory','Market-TA.I','Market-TA.II',
+                        'Self-Correcting Assemblers','Overclock','Shady Accounting','Government Partnership',
+                        'uPgrade: Fulcrum','uPgrade: Capacity.I','uPgrade: Capacity.II'];
+                    const resOn = RESEARCHES.filter(r => { try { return c.hasResearched(div, r); } catch { return false; } })
+                        .map(r => r.replace('Market-TA.','TA').replace('Hi-Tech R&D Laboratory','R&D-Lab')
+                            .replace('Self-Correcting Assemblers','SCA').replace('uPgrade: ','up:')
+                            .replace('Shady Accounting','Shady').replace('Government Partnership','GovPart'));
+                    if (resOn.length) pr(`    research: ${resOn.join(', ')}`);
+
+                    for (const city of (division.cities ?? [])) {
+                        try {
+                            const off = c.getOffice(div, city);
+                            const ej  = off.employeeJobs ?? {};
+                            const ep  = off.employeeProductionByJob ?? {};
+
+                            // Job counts: O/E/B/M/R/U
+                            const jO = Number(ej['Operations'] ?? 0);
+                            const jE = Number(ej['Engineer'] ?? 0);
+                            const jB = Number(ej['Business'] ?? 0);
+                            const jM = Number(ej['Management'] ?? 0);
+                            const jR = Number(ej['Research & Development'] ?? 0);
+                            const jU = Number(ej['Unassigned'] ?? 0);
+                            const jobStr = `O:${jO} E:${jE} B:${jB} M:${jM} R:${jR}${jU > 0 ? ` U:${jU}` : ''}`;
+
+                            // Employee stats
+                            const energy = f0(Number(off.avgEnergy ?? 100));
+                            const morale = f0(Number(off.avgMorale ?? 100));
+                            const prodTotal = f2(Number(ep['total'] ?? 0));
+
+                            // Warehouse
+                            let whStr = 'WH:none';
+                            try {
+                                const wh = c.getWarehouse(div, city);
+                                whStr = `WH:${pct(wh.sizeUsed, wh.size)}(${f0(wh.sizeUsed)}/${f0(wh.size)})`;
+                            } catch { }
+
+                            pr(`    ${city.padEnd(12)} sz=${off.size} [${jobStr}]  nrg=${energy} mor=${morale} prod=${prodTotal}  ${whStr}`);
+                        } catch { pr(`    ${city}: err`); }
+
+                        // Materials
+                        const matList = div === DIV_AGRI
+                            ? ['Food','Plants','Chemicals','Water','Hardware','Real Estate','AI Cores']
+                            : div === DIV_TOBACCO
+                            ? ['Plants','Hardware','Chemicals','Real Estate','AI Cores']
+                            : ['Plants','Chemicals','Water','Hardware'];
+                        for (const mat of matList) {
+                            try {
+                                const m   = c.getMaterial(div, city, mat);
+                                const stored = Number(m.stored ?? 0);
+                                const prod   = Number(m.productionAmount ?? 0);
+                                const sell   = Number(m.actualSellAmount ?? 0);
+                                const imp    = Number(m.importAmount ?? 0);
+                                const buy    = Number(m.buyAmount ?? 0);
+                                // Skip truly empty non-key materials
+                                const isCoreInput = (div === DIV_AGRI   && (mat === 'Chemicals' || mat === 'Water'))
+                                                 || (div === DIV_CHEM    && (mat === 'Plants'    || mat === 'Water'))
+                                                 || (div === DIV_TOBACCO && mat === 'Plants');
+                                if (!isCoreInput && stored < 1 && prod === 0 && imp === 0 && buy === 0) continue;
+                                const parts = [`qty=${f0(stored)}`];
+                                if (prod  !== 0) parts.push(`prd=${f2(prod)}/s`);
+                                if (sell  !== 0) parts.push(`sll=${f2(sell)}/s`);
+                                if (imp   !== 0) parts.push(`imp=${f2(imp)}/s`);
+                                if (buy   !== 0) parts.push(`buy=${f2(buy)}/s`);
+                                pr(`      ${mat.padEnd(12)} ${parts.join('  ')}`);
+                            } catch { }
+                        }
+
+                        // Products (Tobacco only)
+                        if (div === DIV_TOBACCO) {
+                            for (const pName of tobaccoProducts()) {
+                                try {
+                                    const prod = c.getProduct(div, city, pName);
+                                    const progress = Number(prod.developmentProgress ?? 0);
+                                    const stored   = Number(prod.stored ?? 0);
+                                    const prdAmt   = Number(prod.productionAmount ?? 0);
+                                    const sllAmt   = Number(prod.actualSellAmount ?? 0);
+
+                                    if (city === HQ_CITY) {
+                                        // Full product stats once from HQ
+                                        const rat  = f2(Number(prod.rating ?? 0));
+                                        const dmd  = f2(Number(prod.demand ?? prod.dmd ?? 0));
+                                        const cmp  = f2(Number(prod.competition ?? prod.cmp ?? 0));
+                                        const mku  = f2(Number(prod.markup ?? prod.mku ?? 0));
+                                        const pCost = fm(Number(prod.productionCost ?? prod.pCost ?? 0));
+                                        const price = prod.desiredSellPrice ?? prod.sellCost ?? prod.sCost ?? '?';
+                                        const ta1 = (() => { try { return c.hasResearched(div,'Market-TA.I'); } catch { return false; } })();
+                                        const ta2 = (() => { try { return c.hasResearched(div,'Market-TA.II'); } catch { return false; } })();
+                                        const taStr = ta2 ? ' TA2' : ta1 ? ' TA1' : '';
+                                        pr(`    [${pName}${progress < 100 ? ` dev=${f0(progress)}%` : ''}]${taStr}  rat=${rat}  dmd=${dmd}  cmp=${cmp}  mku=${mku}  pCost=${pCost}  price=${typeof price === 'number' ? fm(price) : price}`);
+                                    }
+                                    pr(`      ${city.padEnd(12)} qty=${f0(stored)}  prd=${f2(prdAmt)}/s  sll=${f2(sllAmt)}/s`);
+                                } catch { }
+                            }
+                        }
+                    }
+                } catch (e) { pr(`  [${label}] error: ${e?.message ?? e}`); }
+            }
+        } catch (e) {
+            out.push(`[CORP DEBUG ERROR] ${e?.message ?? e}`);
+        }
+
+        for (const line of out) ns.print(line);
+    }
+
+    function readSetupRoute() {
+        try {
+            const parsed = JSON.parse(ns.read(SETUP_ROUTE_FILE) || 'null');
+            return parsed && typeof parsed === 'object' ? parsed : null;
+        } catch {
+            return null;
+        }
+    }
+
+    function writeSetupRoute(route = null, startFunds = null) {
+        try {
+            if (!route) {
+                ns.rm(SETUP_ROUTE_FILE, 'home');
+                return;
+            }
+            const safeFunds = Number(startFunds ?? 0);
+            ns.write(
+                SETUP_ROUTE_FILE,
+                JSON.stringify({
+                    bn3Round2: String(route),
+                    startFunds: Number.isFinite(safeFunds) ? safeFunds : 0,
+                }),
+                'w',
+            );
+        } catch { }
+    }
+
+    function getPersistedBn3Round2Route() {
+        if (!useBn3Round2()) return null;
+        const route = String(readSetupRoute()?.bn3Round2 ?? '').toLowerCase();
+        return ['high', 'lean', 'classic'].includes(route) ? route : null;
+    }
+
+    function restorePersistedBn3Round2State() {
+        const savedRoute = readSetupRoute();
+        const route = String(savedRoute?.bn3Round2 ?? '').toLowerCase();
+        if (route !== 'high') return;
+        const persistedStartFunds = Number(savedRoute?.startFunds ?? 0);
+        bn3HighBudgetRound2Locked = true;
+        bn3HighBudgetRound2StartFunds = Math.max(
+            bn3HighBudgetRound2StartFunds,
+            Number.isFinite(persistedStartFunds) ? persistedStartFunds : 0,
+            ROUND2_BN3_HIGH_BUDGET_FUNDS_TRIGGER,
+        );
+    }
+
+    function useBn3Round2() {
+        return opts['bn3-round2'] || opts['legacy-round2'];
+    }
+
+    function useBn3Round2RealEstatePush() {
+        return useBn3Round2() && opts['bn3-re-push'];
+    }
+
+    function useBn3Round2Dummy() {
+        return useBn3Round2() && opts['bn3-dummy-round2'];
+    }
+
+    function useBn3PostfillSales() {
+        return useBn3Round2() && (opts['bn3-postfill-sales'] || useBn3ExpandedTobaccoRound2());
+    }
+
+    function useBn3Round2SalesBots() {
+        return useBn3Round2() && opts['bn3-salesbots'];
+    }
+
+    function useBn3PostfillStorage() {
+        return useBn3Round2() && opts['bn3-postfill-storage'];
+    }
+
+    function useBn3HeadroomFill() {
+        return useBn3Round2() && opts['bn3-headroom-fill'];
+    }
+
+    function useBn3HighBudgetRound2() {
+        if (!useBn3Round2()) return false;
+        if (opts['bn3-lean-tob-round2']) return false;
+        if (opts['bn3-no-lean-tob-round2']) return true;
+        const persistedRoute = getPersistedBn3Round2Route();
+        if (persistedRoute === 'high') return true;
+        if (persistedRoute === 'lean' || persistedRoute === 'classic') return false;
+        if (bn3HighBudgetRound2Locked) return true;
+        try {
+            const corp = c.getCorporation();
+            if (!corp || corp.public) return false;
+            return Number(corp.funds ?? 0) >= ROUND2_BN3_HIGH_BUDGET_FUNDS_TRIGGER;
+        } catch {
+            return false;
+        }
+    }
+
+    function useBn3LeanTobRound2() {
+        if (!useBn3Round2()) return false;
+        if (opts['bn3-lean-tob-round2']) return true;
+        if (opts['bn3-no-lean-tob-round2']) return false;
+        const persistedRoute = getPersistedBn3Round2Route();
+        if (persistedRoute === 'lean') return true;
+        if (persistedRoute === 'high' || persistedRoute === 'classic') return false;
+        return !useBn3HighBudgetRound2();
+    }
+
+    function useBn3ExpandedTobaccoRound2() {
+        return useBn3LeanTobRound2() || useBn3HighBudgetRound2();
+    }
+
+    function useAggressiveRound2Targets() {
+        return opts['aggressive-round2'] || useBn3HighBudgetRound2();
+    }
+
+    function useBn3LeanTobSupport() {
+        return useBn3LeanTobRound2();
+    }
+
+    function useBn3LeanTobHQPush() {
+        return useBn3LeanTobRound2();
+    }
+
+    function useBn3Hard5tGoal() {
+        return useBn3Round2() && opts['bn3-hard-5t-goal'];
+    }
+
+    function useBn3SoftAccept() {
+        if (useBn3Hard5tGoal()) return false;
+        return opts['bn3-soft-accept'] || useBn3LeanTobRound2();
+    }
+
+    function useIncomeMode() {
+        return opts['income-mode'];
+    }
+
+    function useRound4Path() {
+        return opts['round4'];
+    }
+
+    function useRound1Route() {
+        return true;
+    }
+
+    function canInferBn3HighBudgetShell() {
+        if (!useBn3Round2() || opts['bn3-lean-tob-round2']) return false;
+        try {
+            if (!c.hasCorporation()) return false;
+            const corp = c.getCorporation();
+            if (!corp || corp.public) return false;
+            if (!hasDiv(DIV_CHEM) || !hasDiv(DIV_TOBACCO) || !c.hasUnlock(UNLOCKS.export)) return false;
+            return c.getDivision(DIV_CHEM).cities.includes(HQ_CITY) && c.getDivision(DIV_TOBACCO).cities.includes(HQ_CITY);
+        } catch {
+            return false;
+        }
+    }
+
+    function lockBn3HighBudgetRound2Profile(baselineFunds = null) {
+        if (!useBn3Round2() || opts['bn3-lean-tob-round2']) return false;
+        if (bn3HighBudgetRound2Locked) return true;
+        const inferred = canInferBn3HighBudgetShell();
+        let funds = Number(baselineFunds ?? 0);
+        if (!Number.isFinite(funds) || funds <= 0) {
+            try { funds = Number(c.getCorporation().funds ?? 0); } catch { funds = 0; }
+        }
+        if (!(opts['bn3-no-lean-tob-round2'] || funds >= ROUND2_BN3_HIGH_BUDGET_FUNDS_TRIGGER || inferred)) return false;
+        bn3HighBudgetRound2Locked = true;
+        bn3HighBudgetRound2StartFunds = Math.max(
+            bn3HighBudgetRound2StartFunds,
+            funds,
+            inferred ? ROUND2_BN3_HIGH_BUDGET_FUNDS_TRIGGER : 0,
+        );
+        writeSetupRoute('high', bn3HighBudgetRound2StartFunds);
+        return true;
+    }
+
+    function getRound1Target() {
+        return ROUND1_ROUTE_TARGET;
+    }
+
+    function getRound1SoftFloor() {
+        return ROUND1_ROUTE_SOFT_FLOOR;
+    }
+
+    function getRound1StagnationLimit() {
+        return ROUND1_ROUTE_STAGNATION_LIMIT;
+    }
+
+    function getRound1SmartStorageTarget() {
+        return ROUND1_ROUTE_SMART_STORAGE_TARGET;
+    }
+
+    function getRound1WarehouseTarget() {
+        return ROUND1_ROUTE_WAREHOUSE_TARGET;
+    }
+
+    function getRound1AdvertTarget() {
+        return ROUND1_ROUTE_ADVERT_TARGET;
+    }
+
+    function getRound1FreezeRatio() {
+        return ROUND1_ROUTE_FREEZE_RATIO;
+    }
+
+    function estimateSmartStorageSeriesCost(targetLevel) {
+        try {
+            let level = Number(c.getUpgradeLevel('Smart Storage') ?? 0);
+            let cost = Number(c.getUpgradeLevelCost('Smart Storage') ?? 0);
+            if (!Number.isFinite(level) || !Number.isFinite(cost) || cost < 0) return 0;
+            let total = 0;
+            while (level < targetLevel) {
+                total += cost;
+                cost *= ROUND1_SMART_STORAGE_COST_MULT;
+                level++;
+            }
+            return total;
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateAdvertSeriesCost(div, targetCount) {
+        try {
+            let count = Number(c.getHireAdVertCount(div) ?? 0);
+            let cost = Number(c.getHireAdVertCost(div) ?? 0);
+            if (!Number.isFinite(count) || !Number.isFinite(cost) || cost < 0) return 0;
+            let total = 0;
+            while (count < targetCount) {
+                total += cost;
+                cost *= ROUND1_ADVERT_COST_MULT;
+                count++;
+            }
+            return total;
+        } catch {
+            return 0;
+        }
+    }
+
+    function getBn3BaseMaterialTargets() {
+        return useBn3HeadroomFill() ? ROUND2_BN3_HEADROOM_MATERIAL_TARGETS : ROUND2_BN3_MATERIAL_TARGETS;
+    }
+
+    function getRound2FinanceSnapshot() {
+        try {
+            const corp = c.getCorporation();
+            const funds = Math.max(0, Number(corp.funds ?? 0));
+            const revenue = Math.max(0, Number(corp.revenue ?? 0));
+            const expenses = Math.max(0, Number(corp.expenses ?? 0));
+            const profit = revenue - expenses;
+            const margin = revenue > 0 ? profit / revenue : 0;
+            return { funds, revenue, expenses, profit, margin };
+        } catch {
+            return { funds: 0, revenue: 0, expenses: 0, profit: 0, margin: 0 };
+        }
+    }
+
+    function getBn3HighBudgetTrueProfit() {
+        // Returns a "true" operational profit that strips out the temporary revenue
+        // from liquidating Round-1 boost materials (Real Estate, AI Cores).
+        // During buildout-zero, those sales inflate the apparent profit figure;
+        // using it raw causes over-staffing before the corp can self-sustain.
+        const finance = getRound2FinanceSnapshot();
+        if (!isBn3HighBudgetBuildoutMode()) return finance.profit;
+        // Once products exist, trust the revenue 窶・boost mats exhausted or
+        // product revenue now dominates the income picture.
+        if (getTobaccoProductStats().finishedProducts > 0) return finance.profit;
+        // Check if any Agri city still holds Real Estate (the primary boost mat).
+        try {
+            for (const city of CITIES) {
+                if (!hasDiv(DIV_AGRI) || !c.hasWarehouse(DIV_AGRI, city)) continue;
+                if (Number(c.getMaterial(DIV_AGRI, city, 'Real Estate').stored ?? 0) > 0) {
+                    // Still liquidating: cap at a conservative multiple of expenses
+                    // so scaling decisions are based on base operational capacity.
+                    return Math.min(finance.profit, finance.expenses * ROUND2_BN3_HIGH_BUDGET_BOOST_MAT_SAFETY_MULT);
+                }
+            }
+        } catch { }
+        return finance.profit; // boost mats exhausted, profit is genuine
+    }
+
+    function getBn3HighBudgetQualifyingOfficeCount() {
+        // Count offices at >= 9 employees across all divisions.
+        // Used to estimate total ongoing morale maintenance cost (tea + party)
+        // when deciding whether the corp can afford pushing another city to 9+.
+        let count = 0;
+        for (const div of [DIV_AGRI, DIV_TOBACCO, DIV_CHEM]) {
+            if (!hasDiv(div)) continue;
+            try {
+                for (const city of CITIES) {
+                    try { if (c.getOffice(div, city).numEmployees >= 9) count++; } catch { }
+                }
+            } catch { }
+        }
+        return count;
+    }
+
+    function getEffectiveBn3BestOffer(bestOffer = 0) {
+        return Math.max(
+            0,
+            Number(bestOffer ?? 0),
+            Number(latestMeaningfulRound2Offer ?? 0),
+            Number(latestRound2Offer ?? 0),
+        );
+    }
+
+    function isBn3HighBudgetBuildoutHealthy(bestOffer = 0) {
+        if (!useBn3HighBudgetRound2()) return true;
+        const offer = getEffectiveBn3BestOffer(bestOffer);
+        const finance = getRound2FinanceSnapshot();
+        if (offer >= ROUND2_BN3_HIGH_BUDGET_BUILDOUT_HEALTHY_OFFER) return true;
+        return finance.funds >= ROUND2_BN3_HIGH_BUDGET_BUILDOUT_MIN_FUNDS &&
+            finance.profit >= ROUND2_BN3_HIGH_BUDGET_BUILDOUT_MIN_PROFIT &&
+            finance.margin >= ROUND2_BN3_HIGH_BUDGET_BUILDOUT_MIN_MARGIN;
+    }
+
+    function getBn3HighBudgetBootstrapActionLimit(bestOffer = 0) {
+        if (!useBn3HighBudgetRound2()) return 32;
+        const offer = getEffectiveBn3BestOffer(bestOffer);
+        const finance = getRound2FinanceSnapshot();
+        if (!isBn3HighBudgetPostfillUnlocked()) {
+            return finance.funds >= ROUND2_BN3_HIGH_BUDGET_BUILDOUT_MIN_FUNDS
+                ? ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_STABLE
+                : ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_WEAK;
+        }
+        if (!isBn3HighBudgetBuildoutMode()) {
+            return finance.funds >= ROUND2_BN3_HIGH_BUDGET_BUILDOUT_MIN_FUNDS || offer >= ROUND2_BN3_HIGH_BUDGET_BUILDOUT_HEALTHY_OFFER
+                ? ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_STABLE
+                : ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_WEAK;
+        }
+        if (offer >= 1e12 ||
+            (finance.funds >= 20e9 && finance.profit >= 25e6 && finance.margin >= 0.40)) {
+            return ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_HEALTHY;
+        }
+        return isBn3HighBudgetBuildoutHealthy(offer)
+            ? ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_STABLE
+            : ROUND2_BN3_HIGH_BUDGET_BOOTSTRAP_ACTIONS_WEAK;
+    }
+
+    function isBn3HighBudgetProductCycleReady(bestOffer = 0, stagnantChecks = 0) {
+        if (!useBn3HighBudgetRound2() || !hasDiv(DIV_TOBACCO)) return true;
+        if (!isBn3HighBudgetPostfillUnlocked()) return true;
+        const { finishedProducts } = getTobaccoProductStats();
+        if (finishedProducts <= 0) return true;
+        if (isBn3HighBudgetLateSpikeReady()) return true;
+        const offer = getEffectiveBn3BestOffer(bestOffer);
+        const finance = getRound2FinanceSnapshot();
+        if (offer >= ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_TRIGGER) return true;
+        if (stagnantChecks >= ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_STAGNATION &&
+            finance.funds >= ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_MIN_FUNDS &&
+            finance.profit >= ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_MIN_PROFIT) {
+            return true;
+        }
+        return finance.funds >= ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_MIN_FUNDS &&
+            finance.profit >= ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_MIN_PROFIT &&
+            finance.margin >= ROUND2_BN3_HIGH_BUDGET_PRODUCT_RECYCLE_MIN_MARGIN;
+    }
+
+    function getMoraleUpkeepFloor() {
+        const finance = getRound2FinanceSnapshot();
+        const raw = Math.max(
+            CORP_MORALE_UPKEEP_MIN_FUNDS,
+            finance.expenses * CORP_MORALE_UPKEEP_RESERVE_SECS,
+        );
+        // Cap so morale spending stays net-positive each cycle.
+        // funds*0.9 was too permissive: 10 offices ﾃ・($500k tea + $250k party)
+        // every 30s = $15M/min vs only ~$8.7M/min profit 竊・rapid fund drain.
+        // Instead, keep at least one cycle's worth of profit as a spending buffer,
+        // so the most we spend on morale in any cycle is bounded by what we earn.
+        const profitBudget = finance.profit > 0
+            ? Math.max(CORP_TEA_COST * 2, finance.profit * CYCLE_SECS)
+            : CORP_TEA_COST * 2;
+        return Math.min(raw, Math.max(0, finance.funds - profitBudget));
+    }
+
+    function getOfficeSpendKey(div, city) {
+        return `${div}|${city}`;
+    }
+
+    function isBn3HighBudgetChemBuildoutReady() {
+        if (!useBn3HighBudgetRound2() || !hasDiv(DIV_CHEM)) return false;
+        try {
+            const division = c.getDivision(DIV_CHEM);
+            if ((division.cities?.length ?? 0) < CITIES.length) return false;
+            for (const city of CITIES) {
+                if (!division.cities.includes(city)) return false;
+                if (!c.hasWarehouse(DIV_CHEM, city)) return false;
+                const wh = c.getWarehouse(DIV_CHEM, city);
+                const office = c.getOffice(DIV_CHEM, city);
+                const target = city === HQ_CITY
+                    ? ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_BUILDOUT
+                    : ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_BUILDOUT;
+                const warehouseTarget = getRound2ChemWarehouseTarget(city, true);
+                if (wh.level < warehouseTarget) return false;
+                if (office.size < target || office.numEmployees < office.size) return false;
+            }
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function isBn3HighBudgetLateSpikeReady() {
+        if (!useBn3HighBudgetRound2() || !hasDiv(DIV_AGRI) || !isBn3HighBudgetPostfillUnlocked()) return false;
+        if (!hasDiv(DIV_CHEM) || !hasDiv(DIV_TOBACCO)) return false;
+        if (!isBn3Round2OfficeBuiltOut()) return false;
+        if (!isBn3Round2UpgradeBuiltOut()) return false;
+        if (!isBn3Round2WarehouseBuiltOut()) return false;
+        if (!isBn3HighBudgetChemBuildoutReady()) return false;
+        if (getHighestTobaccoProductVersion() < ROUND2_BN3_HIGH_BUDGET_SPIKE_PRODUCT_VERSION) return false;
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            if (finishedProducts <= 0) return false;
+            if (c.getDivision(DIV_TOBACCO).cities.length < CITIES.length) return false;
+            if (c.getHireAdVertCount(DIV_TOBACCO) < ROUND2_BN3_HIGH_BUDGET_TOB_ADVERT) return false;
+            if (c.getUpgradeLevel('Smart Storage') < ROUND2_BN3_POSTFILL_SMART_STORAGE_TARGET) return false;
+            if (c.getUpgradeLevel('ABC SalesBots') < ROUND2_BN3_SALESBOT_TARGET) return false;
+        } catch {
+            return false;
+        }
+        return true;
+    }
+
+    function isBn3HighBudgetBuildoutMode() {
+        return useBn3HighBudgetRound2() &&
+            isBn3HighBudgetPostfillUnlocked() &&
+            !isBn3HighBudgetLateSpikeReady();
+    }
+
+    function shouldDeferBn3HighBudgetGenericUpgradesForChem() {
+        return useBn3HighBudgetRound2() &&
+            isBn3HighBudgetPostfillUnlocked() &&
+            !isBn3HighBudgetChemBuildoutReady();
+    }
+
+    function getBn3ActiveMaterialProfile() {
+        const baseProfile = useBn3HeadroomFill() ? 'headroom90' : 'classic';
+        const baseTargets = getBn3BaseMaterialTargets();
+        if (!useBn3HighBudgetRound2() || !hasDiv(DIV_AGRI) || !isBn3HighBudgetPostfillUnlocked()) {
+            // Lean-tob spike: once maturity + spike SS target are met, switch to the
+            // late-spike targets and allow debt fill. Uses the same target set as the
+            // high-budget late spike since those are calibrated to fit in the warehouse.
+            if (useBn3LeanTobRound2() && isLeanTobSpikeUnlocked()) {
+                return { profile: 'lean-tob-spike', targets: ROUND2_BN3_LATE_SPIKE_MATERIAL_TARGETS };
+            }
+            bn3HighBudgetMaterialProfileState = '';
+            return { profile: baseProfile, targets: baseTargets };
+        }
+
+        const nextProfile = isBn3HighBudgetLateSpikeReady() ? 'late-spike' : 'buildout-zero';
+        bn3HighBudgetMaterialProfileState = nextProfile;
+        return {
+            profile: nextProfile,
+            targets: nextProfile === 'late-spike'
+                ? ROUND2_BN3_LATE_SPIKE_MATERIAL_TARGETS
+                : baseTargets,
+        };
+    }
+
+    function getBn3MaterialTargetProfileLabel() {
+        return getBn3ActiveMaterialProfile().profile;
+    }
+
+    function getBn3MaterialTargets() {
+        return getBn3ActiveMaterialProfile().targets;
+    }
+
+    function delayChemicalUntilPostRound2() {
+        return useBn3Round2() && !useBn3HighBudgetRound2();
+    }
+
+    function delayTobaccoUntilPostRound2() {
+        if (useBn3LeanTobRound2()) return false;
+        if (useBn3HighBudgetRound2()) return false;
+        if (useBn3Round2()) return true;
+        return DELAY_TOBACCO_UNTIL_POST_ROUND2 && !opts['aggressive-round2'];
+    }
+
+    function resolvePath(key, fallbackFile) {
+        try {
+            const p = JSON.parse(ns.read('/script-paths.json') || '{}');
+            if (typeof p[key] === 'string' && p[key].length > 0) return p[key];
+        } catch { }
+        const script = ns.getScriptName();
+        const slash = script.lastIndexOf('/');
+        return slash === -1 ? fallbackFile : `${script.slice(0, slash)}/${fallbackFile}`;
+    }
+
+    function getBoostConfig(industry, fallbackFactors, fallbackSizes, mats) {
+        try {
+            const data = c.getIndustryData(industry);
+            return {
+                factors: [
+                    data.realEstateFactor ?? fallbackFactors[0],
+                    data.hardwareFactor ?? fallbackFactors[1],
+                    data.robotFactor ?? fallbackFactors[2],
+                    data.aiCoreFactor ?? fallbackFactors[3],
+                ],
+                sizes: mats.map((mat, i) => c.getMaterialData(mat)?.size ?? fallbackSizes[i]),
+                mats: [...mats],
+            };
+        } catch {
+            return { factors: [...fallbackFactors], sizes: [...fallbackSizes], mats: [...mats] };
+        }
+    }
+
+    const AGRI_BOOST = getBoostConfig(IND_AGRI, AGRI_FACTORS, AGRI_SIZES, AGRI_MATS);
+    const CHEM_BOOST = getBoostConfig(IND_CHEM, CHEM_FACTORS, CHEM_SIZES, CHEM_MATS);
+    const TOB_BOOST = getBoostConfig(IND_TOBACCO, TOB_FACTORS, TOB_SIZES, TOB_MATS);
+
+    function getRequiredMaterialsConfig(industry, fallback) {
+        try { return { ...(c.getIndustryData(industry).requiredMaterials ?? fallback) }; }
+        catch { return { ...fallback }; }
+    }
+
+const ROUND1_AGRI_REQUIRED = getRequiredMaterialsConfig(IND_AGRI, { Water: 0.5, Chemicals: 0.2 });
+const ROUND1_AGRI_MAT_SIZES = Object.fromEntries(
+    Object.keys(ROUND1_AGRI_REQUIRED).map((mat) => [mat, c.getMaterialData(mat)?.size ?? 0.05]),
+);
+const ROUND1_AGRI_PRODUCT_MAT_SIZES = Object.freeze({
+    Food: c.getMaterialData('Food')?.size ?? 0.03,
+    Plants: c.getMaterialData('Plants')?.size ?? 0.05,
+});
+    const agriSupplyProdHints = {};
+  const DEBUG_ASSET_MATS = ['Water', 'Chemicals', 'Food', 'Plants', 'Real Estate', 'Hardware', 'Robots', 'AI Cores'];
+    let latestRound2Offer = 0;
+    let latestMeaningfulRound2Offer = 0;
+    let latestRound2StagnantNeed = 0;
+    let latestBn3PragmaticFloorChecks = 0;
+    let lastRound2AssetProxy = null;
+    let lastTobaccoProductError = '';
+    let lastExportRouteError = '';
+    let lastBn3SalesPivotState = '';
+    let bn3HighBudgetPostfillUnlocked = false;
+    let bn3HighBudgetSupportTurn = 0;
+    let bn3HighBudgetMaterialProfileState = '';
+    let bn3LeanTobSpikeUnlocked = false;
+    let bn3LeanTobPreSpikeDummySettleCounter = 0;
+    let bn3DynamicLateCheckCounter = 0;
+    let bn3DynamicLateSettleChecks = 0;
+    let bn3DynamicLateRecoveryBasis = 0;
+    let bn3DynamicLateRecoveryLabel = '';
+    let latestTeaSpend = 0;
+    let latestPartySpend = 0;
+    const lastBn3GateNotes = {};
+    const lastRound1GateNotes = {};
+    const round1ExperimentalBoostTrimActive = {};
+    const round1ExperimentalBoostTrimMode = {};
+    const round1ExperimentalBoostTrimSellRates = {};
+    const teaCooldownByOffice = {};
+    const partyCooldownByOffice = {};
+
+    // 笏笏 Lock 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    function readLock() {
+        try { return JSON.parse(ns.read(SETUP_LOCK) || 'null'); } catch { return null; }
+    }
+    function lockValid(lock) {
+        if (!lock || typeof lock !== 'object') return false;
+        if (lock.host !== ns.getHostname()) return false;
+        return ns.ps(lock.host).some(p => p.pid === lock.pid && p.filename === ns.getScriptName());
+    }
+    function acquireLock() {
+        if (lockValid(readLock())) return false;
+        ns.write(SETUP_LOCK, JSON.stringify({
+            pid: ns.pid, host: ns.getHostname(),
+            file: ns.getScriptName(), started: Date.now(),
+        }), 'w');
+        return true;
+    }
+    if (!acquireLock()) { log(ns, 'corp-setup is already running.', true, 'warning'); return; }
+    ns.atExit(() => { try { ns.rm(SETUP_LOCK, 'home'); } catch { } });
+
+    // 笏笏 Phase tracking 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    function readPhase() {
+        try { const n = parseInt(ns.read(SETUP_PHASE_FILE).trim(), 10); return isFinite(n) && n >= 0 ? n : 0; }
+        catch { return 0; }
+    }
+    function writePhase(n) { try { ns.write(SETUP_PHASE_FILE, String(n), 'w'); } catch { } }
+    function readDoneFlag() {
+        try { return ns.read(SETUP_DONE_FLAG).trim() === 'true'; } catch { return false; }
+    }
+    function corpIsPublic(corp = null) {
+        try {
+            return !!(corp ?? c.getCorporation())?.public;
+        } catch {
+            return false;
+        }
+    }
+    function hasRes(div, name) {
+        try { return c.hasResearched(div, name); } catch { return false; }
+    }
+    function isPilotRunning() {
+        const pilot = resolvePath('corp-autopilot', 'corp-autopilot.js');
+        try { return ns.ps('home').some(p => p.filename === pilot); } catch { return false; }
+    }
+    function isPhase6ScalingReady() {
+        if (!hasDiv(DIV_AGRI) || !hasDiv(DIV_CHEM) || !hasDiv(DIV_TOBACCO)) return false;
+        if (!divisionInfraReady(DIV_CHEM) || !divisionInfraReady(DIV_TOBACCO)) return false;
+        if (!c.hasUnlock(UNLOCKS.export) || !c.hasUnlock(UNLOCKS.smartSupply)) return false;
+        for (const city of CITIES) {
+            try {
+                const agriOffice = c.getOffice(DIV_AGRI, city);
+                const chemOffice = c.getOffice(DIV_CHEM, city);
+                const tobOffice = c.getOffice(DIV_TOBACCO, city);
+                const tobTarget = city === HQ_CITY ? 30 : 20;
+                if ((agriOffice.size ?? 0) < 20 || (agriOffice.numEmployees ?? 0) < 20) return false;
+                if ((chemOffice.size ?? 0) < 9 || (chemOffice.numEmployees ?? 0) < 9) return false;
+                if ((tobOffice.size ?? 0) < tobTarget || (tobOffice.numEmployees ?? 0) < tobTarget) return false;
+            } catch {
+                return false;
+            }
+            for (const div of [DIV_AGRI, DIV_CHEM, DIV_TOBACCO]) {
+                try {
+                    if ((c.getWarehouse(div, city).level ?? 0) < 6) return false;
+                } catch {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    function isAgriRound1FoundationReady() {
+        if (!hasDiv(DIV_AGRI) || !divisionInfraReady(DIV_AGRI)) return false;
+        try {
+            if (Number(c.getDivision(DIV_AGRI).researchPoints ?? 0) < 55) return false;
+        } catch {
+            return false;
+        }
+        return CITIES.every((city) => {
+            try {
+                const office = c.getOffice(DIV_AGRI, city);
+                return Number(office.size ?? 0) >= 4 && Number(office.numEmployees ?? 0) >= 4;
+            } catch {
+                return false;
+            }
+        });
+    }
+    function isAgriCurrentlyBoosted() {
+        return CITIES.every((city) => {
+            try {
+                return AGRI_BOOST.mats.some((mat) => Number(c.getMaterial(DIV_AGRI, city, mat).stored ?? 0) > 0);
+            } catch {
+                return false;
+            }
+        });
+    }
+    function isRound1WaitStateReady(saved = 0) {
+        if (!isAgriRound1FoundationReady()) return false;
+        if (saved >= 2) return true;
+        if (isAgriCurrentlyBoosted()) return true;
+        try {
+            return !useRound1Route() && getRound1PrepStatus().complete;
+        } catch {
+            return false;
+        }
+    }
+    function isBn3LeanRound2ShellReady() {
+        if (!useBn3Round2() || !useBn3LeanTobRound2()) return false;
+        if (!c.hasUnlock(UNLOCKS.export) || !hasDiv(DIV_TOBACCO)) return false;
+        if (!divisionInfraReady(DIV_TOBACCO, PHASE3_TOB_START_CITIES)) return false;
+        try {
+            if ((c.getWarehouse(DIV_TOBACCO, HQ_CITY).level ?? 0) < 3) return false;
+            const office = c.getOffice(DIV_TOBACCO, HQ_CITY);
+            if ((office.size ?? 0) < PHASE3_TOB_INITIAL_HQ_OFFICE) return false;
+            if ((office.numEmployees ?? 0) < PHASE3_TOB_INITIAL_HQ_OFFICE) return false;
+        } catch {
+            return false;
+        }
+        return tobaccoProducts().length > 0;
+    }
+    function inferPhase(saved = 0) {
+        if (!c.hasCorporation()) return 0;
+        const corp = c.getCorporation();
+        if (corpIsPublic(corp)) return 10;
+        const divs = new Set(corp.divisions);
+        const requireTobaccoBeforeRound2 = !delayTobaccoUntilPostRound2();
+        const requireChemicalBeforeRound2 = !delayChemicalUntilPostRound2();
+        const needsPreRound2Bootstrap = requireChemicalBeforeRound2 || requireTobaccoBeforeRound2;
+        const hasCoreUnlocks = c.hasUnlock(UNLOCKS.warehouseAPI) && c.hasUnlock(UNLOCKS.officeAPI);
+        if (!hasCoreUnlocks) return 0;
+        if (!divs.has(DIV_AGRI)) return 1;
+        const round = c.getInvestmentOffer().round;
+        if (round <= 1) return isRound1WaitStateReady(saved) ? 2 : 1;
+        if (!needsPreRound2Bootstrap && round <= 2) return 4;
+        if (useBn3HighBudgetRound2() && !isBn3HighBudgetRound2ShellReady()) return 3;
+        if (useBn3LeanTobRound2() && !isBn3LeanRound2ShellReady()) return 3;
+        if (
+            (requireChemicalBeforeRound2 && !divs.has(DIV_CHEM))
+            || (requireTobaccoBeforeRound2 && !divs.has(DIV_TOBACCO))
+            || (needsPreRound2Bootstrap && !c.hasUnlock(UNLOCKS.export))
+        ) return 3;
+        if (round <= 2) return 4;
+        if (!isPostRound2BootstrapReady()) return 5;
+        if (!isPhase6ScalingReady()) return 6;
+        if (round <= 3) return Math.max(saved, 7);
+        if (round === 4) return Math.max(saved, 8);
+        return Math.max(saved, 9);
+    }
+    function reconcilePhase() {
+        const saved = readPhase();
+        const inferred = inferPhase(saved);
+        if (saved !== inferred) {
+            log(ns, `INFO: Reconciled setup phase ${saved} -> ${inferred} from corporation state.`, true, 'info');
+            writePhase(inferred);
+        }
+        return inferred;
+    }
+
+    if (!c.hasCorporation()) writeSetupRoute(null);
+    else restorePersistedBn3Round2State();
+    let phase = reconcilePhase();
+    clearLingeringMaterialBuys();
+    let round1ReinvestDebtSettleChecks = 0;
+
+    if (phase >= 10) {
+        ns.write(SETUP_DONE_FLAG, 'true', 'w');
+        const pilot = resolvePath('corp-autopilot', 'corp-autopilot.js');
+        if (!ns.ps('home').some(p => p.filename === pilot)) ns.run(pilot, 1, ...(useIncomeMode() ? ['--income-mode'] : []));
+        return;
+    }
+    if (!c.hasCorporation() && phase !== 0) {
+        phase = 0;
+        writePhase(0);
+        writeSetupRoute(null);
+        try { ns.rm(SETUP_DONE_FLAG, 'home'); } catch { }
+    }
+    if (phase >= 3) {
+        lockBn3HighBudgetRound2Profile();
+    }
+
+    async function waitCycles(n = 1) {
+        printCorpDebugDump();
+        await ns.sleep(CYCLE_MS * n);
+    }
+
+    function getCorpStateName() {
+        try { return String(c.getCorporation().state ?? ''); } catch { return ''; }
+    }
+
+    async function waitForFreshPurchasePass(timeoutMs = CYCLE_MS + 5000) {
+        const initialState = getCorpStateName();
+        let lastState = initialState;
+        let sawStateChange = false;
+        let enteredFreshPurchase = false;
+        const deadline = Date.now() + Math.max(2000, Number(timeoutMs ?? 0) || 0);
+
+        while (Date.now() < deadline) {
+            await ns.sleep(200);
+            const state = getCorpStateName();
+            if (state !== initialState) sawStateChange = true;
+            if (sawStateChange && state === 'PURCHASE') enteredFreshPurchase = true;
+            if (enteredFreshPurchase && lastState === 'PURCHASE' && state !== 'PURCHASE') return true;
+            lastState = state;
+        }
+        return false;
+    }
+
+    async function waitUntilNotPurchase(timeoutMs = CYCLE_MS + 5000) {
+        const deadline = Date.now() + Math.max(2000, Number(timeoutMs ?? 0) || 0);
+        while (Date.now() < deadline) {
+            if (getCorpStateName() !== 'PURCHASE') return true;
+            await ns.sleep(100);
+        }
+        return getCorpStateName() !== 'PURCHASE';
+    }
+
+    function noteBn3Gate(key, message, level = 'info') {
+        if (!message) return;
+        if (lastBn3GateNotes[key] === message) return;
+        lastBn3GateNotes[key] = message;
+        log(ns, `INFO: ${message}`, true, level);
+    }
+
+    // 笏笏 Job assignment (two-pass 窶・zero first, then set targets) 笏笏笏笏笏笏笏笏笏笏笏笏笏
+    // setJobAssignment operates on employeeNextJobs (pending state).
+    // Pass 1 zeros all 竊・freed to Unassigned pool. Pass 2 draws from that pool.
+    function getDivisionJobFillOrder(div, city, jobCounts = {}) {
+        if (div === DIV_CHEM) return ['eng', 'ops', 'mgmt', 'rnd', 'biz'];
+        if (div === DIV_TOBACCO) {
+            if (city === HQ_CITY && hasActiveTobaccoDevelopment()) return ['eng', 'mgmt', 'ops', 'biz', 'rnd'];
+            return ['biz', 'eng', 'mgmt', 'ops', 'rnd'];
+        }
+        if (div === DIV_AGRI) {
+            if (Number(jobCounts.biz ?? 0) >= 3) return ['biz', 'eng', 'mgmt', 'ops', 'rnd'];
+            if (Number(jobCounts.rnd ?? 0) >= 3 && sumJobCounts(jobCounts) <= 6) return ['rnd', 'eng', 'ops', 'mgmt', 'biz'];
+            return ['eng', 'ops', 'mgmt', 'biz', 'rnd'];
+        }
+        return ['eng', 'ops', 'mgmt', 'biz', 'rnd'];
+    }
+
+    function normalizeJobCountsForOffice(div, city, jobCounts = {}, targetSize = null) {
+        const normalized = {
+            ops: Math.max(0, Math.floor(Number(jobCounts.ops ?? 0) || 0)),
+            eng: Math.max(0, Math.floor(Number(jobCounts.eng ?? 0) || 0)),
+            biz: Math.max(0, Math.floor(Number(jobCounts.biz ?? 0) || 0)),
+            mgmt: Math.max(0, Math.floor(Number(jobCounts.mgmt ?? 0) || 0)),
+            rnd: Math.max(0, Math.floor(Number(jobCounts.rnd ?? 0) || 0)),
+        };
+        let totalEmployees = 0;
+        try {
+            const office = c.getOffice(div, city);
+            totalEmployees = Math.max(
+                0,
+                Math.floor(Number(targetSize ?? office.numEmployees ?? office.size ?? 0) || 0),
+            );
+        } catch {
+            totalEmployees = Math.max(0, Math.floor(Number(targetSize ?? 0) || 0));
+        }
+        if (totalEmployees <= 0) return normalized;
+
+        const fillOrder = getDivisionJobFillOrder(div, city, normalized);
+        const requestedOrder = Object.entries(normalized)
+            .filter(([, count]) => count > 0)
+            .sort((a, b) => {
+                if (b[1] !== a[1]) return b[1] - a[1];
+                return fillOrder.indexOf(a[0]) - fillOrder.indexOf(b[0]);
+            })
+            .map(([job]) => job);
+        const cycleOrder = requestedOrder.length > 0 ? requestedOrder : fillOrder;
+        const capped = { ops: 0, eng: 0, biz: 0, mgmt: 0, rnd: 0 };
+
+        let assigned = 0;
+        for (const job of requestedOrder) {
+            const wanted = normalized[job];
+            const take = Math.min(wanted, Math.max(0, totalEmployees - assigned));
+            capped[job] = take;
+            assigned += take;
+            if (assigned >= totalEmployees) return capped;
+        }
+        for (let i = 0; assigned < totalEmployees; i++, assigned++) {
+            const job = cycleOrder[i % cycleOrder.length];
+            capped[job] = Number(capped[job] ?? 0) + 1;
+        }
+        return capped;
+    }
+
+    function assignJobs(div, city, { ops = 0, eng = 0, biz = 0, mgmt = 0, rnd = 0 } = {}) {
+        const jobCounts = normalizeJobCountsForOffice(div, city, { ops, eng, biz, mgmt, rnd });
+        for (const job of [JOBS.ops, JOBS.eng, JOBS.biz, JOBS.mgmt, JOBS.rnd])
+            try { c.setJobAssignment(div, city, job, 0); } catch { }
+        if (jobCounts.ops > 0) try { c.setJobAssignment(div, city, JOBS.ops, jobCounts.ops); } catch { }
+        if (jobCounts.eng > 0) try { c.setJobAssignment(div, city, JOBS.eng, jobCounts.eng); } catch { }
+        if (jobCounts.biz > 0) try { c.setJobAssignment(div, city, JOBS.biz, jobCounts.biz); } catch { }
+        if (jobCounts.mgmt > 0) try { c.setJobAssignment(div, city, JOBS.mgmt, jobCounts.mgmt); } catch { }
+        if (jobCounts.rnd > 0) try { c.setJobAssignment(div, city, JOBS.rnd, jobCounts.rnd); } catch { }
+    }
+
+    function fillOffice(div, city, targetSize, jobCounts) {
+        const off = c.getOffice(div, city);
+        if (off.size < targetSize) c.upgradeOfficeSize(div, city, targetSize - off.size);
+        const n = c.getOffice(div, city).numEmployees;
+        for (let i = n; i < targetSize; i++) c.hireEmployee(div, city, JOBS.unassigned);
+        assignJobs(div, city, normalizeJobCountsForOffice(div, city, jobCounts, targetSize));
+    }
+
+    // 笏笏 Boost materials 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    // Uses 70% of warehouse capacity for boosts (30% reserved for production stock).
+    // Warehouse size = level ﾃ・100 ﾃ・SmartStorageMult ﾃ・DivResearchMult.
+    function getBoostTargets(div, city, factors, sizes, mats, usagePct = 0.70) {
+        try {
+            const wh = c.getWarehouse(div, city);
+            return optimalBoosts(wh.size * usagePct, [...factors], [...sizes], [...mats]);
+        } catch { return {}; }
+    }
+
+    function getDivisionCityBoostContribution(div, city, targets = null) {
+        try {
+            const config = getDivisionBoostConfig(div);
+            if (!config || !c.hasWarehouse(div, city)) return 1;
+            let cityMult = 1;
+            for (let i = 0; i < config.mats.length; i++) {
+                const mat = config.mats[i];
+                const factor = Math.max(0, Number(config.factors[i] ?? 0));
+                if (factor <= 0) continue;
+                const qty = Math.max(0, Number(targets?.[mat] ?? c.getMaterial(div, city, mat).stored ?? 0));
+                cityMult *= Math.pow(1 + 0.002 * qty, factor);
+            }
+            return Math.max(1, Math.pow(cityMult, 0.73));
+        } catch {
+            return 1;
+        }
+    }
+
+    function getDivisionBoostConfig(div) {
+        if (div === DIV_AGRI) return AGRI_BOOST;
+        if (div === DIV_CHEM) return CHEM_BOOST;
+        if (div === DIV_TOBACCO) return TOB_BOOST;
+        return null;
+    }
+
+    function estimateBoostTargetsForSize(div, nextSize) {
+        const config = getDivisionBoostConfig(div);
+        if (!config || !Number.isFinite(nextSize) || nextSize <= 0) return {};
+        return optimalBoosts(nextSize * 0.70, [...config.factors], [...config.sizes], [...config.mats]);
+    }
+
+    function getMaterialBuyPrice(div, city, mat) {
+        try {
+            const info = c.getMaterial(div, city, mat);
+            return Math.max(0, Number(info.bCost ?? info.marketPrice ?? info.averagePrice ?? 0));
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBoostTopUpCost(div, city, nextSize) {
+        try {
+            const targets = estimateBoostTargetsForSize(div, nextSize);
+            let total = 0;
+            for (const [mat, target] of Object.entries(targets)) {
+                const stored = c.getMaterial(div, city, mat).stored;
+                const needed = Math.max(0, target - stored);
+                total += needed * getMaterialBuyPrice(div, city, mat);
+            }
+            return total;
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateMaterialTargetSpend(div, city, targets) {
+        try {
+            let total = 0;
+            for (const [mat, target] of Object.entries(targets)) {
+                const stored = c.getMaterial(div, city, mat).stored;
+                total += Math.max(0, target - stored) * getMaterialBuyPrice(div, city, mat);
+            }
+            return total;
+        } catch {
+            return Infinity;
+        }
+    }
+
+    function scaleMaterialTargets(targets, scale = 1) {
+        if (!targets || !Number.isFinite(scale)) return { ...(targets ?? {}) };
+        const clampedScale = clamp(scale, 0, 1);
+        if (clampedScale >= 0.9999) return { ...targets };
+        return Object.fromEntries(
+            Object.entries(targets).map(([mat, target]) => [mat, Math.max(0, Number(target ?? 0) * clampedScale)]),
+        );
+    }
+
+    function scaleMaterialTargetsFromStored(div, city, targets, scale = 1) {
+        if (!targets || !Number.isFinite(scale)) return { ...(targets ?? {}) };
+        const clampedScale = clamp(scale, 0, 1);
+        if (clampedScale >= 0.9999) return { ...targets };
+        const scaledTargets = {};
+        for (const [mat, target] of Object.entries(targets)) {
+            let stored = 0;
+            try { stored = Math.max(0, Number(c.getMaterial(div, city, mat).stored ?? 0)); } catch { }
+            const safeTarget = Math.max(0, Number(target ?? 0));
+            const deficit = Math.max(0, safeTarget - stored);
+            if (deficit <= 0) continue;
+            scaledTargets[mat] = stored + deficit * clampedScale;
+        }
+        return scaledTargets;
+    }
+
+    function getProjectedMaterialTargetAddedSpace(div, city, targets) {
+        try {
+            let total = 0;
+            for (const [mat, target] of Object.entries(targets ?? {})) {
+                const stored = Math.max(0, Number(c.getMaterial(div, city, mat).stored ?? 0));
+                const needed = Math.max(0, Number(target ?? 0) - stored);
+                if (needed <= 0) continue;
+                total += needed * getPhysicalMaterialSize(mat, getMaterialSize(mat));
+            }
+            return total;
+        } catch {
+            return 0;
+        }
+    }
+
+    function fitMaterialTargetsToBudget(div, city, targets, budget = Infinity) {
+        const cappedBudget = Math.max(0, Number(budget ?? 0));
+        if (!targets) return { targets: {}, spend: 0 };
+        if (!Number.isFinite(cappedBudget)) {
+            return {
+                targets: { ...targets },
+                spend: estimateMaterialTargetSpend(div, city, targets),
+            };
+        }
+        if (cappedBudget <= 0) return { targets: scaleMaterialTargets(targets, 0), spend: 0 };
+
+        const spend = estimateMaterialTargetSpend(div, city, targets);
+        if (!Number.isFinite(spend) || spend <= 0) return { targets: { ...targets }, spend: 0 };
+        if (spend <= cappedBudget) return { targets: { ...targets }, spend };
+
+        const scaledTargets = scaleMaterialTargets(targets, cappedBudget / spend);
+        return {
+            targets: scaledTargets,
+            spend: estimateMaterialTargetSpend(div, city, scaledTargets),
+        };
+    }
+
+    function getCorpOfficeInitialCost() {
+        try { return Number(c.getConstants().officeInitialCost ?? 4e9); } catch { return 4e9; }
+    }
+
+    function getCorpWarehouseInitialCost() {
+        try { return Number(c.getConstants().warehouseInitialCost ?? 5e9); } catch { return 5e9; }
+    }
+
+    function estimateWarehouseUpgradeSpend(div, city) {
+        try {
+            const wh = c.getWarehouse(div, city);
+            const cost = c.getUpgradeWarehouseCost(div, city, 1);
+            if (!Number.isFinite(cost)) return Infinity;
+            if (!getDivisionBoostConfig(div) || wh.level <= 0) return cost;
+            const nextSize = wh.size * ((wh.level + 1) / wh.level);
+            return cost + estimateBoostTopUpCost(div, city, nextSize);
+        } catch {
+            return Infinity;
+        }
+    }
+
+    function estimateSmartStorageUpgradeSpend() {
+        try {
+            const level = c.getUpgradeLevel('Smart Storage');
+            const cost = c.getUpgradeLevelCost('Smart Storage');
+            if (!Number.isFinite(cost)) return Infinity;
+            const currentMult = 1 + level * 0.1;
+            const nextMult = 1 + (level + 1) * 0.1;
+            const sizeRatio = currentMult > 0 ? nextMult / currentMult : 1;
+            let total = cost;
+            for (const div of [DIV_AGRI, DIV_CHEM]) {
+                if (!getDivisionBoostConfig(div)) continue;
+                for (const city of CITIES) {
+                    try {
+                        if (!c.hasWarehouse(div, city)) continue;
+                        const wh = c.getWarehouse(div, city);
+                        total += estimateBoostTopUpCost(div, city, wh.size * sizeRatio);
+                    } catch { }
+                }
+            }
+            return total;
+        } catch {
+            return Infinity;
+        }
+    }
+
+    async function applyBoostMaterials(div, city, targets, reserve = 0) {
+        let scale = 1;
+        if (Number.isFinite(reserve) && reserve !== 0) {
+            const spend = estimateMaterialTargetSpend(div, city, targets);
+            const budget = Math.max(0, Number(c.getCorporation().funds ?? 0) - reserve);
+            if (!Number.isFinite(spend) || spend <= 0 || budget <= 0) return;
+            if (spend > budget) scale = budget / spend;
+        }
+        try {
+            if (c.hasWarehouse(div, city)) {
+                prevWHCapacity[`${div}|${city}`] = Number(c.getWarehouse(div, city).size ?? 0);
+            }
+        } catch { }
+        let anyNeeded = false;
+        await waitUntilNotPurchase();
+        for (const [mat, target] of Object.entries(targets)) {
+            const stored = c.getMaterial(div, city, mat).stored;
+            const needed = Math.max(0, target - stored) * scale;
+            if (needed > 0) { c.buyMaterial(div, city, mat, needed / CYCLE_SECS); anyNeeded = true; }
+        }
+        if (anyNeeded) {
+            await waitForFreshPurchasePass();
+            for (const mat of Object.keys(targets)) c.buyMaterial(div, city, mat, 0);
+        }
+    }
+
+    async function applyBoostMaterialsBatch(div, cityTargets, reserve = 0) {
+        const targetsByCity = Object.fromEntries(
+            Object.entries(cityTargets ?? {}).filter(([, targets]) => targets && Object.keys(targets).length > 0),
+        );
+        const cities = Object.keys(targetsByCity);
+        if (!cities.length) return 0;
+
+        let scale = 1;
+        if (Number.isFinite(reserve) && reserve !== 0) {
+            const spend = cities.reduce(
+                (total, city) => total + estimateMaterialTargetSpend(div, city, targetsByCity[city]),
+                0,
+            );
+            const budget = Math.max(0, Number(c.getCorporation().funds ?? 0) - reserve);
+            if (!Number.isFinite(spend) || spend <= 0 || budget <= 0) return 0;
+            if (spend > budget) scale = budget / spend;
+        }
+
+        let anyNeeded = false;
+        const activeBuys = [];
+        await waitUntilNotPurchase();
+        for (const city of cities) {
+            try {
+                if (c.hasWarehouse(div, city)) {
+                    prevWHCapacity[`${div}|${city}`] = Number(c.getWarehouse(div, city).size ?? 0);
+                }
+            } catch { }
+            for (const [mat, target] of Object.entries(targetsByCity[city])) {
+                const stored = c.getMaterial(div, city, mat).stored;
+                const needed = Math.max(0, target - stored) * scale;
+                if (needed <= 0) continue;
+                c.buyMaterial(div, city, mat, needed / CYCLE_SECS);
+                activeBuys.push([city, mat]);
+                anyNeeded = true;
+            }
+        }
+        if (anyNeeded) {
+            await waitForFreshPurchasePass();
+            for (const [city, mat] of activeBuys) c.buyMaterial(div, city, mat, 0);
+        }
+        return scale;
+    }
+
+    async function applyBoostMaterialsBatchChunked(
+        div,
+        cityTargets,
+        reserve = 0,
+        chunkFraction = 1,
+        maxPasses = 1,
+    ) {
+        const finalTargetsByCity = Object.fromEntries(
+            Object.entries(cityTargets ?? {}).filter(([, targets]) => targets && Object.keys(targets).length > 0),
+        );
+        const cities = Object.keys(finalTargetsByCity);
+        if (!cities.length) return { passes: 0 };
+
+        const clampedChunkFraction = clamp(chunkFraction, 0.05, 1);
+        const cappedPasses = Math.max(1, Math.floor(Number(maxPasses ?? 1) || 1));
+        let passes = 0;
+
+        for (let pass = 0; pass < cappedPasses; pass++) {
+            const chunkTargetsByCity = {};
+            let hasRemainingNeed = false;
+
+            for (const city of cities) {
+                const chunkTargets = {};
+                for (const [mat, finalTarget] of Object.entries(finalTargetsByCity[city])) {
+                    const stored = Math.max(0, Number(c.getMaterial(div, city, mat).stored ?? 0));
+                    const deficit = Math.max(0, Number(finalTarget ?? 0) - stored);
+                    if (deficit <= 0.5) continue;
+                    chunkTargets[mat] = stored + deficit * clampedChunkFraction;
+                    hasRemainingNeed = true;
+                }
+                if (Object.keys(chunkTargets).length > 0) {
+                    chunkTargetsByCity[city] = chunkTargets;
+                }
+            }
+
+            if (!hasRemainingNeed) break;
+            await applyBoostMaterialsBatch(div, chunkTargetsByCity, reserve);
+            passes++;
+        }
+
+        return { passes };
+    }
+
+    // Re-apply boosts whenever warehouse capacity changes from level, Smart Storage, or research.
+    const prevWHCapacity = {};
+    async function refreshBoosts(div, factors, sizes, mats) {
+        for (const city of CITIES) {
+            try {
+                const key = `${div}|${city}`;
+                const cap = c.getWarehouse(div, city).size;
+                if (cap !== prevWHCapacity[key]) {
+                    prevWHCapacity[key] = cap;
+                    const targets = useRound1Route() && div === DIV_AGRI
+                        ? getExperimentalRound1AgriBoostTargets(city)
+                        : getBoostTargets(div, city, factors, sizes, mats);
+                    await applyBoostMaterials(div, city, targets);
+                }
+            } catch { }
+        }
+    }
+
+    // 笏笏 Division helpers 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    function hasDiv(div) {
+        try { return c.getCorporation().divisions.includes(div); } catch { return false; }
+    }
+
+    function stopManagedMaterialBuys(div, materials, cities = CITIES) {
+        for (const city of cities) {
+            for (const mat of materials) {
+                try { c.buyMaterial(div, city, mat, 0); } catch { }
+            }
+        }
+    }
+
+    function clearLingeringMaterialBuys() {
+        stopManagedMaterialBuys(
+            DIV_AGRI,
+            [...new Set([...Object.keys(ROUND1_AGRI_REQUIRED), ...AGRI_MATS, ...Object.keys(ROUND2_BN3_MATERIAL_TARGETS)])],
+        );
+        stopManagedMaterialBuys(
+            DIV_CHEM,
+            [...new Set(['Water', ...CHEM_MATS])],
+        );
+        stopManagedMaterialBuys(
+            DIV_TOBACCO,
+            [...new Set(['Plants', ...TOB_MATS])],
+        );
+    }
+
+    function expandIndustryCost(industry) {
+        try { return c.getIndustryData(industry).startingCost; } catch { return Infinity; }
+    }
+
+    function expandToCities(div, targetCities = CITIES) {
+        const existing = c.getDivision(div).cities;
+        for (const city of targetCities) {
+            if (!existing.includes(city)) try { c.expandCity(div, city); } catch { }
+        }
+        for (const city of targetCities)
+            if (!c.hasWarehouse(div, city)) try { c.purchaseWarehouse(div, city); } catch { }
+    }
+
+    function buyUnlock(name) {
+        try {
+            if (!c.hasUnlock(name)) { c.purchaseUnlock(name); log(ns, `  Purchased: ${name}`, false, 'info'); }
+        } catch (e) { log(ns, `  WARN: Could not buy "${name}": ${e?.message}`, false, 'warning'); }
+    }
+
+    function enableSmartSupply(div, cities = CITIES) {
+        if (!c.hasUnlock(UNLOCKS.smartSupply)) return;
+        for (const city of cities)
+            try { if (c.hasWarehouse(div, city)) c.setSmartSupply(div, city, true); } catch { }
+    }
+
+    function disableSmartSupply(div, cities = CITIES) {
+        if (!c.hasUnlock(UNLOCKS.smartSupply)) return;
+        for (const city of cities)
+            try { if (c.hasWarehouse(div, city)) c.setSmartSupply(div, city, false); } catch { }
+    }
+
+    function setLeftovers(div, city, materials) {
+        if (!c.hasUnlock(UNLOCKS.smartSupply)) return;
+        for (const material of materials) {
+            try { c.setSmartSupplyOption(div, city, material, 'leftovers'); } catch { }
+        }
+    }
+
+    function divisionInfraReady(div, targetCities = CITIES) {
+        try {
+            const cities = c.getDivision(div).cities;
+            return targetCities.every(city => cities.includes(city) && c.hasWarehouse(div, city));
+        } catch {
+            return false;
+        }
+    }
+
+    async function waitForDivisionInfrastructure(div, label, targetCities = CITIES) {
+        while (!divisionInfraReady(div, targetCities)) {
+            expandToCities(div, targetCities);
+            if (!divisionInfraReady(div, targetCities)) {
+                log(ns, `  Waiting for ${label} city/warehouse expansion...`, false);
+                await waitCycles(2);
+            }
+        }
+    }
+
+    async function waitForWarehouseLevel(div, city, targetLevel) {
+        while (true) {
+            try {
+                const wh = c.getWarehouse(div, city);
+                if (wh.level >= targetLevel) return;
+                c.upgradeWarehouse(div, city, 1);
+            } catch { }
+            await waitCycles(1);
+        }
+    }
+
+    function bulkUpgradeWarehousesToLevel(div, targetLevel, reserve = 0, targetCities = CITIES) {
+        let complete = true;
+        for (const city of targetCities) {
+            try {
+                while (true) {
+                    const wh = c.getWarehouse(div, city);
+                    if (wh.level >= targetLevel) break;
+                    const cost = c.getUpgradeWarehouseCost(div, city, 1);
+                    const funds = Number(c.getCorporation().funds ?? 0);
+                    if (!Number.isFinite(cost) || funds - cost < reserve) {
+                        complete = false;
+                        break;
+                    }
+                    c.upgradeWarehouse(div, city, 1);
+                }
+                if (c.getWarehouse(div, city).level < targetLevel) complete = false;
+            } catch {
+                complete = false;
+            }
+        }
+        return complete;
+    }
+
+    async function waitFillOffice(div, city, targetSize, jobCounts) {
+        while (true) {
+            try {
+                fillOffice(div, city, targetSize, jobCounts);
+                return;
+            } catch { }
+            await waitCycles(1);
+        }
+    }
+
+    async function warmupBn3HighBudgetTobacco() {
+        if (!useBn3HighBudgetRound2()) return;
+        if (hasDiv(DIV_TOBACCO) && tobaccoProducts().length > 0) return;
+
+        log(
+            ns,
+            'INFO: BN3 high-budget phase-3 warmup - bringing the Tobacco HQ/product shell online.',
+            true,
+            'info',
+        );
+
+        while (!hasDiv(DIV_TOBACCO)) {
+            const tobCost = expandIndustryCost(IND_TOBACCO);
+            if (c.getCorporation().funds >= tobCost + PHASE3_EXPORT_RESERVE) {
+                c.expandIndustry(IND_TOBACCO, DIV_TOBACCO);
+                log(ns, 'INFO: Tobacco launched.', true, 'success');
+                break;
+            }
+            maintainRound1AgriSupply();
+            log(ns, `  Waiting for Tobacco: ${formatMoney(c.getCorporation().funds)} / ${formatMoney(tobCost)}`, false);
+            await waitCycles(2);
+        }
+
+        await waitForDivisionInfrastructure(DIV_TOBACCO, 'Tobacco', PHASE3_TOB_START_CITIES);
+        await waitFillOffice(DIV_TOBACCO, HQ_CITY, PHASE3_TOB_INITIAL_HQ_OFFICE, { ops: 1, eng: 3, biz: 1, mgmt: 1 });
+        boostMorale(DIV_AGRI, DIV_TOBACCO);
+        ensureTobaccoProduct(ROUND2_BN3_HIGH_BUDGET_PRODUCT_RESERVE);
+    }
+
+    function getBn3HighBudgetPhase3Reserve() {
+        const liveFunds = Math.max(0, Number(c.getCorporation().funds ?? 0));
+        const baseline = Math.max(0, Number(bn3HighBudgetRound2StartFunds ?? 0)) || liveFunds;
+        return Math.max(
+            ROUND2_BN3_HIGH_BUDGET_RESERVE,
+            baseline * ROUND2_BN3_HIGH_BUDGET_RESERVE_PCT,
+        );
+    }
+
+    async function launchBn3HighBudgetPhase3Shell() {
+        lockBn3HighBudgetRound2Profile();
+        const chemCost = expandIndustryCost(IND_CHEM);
+        const tobCost = expandIndustryCost(IND_TOBACCO);
+        const exportCost = unlockCost(UNLOCKS.export, 20e9);
+
+        while (!hasDiv(DIV_CHEM) || !hasDiv(DIV_TOBACCO) || !c.hasUnlock(UNLOCKS.export)) {
+            const missingChem = !hasDiv(DIV_CHEM);
+            const missingTob = !hasDiv(DIV_TOBACCO);
+            const missingExport = !c.hasUnlock(UNLOCKS.export);
+            const needed =
+                (missingChem ? chemCost : 0) +
+                (missingTob ? tobCost : 0) +
+                (missingExport ? exportCost : 0) +
+                PHASE3_EXPORT_RESERVE;
+            if (c.getCorporation().funds >= needed) {
+                if (missingChem) {
+                    c.expandIndustry(IND_CHEM, DIV_CHEM);
+                    log(ns, 'INFO: Chemical launched.', true, 'success');
+                }
+                if (missingTob) {
+                    c.expandIndustry(IND_TOBACCO, DIV_TOBACCO);
+                    log(ns, 'INFO: Tobacco launched.', true, 'success');
+                }
+                if (missingExport) {
+                    buyUnlock(UNLOCKS.export);
+                }
+                continue;
+            }
+            await investInAgricultureWhileWaitingForChemical();
+            log(
+                ns,
+                `  Waiting for BN3 high-budget shell: ${formatMoney(c.getCorporation().funds)} / ${formatMoney(needed)} ` +
+                `(Chem ${missingChem ? 'pending' : 'ok'}, Tobacco ${missingTob ? 'pending' : 'ok'}, Export ${missingExport ? 'pending' : 'ok'})`,
+                false,
+            );
+            await waitCycles(2);
+        }
+
+        await waitForDivisionInfrastructure(DIV_CHEM, 'Chemical', PHASE3_CHEM_START_CITIES);
+        await waitForDivisionInfrastructure(DIV_TOBACCO, 'Tobacco', PHASE3_TOB_START_CITIES);
+        for (const city of PHASE3_CHEM_START_CITIES) {
+            await waitForWarehouseLevel(DIV_CHEM, city, PHASE3_CHEM_INITIAL_WAREHOUSE);
+            await waitFillOffice(DIV_CHEM, city, PHASE3_CHEM_INITIAL_OFFICE, { ops: 1, eng: 1, rnd: 1 });
+            try { c.sellMaterial(DIV_CHEM, city, 'Chemicals', 'MAX', 'MP'); } catch { }
+        }
+        await warmupBn3HighBudgetTobacco();
+        configureExports();
+        maintainChemicalWaterSupply();
+        boostMorale(DIV_AGRI, DIV_CHEM, DIV_TOBACCO);
+    }
+
+    async function runBn3HighBudgetPhase3Budget(maxActions = 64) {
+        const actions = [];
+        for (let i = 0; i < maxActions; i++) {
+            const reserve = getBn3HighBudgetPhase3Reserve();
+            ensureTobaccoProduct(getBn3LeanTobaccoProductReserve(reserve));
+            let action =
+                tryAggressiveWarmupHQStep(reserve) ??
+                tryRound2TobaccoStep(reserve, false, true) ??
+                tryBn3HighBudgetWilsonSeedStep(reserve) ??
+                tryRound2ChemStep(reserve, 0) ??
+                tryBn3Round2UpgradeStep(reserve) ??
+                tryBn3Round2OfficeStep(reserve) ??
+                tryBn3Round2WarehouseStep(reserve);
+            if (!action) {
+                action = await tryBn3Round2MaterialStep(reserve);
+            }
+            if (!action) break;
+            actions.push({ action, reserve });
+            maintainPreRound2SupplyState();
+            configureExports();
+            if (c.hasUnlock(UNLOCKS.smartSupply)) {
+                stopRound1AgriSupply();
+                stopChemicalWaterSupply();
+                enableSmartSupply(DIV_AGRI);
+                enableSmartSupply(DIV_CHEM);
+                enableSmartSupply(DIV_TOBACCO);
+            }
+        }
+        return actions;
+    }
+
+    function maintainAgriSalesAndJobs(jobCounts = { ops: 1, eng: 1, biz: 1, mgmt: 1 }) {
+        for (const city of CITIES) {
+            try { c.sellMaterial(DIV_AGRI, city, 'Food', 'MAX', 'MP'); } catch { }
+            try { c.sellMaterial(DIV_AGRI, city, 'Plants', 'MAX', 'MP'); } catch { }
+            try { assignJobs(DIV_AGRI, city, jobCounts); } catch { }
+        }
+    }
+
+    function maintainRound1AgriSupply(cities = CITIES, reserve = 0, refreshSecs = CYCLE_SECS, profile = 'dynamic') {
+        if (!ROUND1_USE_CUSTOM_SUPPLY) return;
+        const funds = Number(c.getCorporation().funds ?? 0);
+        const reserveConstrained = Number.isFinite(reserve) && reserve > 0 && funds <= reserve;
+        const clampBn3Inputs = useBn3Round2() && phase >= 4 && !c.hasUnlock(UNLOCKS.smartSupply);
+        const startupSupplyMode = useRound1Route() && (profile === 'initial' || profile === 'startup');
+        const initialSeedMode = startupSupplyMode;
+        const effectiveRefreshSecs = Math.max(1, Number(refreshSecs ?? CYCLE_SECS) || CYCLE_SECS);
+        const refillHorizonSecs = startupSupplyMode
+            ? Math.min(effectiveRefreshSecs, CYCLE_SECS)
+            : effectiveRefreshSecs;
+        const bufferCycles = useRound1Route()
+            ? (startupSupplyMode
+                ? ROUND1_ROUTE_STARTUP_SUPPLY_BUFFER_CYCLES
+                : ROUND1_ROUTE_AGRI_SUPPLY_BUFFER_CYCLES)
+            : ROUND1_SUPPLY_BUFFER_CYCLES;
+        for (const city of cities) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                const freeSpace = Math.max(0, wh.size - wh.sizeUsed);
+                const usage = Number(wh.size ?? 0) > 0 ? Number(wh.sizeUsed ?? 0) / Number(wh.size ?? 1) : 0;
+                const observedProd = Math.max(
+                    c.getMaterial(DIV_AGRI, city, 'Plants').productionAmount || 0,
+                    c.getMaterial(DIV_AGRI, city, 'Food').productionAmount || 0,
+                    0,
+                );
+                const food = c.getMaterial(DIV_AGRI, city, 'Food');
+                const plants = c.getMaterial(DIV_AGRI, city, 'Plants');
+                const productStock = Math.max(0, Number(food.stored ?? 0)) + Math.max(0, Number(plants.stored ?? 0));
+                const officeSize = Math.max(1, Number(c.getOffice(DIV_AGRI, city).size ?? 0));
+                const bootstrapProd = Math.max(
+                    8,
+                    officeSize * (useBn3Round2() ? 3 : 2),
+                );
+                const hintedProd = Math.max(Number(agriSupplyProdHints[city] ?? 0) * 0.9, bootstrapProd);
+                const rawProd = Math.max(observedProd, hintedProd);
+                agriSupplyProdHints[city] = Math.max(Number(agriSupplyProdHints[city] ?? 0), observedProd, bootstrapProd);
+                const needed = {};
+                const targets = {};
+                let totalNeedSize = 0;
+                for (const [mat, coeff] of Object.entries(ROUND1_AGRI_REQUIRED)) {
+                    const stored = c.getMaterial(DIV_AGRI, city, mat).stored;
+                    const initialSeed = initialSeedMode
+                        ? (ROUND1_ROUTE_INITIAL_SUPPLY_SPACE[mat] ?? 0) /
+                            Math.max(ROUND1_AGRI_MAT_SIZES[mat] ?? 0.05, 1e-9)
+                        : 0;
+                    const seed = Math.max(
+                        ROUND1_SUPPLY_SEED[mat] ?? 0,
+                        initialSeed,
+                        clampBn3Inputs
+                            ? (((mat === 'Water' ? 0.06 : 0.024) * Number(wh.size ?? 0)) / Math.max(ROUND1_AGRI_MAT_SIZES[mat] ?? 0.05, 1e-9))
+                            : 0,
+                    );
+                    const baseTarget = Math.max(seed, rawProd * coeff * CYCLE_SECS * bufferCycles);
+                    const target = clampBn3Inputs
+                        ? Math.min(baseTarget, seed * ROUND2_BN3_AGRI_INPUT_CAP_MULT)
+                        : baseTarget;
+                    const activeTarget = reserveConstrained ? seed : target;
+                    const deficit = Math.max(0, activeTarget - stored);
+                    targets[mat] = activeTarget;
+                    needed[mat] = deficit;
+                    totalNeedSize += deficit * (ROUND1_AGRI_MAT_SIZES[mat] ?? 0.05);
+                }
+                const scale = totalNeedSize > freeSpace && totalNeedSize > 0 ? freeSpace / totalNeedSize : 1;
+                for (const [mat, deficit] of Object.entries(needed)) {
+                    c.buyMaterial(DIV_AGRI, city, mat, Math.max(0, deficit * scale / refillHorizonSecs));
+                }
+                if (clampBn3Inputs) {
+                    const pressure = usage >= ROUND2_BN3_AGRI_INPUT_PRESSURE_PCT &&
+                        productStock < Math.max(250, rawProd * 5);
+                    for (const [mat, target] of Object.entries(targets)) {
+                        const stored = Math.max(0, Number(c.getMaterial(DIV_AGRI, city, mat).stored ?? 0));
+                        c.sellMaterial(DIV_AGRI, city, mat, '0', 'MP');
+                    }
+                }
+            } catch { }
+        }
+    }
+
+    function stopRound1AgriSupply(cities = CITIES) {
+        if (!ROUND1_USE_CUSTOM_SUPPLY) return;
+        for (const city of cities) {
+            for (const mat of Object.keys(ROUND1_AGRI_REQUIRED)) {
+                try { c.buyMaterial(DIV_AGRI, city, mat, 0); } catch { }
+            }
+        }
+    }
+
+    function maintainChemicalWaterSupply(cities = PHASE3_CHEM_START_CITIES) {
+        for (const city of cities) {
+            try {
+                if (!c.hasWarehouse(DIV_CHEM, city)) continue;
+                const wh = c.getWarehouse(DIV_CHEM, city);
+                const freeSpace = Math.max(0, wh.size - wh.sizeUsed);
+                const chemProd = Math.max(c.getMaterial(DIV_CHEM, city, 'Chemicals').productionAmount || 0, 0);
+                const stored = c.getMaterial(DIV_CHEM, city, 'Water').stored;
+                const target = Math.max(PHASE3_CHEM_WATER_SEED, chemProd * 0.5 * CYCLE_SECS * PHASE3_CHEM_WATER_BUFFER_CYCLES);
+                const deficit = Math.max(0, target - stored);
+                const maxBySpace = (ROUND1_AGRI_MAT_SIZES.Water ?? 0.05) > 0 ? freeSpace / (ROUND1_AGRI_MAT_SIZES.Water ?? 0.05) : deficit;
+                c.buyMaterial(DIV_CHEM, city, 'Water', Math.max(0, Math.min(deficit, maxBySpace) / CYCLE_SECS));
+            } catch { }
+        }
+    }
+
+    function shouldLeanOnTobaccoPlantExports() {
+        return hasDiv(DIV_AGRI) && c.hasUnlock(UNLOCKS.export);
+    }
+
+    function maintainTobaccoPlantSupply(cities = CITIES) {
+        if (!hasDiv(DIV_TOBACCO)) return;
+        const exportBuffered = shouldLeanOnTobaccoPlantExports();
+        for (const city of cities) {
+            try {
+                if (!c.hasWarehouse(DIV_TOBACCO, city)) continue;
+                if (c.getWarehouse(DIV_TOBACCO, city).smartSupplyEnabled) {
+                    c.buyMaterial(DIV_TOBACCO, city, 'Plants', 0);
+                    continue;
+                }
+                if (exportBuffered) {
+                    c.buyMaterial(DIV_TOBACCO, city, 'Plants', 0);
+                    continue;
+                }
+                const wh = c.getWarehouse(DIV_TOBACCO, city);
+                const freeSpace = Math.max(0, wh.size - wh.sizeUsed);
+                const plants = c.getMaterial(DIV_TOBACCO, city, 'Plants');
+                const stored = Math.max(0, Number(plants.stored ?? 0));
+                const consumption = Math.max(0, -Number(plants.productionAmount ?? 0));
+                const target = exportBuffered
+                    ? Math.max(ROUND2_TOB_PLANT_EXPORT_SEED, consumption * CYCLE_SECS * ROUND2_TOB_PLANT_EXPORT_BUFFER_CYCLES)
+                    : Math.max(200, consumption * CYCLE_SECS * ROUND2_TOB_PLANT_DIRECT_BUFFER_CYCLES);
+                const deficit = Math.max(0, target - stored);
+                const maxBySpace = (ROUND1_AGRI_MAT_SIZES.Plants ?? 0.05) > 0
+                    ? freeSpace / (ROUND1_AGRI_MAT_SIZES.Plants ?? 0.05)
+                    : deficit;
+                c.buyMaterial(DIV_TOBACCO, city, 'Plants', Math.max(0, Math.min(deficit, maxBySpace) / CYCLE_SECS));
+            } catch { }
+        }
+    }
+
+    function stopTobaccoPlantSupply(cities = CITIES) {
+        if (!hasDiv(DIV_TOBACCO)) return;
+        for (const city of cities) {
+            try { c.buyMaterial(DIV_TOBACCO, city, 'Plants', 0); } catch { }
+        }
+    }
+
+    function stopChemicalWaterSupply(cities = CITIES) {
+        for (const city of cities) {
+            try { c.buyMaterial(DIV_CHEM, city, 'Water', 0); } catch { }
+        }
+    }
+
+    function stopChemicalPlantSupply(cities = CITIES) {
+        for (const city of cities) {
+            try { c.buyMaterial(DIV_CHEM, city, 'Plants', 0); } catch { }
+        }
+    }
+
+    function getDivisionSmartSupplyCounts(div, cities = CITIES) {
+        let enabled = 0;
+        let total = 0;
+        for (const city of cities) {
+            try {
+                if (!c.hasWarehouse(div, city)) continue;
+                total++;
+                if (c.getWarehouse(div, city).smartSupplyEnabled) enabled++;
+            } catch { }
+        }
+        return { enabled, total };
+    }
+
+    function maintainPreRound2SupplyState(cities = CITIES) {
+        if (c.hasUnlock(UNLOCKS.smartSupply)) {
+            enableSmartSupply(DIV_AGRI, cities);
+            disableSmartSupply(DIV_CHEM, cities);
+            disableSmartSupply(DIV_TOBACCO, cities);
+            stopChemicalPlantSupply(cities);
+            stopChemicalWaterSupply(cities);
+            stopTobaccoPlantSupply(cities);
+            maintainChemicalWaterSupply(cities);
+            maintainTobaccoPlantSupply(cities);
+            return;
+        }
+        maintainRound1AgriSupply(cities);
+        maintainChemicalWaterSupply(cities);
+        // Bitburner Smart Supply only buys product inputs from the previous cycle's
+        // production, so a product division stuck at 0 production will keep buying 0.
+        // Keep a direct Plants safety-net alive until Smart Supply itself is unlocked.
+        maintainTobaccoPlantSupply(cities);
+    }
+
+    function unlockCost(name, fallback = Infinity) {
+        try { return c.getUnlockCost(name); } catch { return fallback; }
+    }
+
+    function canConfigureMaterialExport(sourceDiv, sourceCity, targetDiv, targetCity, material) {
+        try {
+            if (!hasDiv(sourceDiv) || !hasDiv(targetDiv)) return false;
+            if (!c.getDivision(sourceDiv).cities.includes(sourceCity)) return false;
+            if (!c.getDivision(targetDiv).cities.includes(targetCity)) return false;
+            if (!c.hasWarehouse(sourceDiv, sourceCity)) return false;
+            if (!c.hasWarehouse(targetDiv, targetCity)) return false;
+            c.getMaterial(sourceDiv, sourceCity, material);
+            c.getMaterial(targetDiv, targetCity, material);
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function getMaterialSize(material) {
+        try { return Math.max(Number(c.getMaterialData(material)?.size ?? ROUND1_AGRI_MAT_SIZES[material] ?? 0.05), 1e-9); }
+        catch { return Math.max(Number(ROUND1_AGRI_MAT_SIZES[material] ?? 0.05), 1e-9); }
+    }
+
+    function getPhysicalMaterialSize(material, fallback = 0) {
+        const aliases = material === 'AI Cores'
+            ? ['AI Cores', 'AICores']
+            : (material === 'Real Estate' ? ['Real Estate', 'RealEstate'] : [material]);
+        for (const name of aliases) {
+            try {
+                const size = Number(c.getMaterialData(name)?.size);
+                if (Number.isFinite(size) && size >= 0) return size;
+            } catch { }
+        }
+        return Math.max(0, Number(fallback ?? 0));
+    }
+
+    function getWarehouseMaterialCapacity(div, city, material) {
+        try {
+            if (!c.hasWarehouse(div, city)) return 0;
+            const wh = c.getWarehouse(div, city);
+            return Math.max(0, Number(wh.size ?? 0)) / getMaterialSize(material);
+        } catch {
+            return 0;
+        }
+    }
+
+    function getExportRateStep(rate) {
+        if (rate >= 1000) return 25;
+        if (rate >= 250) return 5;
+        if (rate >= 50) return 1;
+        if (rate >= 10) return 0.5;
+        return 0.1;
+    }
+
+    function formatExportRate(rate) {
+        const safeRate = Math.max(0, Number(rate ?? 0));
+        if (!Number.isFinite(safeRate) || safeRate <= 0.01) return '0';
+        const step = getExportRateStep(safeRate);
+        const quantized = Math.max(0, Math.round(safeRate / step) * step);
+        return step >= 1 ? quantized.toFixed(0) : quantized.toFixed(1);
+    }
+
+    function parseExportRate(rate) {
+        const parsed = Number.parseFloat(String(rate ?? '0'));
+        return Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+    }
+
+    function scaleByMaturity(base, mature, maturity) {
+        return base + (mature - base) * clamp(Number(maturity ?? 0), 0, 1);
+    }
+
+    function getDivisionCityCoverageRatio(div) {
+        try {
+            return clamp(
+                (Number(c.getDivision(div).cities?.length ?? 0) - 1) / Math.max(CITIES.length - 1, 1),
+                0,
+                1,
+            );
+        } catch {
+            return 0;
+        }
+    }
+
+    function getOfficeGrowthRatio(div, city, baseSize = 3, matureSize = 18) {
+        try {
+            const size = Number(c.getOffice(div, city).size ?? 0);
+            return clamp((size - baseSize) / Math.max(matureSize - baseSize, 1), 0, 1);
+        } catch {
+            return 0;
+        }
+    }
+
+    function getWarehouseGrowthRatio(div, city, baseLevel = 1, matureLevel = 10) {
+        try {
+            const level = Number(c.getWarehouse(div, city).level ?? 0);
+            return clamp((level - baseLevel) / Math.max(matureLevel - baseLevel, 1), 0, 1);
+        } catch {
+            return 0;
+        }
+    }
+
+    function getTobaccoDemandMaturity(city) {
+        if (!hasDiv(DIV_TOBACCO)) return 0;
+        try {
+            const { finishedProducts, highestProgress } = getTobaccoProductStats();
+            const progressRatio = clamp(Number(highestProgress ?? 0) / 100, 0, 1);
+            const finishedRatio = clamp(Number(finishedProducts ?? 0) / 3, 0, 1);
+            const cityRatio = getDivisionCityCoverageRatio(DIV_TOBACCO);
+            const officeRatio = getOfficeGrowthRatio(DIV_TOBACCO, city, 3, ROUND2_BN3_LEAN_TOB_SPEED_HQ_OFFICE);
+            const warehouseRatio = getWarehouseGrowthRatio(DIV_TOBACCO, city, 1, 12);
+            return clamp(
+                progressRatio * 0.30 +
+                finishedRatio * 0.30 +
+                cityRatio * 0.15 +
+                officeRatio * 0.15 +
+                warehouseRatio * 0.10,
+                0,
+                1,
+            );
+        } catch {
+            return 0;
+        }
+    }
+
+    function getChemicalDemandMaturity(city) {
+        if (!hasDiv(DIV_CHEM)) return 0;
+        try {
+            const chemProd = Math.max(0, Number(c.getMaterial(DIV_CHEM, city, 'Chemicals').productionAmount ?? 0));
+            const prodRatio = clamp(chemProd / 80, 0, 1); // ceiling lowered from 250 to 80: a size-6 Chem office peaks around 60-90 u/s, 250 kept maturity permanently depressed
+            const cityRatio = getDivisionCityCoverageRatio(DIV_CHEM);
+            const officeRatio = getOfficeGrowthRatio(DIV_CHEM, city, PHASE3_CHEM_INITIAL_OFFICE, ROUND2_CHEM_OFFICE_AGGR);
+            const warehouseRatio = getWarehouseGrowthRatio(
+                DIV_CHEM,
+                city,
+                PHASE3_CHEM_INITIAL_WAREHOUSE,
+                Math.max(getRound2ChemWarehouseTarget(city, true), PHASE3_CHEM_INITIAL_WAREHOUSE + 1),
+            );
+            return clamp(
+                prodRatio * 0.35 +
+                cityRatio * 0.20 +
+                officeRatio * 0.20 +
+                warehouseRatio * 0.25,
+                0,
+                1,
+            );
+        } catch {
+            return 0;
+        }
+    }
+
+    function getChemicalPlantDemandFloor(city) {
+        if (!hasDiv(DIV_CHEM)) return 0;
+        try {
+            const office = c.getOffice(DIV_CHEM, city);
+            const jobs = office.employeeJobs ?? {};
+            const throughputStaff =
+                Number(jobs[JOBS.ops] ?? 0) +
+                Number(jobs[JOBS.eng] ?? 0) +
+                Number(jobs[JOBS.mgmt] ?? 0);
+            const officeSize = Math.max(0, Number(office.size ?? 0));
+            const chemProd = Math.max(0, Number(c.getMaterial(DIV_CHEM, city, 'Chemicals').productionAmount ?? 0));
+            const plantStored = Math.max(0, Number(c.getMaterial(DIV_CHEM, city, 'Plants').stored ?? 0));
+            const chemStored = Math.max(0, Number(c.getMaterial(DIV_CHEM, city, 'Chemicals').stored ?? 0));
+            const wh = c.getWarehouse(DIV_CHEM, city);
+            const freePct = Number(wh.size ?? 0) > 0
+                ? Math.max(0, Number(wh.size ?? 0) - Number(wh.sizeUsed ?? 0)) / Number(wh.size ?? 1)
+                : 0;
+            const buildoutPhase = useBn3HighBudgetRound2() &&
+                (!isBn3HighBudgetPostfillUnlocked() || getTobaccoProductStats().finishedProducts === 0);
+            let floor = Math.max(
+                EXPORT_DYNAMIC_CHEM_PLANT_MIN_DEMAND,
+                throughputStaff * EXPORT_DYNAMIC_CHEM_PLANT_MIN_DEMAND_PER_THROUGHPUT_EMPLOYEE,
+                officeSize * EXPORT_DYNAMIC_CHEM_PLANT_MIN_DEMAND_PER_OFFICE_EMPLOYEE,
+                chemProd * 0.9,
+            );
+            if (buildoutPhase) floor *= EXPORT_DYNAMIC_CHEM_PLANT_BUILDOUT_DEMAND_MULT;
+            if (freePct < 0.10 && plantStored > EXPORT_DYNAMIC_CHEM_PLANT_SEED) floor *= 0.6;
+            if (freePct < 0.18 && chemStored > Math.max(250, chemProd * CYCLE_SECS * 2.5)) floor *= 0.55;
+            return Math.max(0, floor);
+        } catch {
+            return 0;
+        }
+    }
+
+    // Tobacco reqMats: Plants:1 窶・1 Plant consumed per unit of product produced.
+    // Like getChemicalPlantDemandFloor, this breaks the consumption=0 竊・export=seed 竊・production=0
+    // circular lock that occurs when support cities first switch to production jobs post-v1.
+    function getTobaccoPlantDemandFloor(city) {
+        if (!hasDiv(DIV_TOBACCO)) return 0;
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            if (finishedProducts === 0) return 0; // pre-v1: support cities don't produce, no floor needed
+            const hasWH = city === HQ_CITY
+                ? true
+                : (c.getDivision(DIV_TOBACCO).cities.includes(city) && c.hasWarehouse(DIV_TOBACCO, city));
+            if (!hasWH) return 0;
+            const office = c.getOffice(DIV_TOBACCO, city);
+            const jobs = office.employeeJobs ?? {};
+            const throughputStaff =
+                Number(jobs[JOBS.ops] ?? 0) +
+                Number(jobs[JOBS.eng] ?? 0) +
+                Number(jobs[JOBS.mgmt] ?? 0);
+            // Use observed product production if available (1:1 Plants per product unit).
+            let observed = 0;
+            for (const pName of tobaccoProducts()) {
+                try {
+                    const info = c.getProduct(DIV_TOBACCO, city, pName);
+                    if (Number(info.developmentProgress ?? 0) < 100) continue;
+                    observed += Math.max(0, Number(info.productionAmount ?? 0));
+                } catch { }
+            }
+            return Math.max(
+                observed * 0.9,         // 90% of observed production (Plants:1 ratio)
+                throughputStaff * 0.8,  // staffing-based fallback when production hasn't started
+                Number(office.size ?? 0) * 0.25,
+            );
+        } catch {
+            return 0;
+        }
+    }
+
+    // Agriculture reqMats: Water:0.5, Chemicals:0.2 竊・Plants + Food.
+    // Chemicals is a required input 窶・if Agri has none it produces zero Plants, which means
+    // consumption reads 0, the export formula falls to just the seed refill, which then reaches
+    // the seed cap and drops to '0'. This floor breaks that circular stall.
+    function getAgriChemDemandFloor(city) {
+        if (!hasDiv(DIV_AGRI)) return 0;
+        try {
+            const office = c.getOffice(DIV_AGRI, city);
+            const jobs = office.employeeJobs ?? {};
+            const throughputStaff =
+                Number(jobs[JOBS.ops] ?? 0) +
+                Number(jobs[JOBS.eng] ?? 0) +
+                Number(jobs[JOBS.mgmt] ?? 0);
+            // Agri Chemicals ratio: 0.2 per Plants/Food unit produced.
+            // Use observed Plants/Food production scaled by 0.2 as the primary signal.
+            const plantsRate = Math.max(0, Number(c.getMaterial(DIV_AGRI, city, 'Plants').productionAmount ?? 0));
+            const foodRate   = Math.max(0, Number(c.getMaterial(DIV_AGRI, city, 'Food').productionAmount ?? 0));
+            const observedChemRate = (plantsRate + foodRate) * 0.2;
+            // Staffing fallback: rough throughput estimate when observed production is near 0.
+            const staffFloor = throughputStaff * 0.2;
+            const officeFloor = Number(office.size ?? 0) * 0.05;
+            return Math.max(observedChemRate, staffFloor, officeFloor, 0.5);
+        } catch {
+            return 0;
+        }
+    }
+
+    function getAgricultureDemandMaturity(city) {
+        if (!hasDiv(DIV_AGRI)) return 0;
+        try {
+            const plants = Math.max(0, Number(c.getMaterial(DIV_AGRI, city, 'Plants').productionAmount ?? 0));
+            const food = Math.max(0, Number(c.getMaterial(DIV_AGRI, city, 'Food').productionAmount ?? 0));
+            const prodRatio = clamp(Math.max(plants, food) / 4000, 0, 1);
+            const officeRatio = getOfficeGrowthRatio(DIV_AGRI, city, PHASE3_AGRI_TARGET_OFFICE, ROUND2_CLASSIC_AGRI_OFFICE);
+            const warehouseRatio = getWarehouseGrowthRatio(DIV_AGRI, city, ROUND1_ROUTE_WAREHOUSE_TARGET, ROUND2_AGRI_WAREHOUSE_LATE);
+            return clamp(
+                prodRatio * 0.40 +
+                officeRatio * 0.25 +
+                warehouseRatio * 0.25 +
+                getDivisionCityCoverageRatio(DIV_AGRI) * 0.10,
+                0,
+                1,
+            );
+        } catch {
+            return 0;
+        }
+    }
+
+    function getDynamicMaterialExportAmount({
+        targetDiv,
+        city,
+        material,
+        seed = 0,
+        minDemandRate = 0,
+        maturity = 0,
+        baseBufferCycles = 2,
+        matureBufferCycles = 4,
+        baseWarehousePct = 0.10,
+        matureWarehousePct = 0.18,
+        refillCycles = EXPORT_DYNAMIC_REFILL_CYCLES,
+        headroomMult = EXPORT_DYNAMIC_HEADROOM_MULT,
+    }) {
+        try {
+            const targetMat = c.getMaterial(targetDiv, city, material);
+            const stored = Math.max(0, Number(targetMat.stored ?? 0));
+            const consumption = Math.max(0, -Number(targetMat.productionAmount ?? 0));
+            const effectiveDemand = Math.max(consumption, Math.max(0, Number(minDemandRate ?? 0)));
+            const bufferCycles = scaleByMaturity(baseBufferCycles, matureBufferCycles, maturity);
+            const warehousePct = scaleByMaturity(baseWarehousePct, matureWarehousePct, maturity);
+            const warehouseCap = getWarehouseMaterialCapacity(targetDiv, city, material) * warehousePct;
+            const bufferedDemand = effectiveDemand * headroomMult;
+            const uncappedTarget = Math.max(seed, bufferedDemand * CYCLE_SECS * bufferCycles);
+            const targetStock = warehouseCap > 0
+                ? Math.min(uncappedTarget, warehouseCap)
+                : uncappedTarget;
+            const deficit = Math.max(0, targetStock - stored);
+            const refillRate = deficit / Math.max(CYCLE_SECS * refillCycles, 1);
+            return formatExportRate(bufferedDemand + refillRate);
+        } catch {
+            return '0';
+        }
+    }
+
+    function refreshMaterialExport(sourceDiv, sourceCity, targetDiv, targetCity, material, amount) {
+        if (!canConfigureMaterialExport(sourceDiv, sourceCity, targetDiv, targetCity, material)) return false;
+        const routeLabel = `${sourceDiv}/${sourceCity} ${material} -> ${targetDiv}/${targetCity}`;
+        try {
+            const sourceMat = c.getMaterial(sourceDiv, sourceCity, material);
+            const existing = Array.isArray(sourceMat.exports)
+                ? sourceMat.exports.find((exp) => exp.division === targetDiv && exp.city === targetCity)
+                : null;
+            if (existing?.amount === amount) return true;
+            // Only rewrite the route when the formula changed; constantly
+            // cancel/re-adding the same export makes debugging harder and gains nothing.
+            if (existing) {
+                try { c.cancelExportMaterial(sourceDiv, sourceCity, targetDiv, targetCity, material); } catch { }
+            }
+            c.exportMaterial(sourceDiv, sourceCity, targetDiv, targetCity, material, amount);
+            lastExportRouteError = '';
+            return true;
+        } catch (e) {
+            const msg = `${routeLabel}: ${e?.message ?? String(e)}`;
+            if (msg !== lastExportRouteError) {
+                lastExportRouteError = msg;
+                log(ns, `WARN: Could not configure export route ${msg}`, true, 'warning');
+            }
+            return false;
+        }
+    }
+
+    function configureExports() {
+        if (!c.hasUnlock(UNLOCKS.export)) return;
+        const { finishedProducts: finishedTobaccoProducts } = getTobaccoProductStats();
+        for (const city of CITIES) {
+            const chemPlantsDesired = getDynamicMaterialExportAmount({
+                targetDiv: DIV_CHEM,
+                city,
+                material: 'Plants',
+                seed: EXPORT_DYNAMIC_CHEM_PLANT_SEED,
+                minDemandRate: getChemicalPlantDemandFloor(city),
+                maturity: getChemicalDemandMaturity(city),
+                baseBufferCycles: EXPORT_DYNAMIC_CHEM_PLANT_BUFFER_CYCLES,
+                matureBufferCycles: EXPORT_DYNAMIC_CHEM_PLANT_BUFFER_CYCLES_MATURE,
+                baseWarehousePct: EXPORT_DYNAMIC_CHEM_PLANT_WAREHOUSE_PCT,
+                matureWarehousePct: EXPORT_DYNAMIC_CHEM_PLANT_WAREHOUSE_PCT_MATURE,
+            });
+            const tobPlantsDesired = finishedTobaccoProducts > 0
+                ? getDynamicMaterialExportAmount({
+                    targetDiv: DIV_TOBACCO,
+                    city,
+                    material: 'Plants',
+                    seed: ROUND2_TOB_PLANT_EXPORT_SEED,
+                    minDemandRate: getTobaccoPlantDemandFloor(city),
+                    maturity: getTobaccoDemandMaturity(city),
+                    baseBufferCycles: EXPORT_DYNAMIC_TOB_PLANT_BUFFER_CYCLES,
+                    matureBufferCycles: EXPORT_DYNAMIC_TOB_PLANT_BUFFER_CYCLES_MATURE,
+                    baseWarehousePct: EXPORT_DYNAMIC_TOB_PLANT_WAREHOUSE_PCT,
+                    matureWarehousePct: EXPORT_DYNAMIC_TOB_PLANT_WAREHOUSE_PCT_MATURE,
+                })
+                : '0';
+            const agriPlantBudget = (() => {
+                try { return Math.max(0, Number(c.getMaterial(DIV_AGRI, city, 'Plants').productionAmount ?? 0)) * 0.98; }
+                catch { return 0; }
+            })();
+            // Allocate proportionally so neither div starves when the budget is tight.
+            // If both fit in the budget, each gets exactly what it asked for.
+            const chemDesired = parseExportRate(chemPlantsDesired);
+            const tobDesired  = parseExportRate(tobPlantsDesired);
+            const totalDesired = chemDesired + tobDesired;
+            let chemPlantsRate, tobPlantsRate;
+            if (totalDesired <= agriPlantBudget || totalDesired <= 0) {
+                chemPlantsRate = chemDesired;
+                tobPlantsRate  = tobDesired;
+            } else {
+                chemPlantsRate = agriPlantBudget * (chemDesired / totalDesired);
+                tobPlantsRate  = agriPlantBudget * (tobDesired  / totalDesired);
+            }
+            const chemPlantsExp = formatExportRate(chemPlantsRate);
+            const tobPlantsExp = formatExportRate(tobPlantsRate);
+            const agriChemExp = getDynamicMaterialExportAmount({
+                targetDiv: DIV_AGRI,
+                city,
+                material: 'Chemicals',
+                seed: EXPORT_DYNAMIC_AGRI_CHEM_SEED,
+                minDemandRate: getAgriChemDemandFloor(city),
+                maturity: getAgricultureDemandMaturity(city),
+                baseBufferCycles: EXPORT_DYNAMIC_AGRI_CHEM_BUFFER_CYCLES,
+                matureBufferCycles: EXPORT_DYNAMIC_AGRI_CHEM_BUFFER_CYCLES_MATURE,
+                baseWarehousePct: EXPORT_DYNAMIC_AGRI_CHEM_WAREHOUSE_PCT,
+                matureWarehousePct: EXPORT_DYNAMIC_AGRI_CHEM_WAREHOUSE_PCT_MATURE,
+            });
+            refreshMaterialExport(DIV_AGRI, city, DIV_CHEM, city, 'Plants', chemPlantsExp);
+            refreshMaterialExport(DIV_AGRI, city, DIV_TOBACCO, city, 'Plants', tobPlantsExp);
+            refreshMaterialExport(DIV_CHEM, city, DIV_AGRI, city, 'Chemicals', agriChemExp);
+        }
+        for (const city of CITIES) {
+            setLeftovers(DIV_AGRI, city, ['Chemicals', 'Water']);
+            setLeftovers(DIV_CHEM, city, ['Plants', 'Water']);
+            setLeftovers(DIV_TOBACCO, city, ['Plants']);
+        }
+        // Stop selling Chem Chemicals to market 窶・they must flow to Agri via export.
+        // tryRound2ChemStep calls sellMaterial('MAX','MP') for HQ every cycle, which
+        // takes priority over the export route and causes imp=0 at Agri HQ while
+        // Agri buys from market instead.  Zero-out the sell order here so the export
+        // configured above actually delivers.
+        if (hasDiv(DIV_CHEM)) {
+            for (const city of CITIES) {
+                try {
+                    if (c.hasWarehouse(DIV_CHEM, city)) {
+                        c.sellMaterial(DIV_CHEM, city, 'Chemicals', 0, 'MP');
+                    }
+                } catch { }
+            }
+        }
+    }
+
+    function tryUpgradeWarehouseTo(div, city, targetLevel) {
+        try {
+            while (c.getWarehouse(div, city).level < targetLevel) {
+                const cost = c.getUpgradeWarehouseCost(div, city, 1);
+                if (c.getCorporation().funds < cost) break;
+                c.upgradeWarehouse(div, city, 1);
+            }
+        } catch { }
+    }
+
+    function tryFillOffice(div, city, targetSize, jobs) {
+        try { fillOffice(div, city, targetSize, jobs); } catch { }
+    }
+
+    function tobaccoProducts() {
+        try { return [...c.getDivision(DIV_TOBACCO).products]; } catch { return []; }
+    }
+
+    function hasActiveTobaccoDevelopment() {
+        for (const name of tobaccoProducts()) {
+            try {
+                if (c.getProduct(DIV_TOBACCO, HQ_CITY, name).developmentProgress < 100) return true;
+            } catch { }
+        }
+        return false;
+    }
+
+    function nextTobaccoProductName() {
+        let max = 0;
+        for (const name of tobaccoProducts()) {
+            const m = /^Tobac-v(\d+)$/.exec(name);
+            if (!m) continue;
+            const n = Number(m[1]);
+            if (Number.isFinite(n)) max = Math.max(max, n);
+        }
+        return `Tobac-v${max + 1}`;
+    }
+
+    function tobaccoProductVersion(name) {
+        const m = /^Tobac-v(\d+)$/.exec(name);
+        const n = m ? Number(m[1]) : NaN;
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    function getHighestTobaccoProductVersion() {
+        let maxVersion = 0;
+        for (const name of tobaccoProducts()) {
+            maxVersion = Math.max(maxVersion, tobaccoProductVersion(name));
+        }
+        return maxVersion;
+    }
+
+    function getTobaccoProductCapacity() {
+        if (!hasDiv(DIV_TOBACCO)) return 0;
+        let capacity = 3;
+        try { if (c.hasResearched(DIV_TOBACCO, 'uPgrade: Capacity.I')) capacity++; } catch { }
+        try { if (c.hasResearched(DIV_TOBACCO, 'uPgrade: Capacity.II')) capacity++; } catch { }
+        return capacity;
+    }
+
+    function getTobaccoRetirementCandidate() {
+        let candidate = null;
+        for (const name of tobaccoProducts()) {
+            try {
+                const product = c.getProduct(DIV_TOBACCO, HQ_CITY, name);
+                const progress = Number(product.developmentProgress ?? 0);
+                if (progress < 100) continue;
+                const rating = Number(product.rating ?? 0);
+                const version = tobaccoProductVersion(name);
+                if (!candidate ||
+                    rating < candidate.rating - 1e-9 ||
+                    (Math.abs(rating - candidate.rating) <= 1e-9 && version < candidate.version)) {
+                    candidate = { name, rating, version };
+                }
+            } catch { }
+        }
+        return candidate?.name ?? null;
+    }
+
+    function getTobaccoProductStats() {
+        let highestProgress = 0;
+        let activeProgress = 0;
+        let activeProducts = 0;
+        let finishedProducts = 0;
+        for (const name of tobaccoProducts()) {
+            try {
+                const progress = c.getProduct(DIV_TOBACCO, HQ_CITY, name).developmentProgress || 0;
+                if (progress > highestProgress) highestProgress = progress;
+                if (progress >= 100) {
+                    finishedProducts++;
+                } else {
+                    activeProducts++;
+                    if (progress > activeProgress) activeProgress = progress;
+                }
+            } catch { }
+        }
+        return { highestProgress, activeProgress, activeProducts, finishedProducts };
+    }
+
+    function isBn3Round2MaterialTargetSetFilled(targets) {
+        for (const city of CITIES) {
+            try {
+                for (const [mat, target] of Object.entries(targets)) {
+                    if ((c.getMaterial(DIV_AGRI, city, mat).stored ?? 0) + 0.5 < target) return false;
+                }
+            } catch {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function isBn3HighBudgetPostfillUnlocked() {
+        if (!useBn3HighBudgetRound2() || !hasDiv(DIV_AGRI)) return false;
+        if (bn3HighBudgetPostfillUnlocked) return true;
+        if (isBn3Round2MaterialTargetSetFilled(getBn3BaseMaterialTargets())) {
+            bn3HighBudgetPostfillUnlocked = true;
+            return true;
+        }
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            if (finishedProducts > 0 ||
+                c.getUpgradeLevel('Smart Storage') > ROUND2_BN3_SMART_TARGET ||
+                c.getUpgradeLevel('ABC SalesBots') > ROUND2_BN3_SALESBOT_TARGET) {
+                bn3HighBudgetPostfillUnlocked = true;
+                return true;
+            }
+        } catch { }
+        return false;
+    }
+
+    // One-way latch: set once the corp is mature enough to enter the debt-spike phase.
+    // Checks base (pre-spike) maturity so there's no circular dep with isBn3Round2MaterialFilled.
+    function isLeanTobSpikeUnlocked() {
+        if (!useBn3LeanTobRound2() || !hasDiv(DIV_AGRI) || !hasDiv(DIV_TOBACCO)) return false;
+        if (bn3LeanTobSpikeUnlocked) return true;
+        // Base targets must be filled first 窶・once spike activates these targets switch to spike levels.
+        if (!isBn3Round2MaterialTargetSetFilled(getBn3BaseMaterialTargets())) return false;
+        if (!isBn3LateThroughputReady()) return false;
+        if (getHighestTobaccoProductVersion() < 5) return false;
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            if (finishedProducts <= 0) return false;
+            if (c.getUpgradeLevel('Wilson Analytics') < ROUND2_BN3_LATE_WILSON_TARGET) return false;
+            if (c.getHireAdVertCount(DIV_TOBACCO) < ROUND2_BN3_LATE_TOB_ADVERT_TARGET) return false;
+            if (c.getUpgradeLevel('Smart Storage') < ROUND2_BN3_LEAN_TOB_SPIKE_SMART_STORAGE) return false;
+            // All pre-spike dummy divisions must exist and settle period must be complete.
+            const divNames = c.getCorporation().divisions;
+            for (let i = 1; i <= ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_TARGET; i++) {
+                if (!divNames.includes(`Dummy-${i}`)) return false;
+            }
+        } catch { return false; }
+        // Settle period: wait for the offer to absorb the cash dip from dummy creation.
+        if (bn3LeanTobPreSpikeDummySettleCounter > 0) return false;
+        bn3LeanTobSpikeUnlocked = true;
+        log(ns, `INFO: Lean-tob spike unlocked 窶・${ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_TARGET} dummies settled, switching to spike targets with debt fill up to ${formatMoney(ROUND2_BN3_LEAN_TOB_SPIKE_DEBT_MAX)}.`, true, 'info');
+        return true;
+    }
+
+    function sumJobCounts({ ops = 0, eng = 0, biz = 0, mgmt = 0, rnd = 0 } = {}) {
+        return ops + eng + biz + mgmt + rnd;
+    }
+
+    function fillJobRemainder(jobCounts, targetSize, order) {
+        const filled = { ...jobCounts };
+        let assigned = sumJobCounts(filled);
+        for (let i = 0; assigned < targetSize; i++, assigned++) {
+            const job = order[i % order.length];
+            filled[job] = Number(filled[job] ?? 0) + 1;
+        }
+        return filled;
+    }
+
+    function getRound2TobaccoHQCompletedJobs(size) {
+        if (size >= ROUND2_TOB_HQ_OFFICE) {
+            return fillJobRemainder(ROUND2_TOB_HQ_JOBS, size, ['eng', 'mgmt', 'ops']);
+        }
+        if (size >= 9) {
+            return fillJobRemainder(ROUND2_TOB_HQ_MID_JOBS, size, ['eng', 'mgmt', 'eng', 'ops', 'mgmt', 'eng']);
+        }
+        return fillJobRemainder(ROUND2_TOB_HQ_SMALL_JOBS, size, ['eng', 'mgmt', 'ops']);
+    }
+
+    function getTobaccoFlowStats() {
+        if (!hasDiv(DIV_TOBACCO)) return {};
+        try {
+            const flow = getTobaccoFlowNumbers();
+            return {
+                tobActive: flow.activeProducts,
+                tobRev: formatMoney(flow.revenue),
+                tobExp: formatMoney(flow.expenses),
+                tobProfit: formatMoney(flow.revenue - flow.expenses),
+                tobStore: flow.stored.toFixed(0),
+                tobMake: `${flow.production.toFixed(1)}/s`,
+                tobSell: `${flow.sell.toFixed(1)}/s`,
+                tobPlants: flow.plants.toFixed(0),
+                tobImp: `${flow.imports.toFixed(1)}/s`,
+                tobBuy: `${flow.buy.toFixed(1)}/s`,
+                tobIdle: flow.idle,
+            };
+        } catch {
+            return {};
+        }
+    }
+
+    function getTobaccoFlowNumbers() {
+        if (!hasDiv(DIV_TOBACCO)) {
+            return {
+                activeProducts: 0, revenue: 0, expenses: 0, stored: 0, production: 0, sell: 0,
+                imports: 0, buy: 0, plants: 0, idle: 0,
+            };
+        }
+        try {
+            const division = c.getDivision(DIV_TOBACCO);
+            const revenue = Number(division.lastCycleRevenue ?? 0);
+            const expenses = Number(division.lastCycleExpenses ?? 0);
+            let activeProducts = 0;
+            let stored = 0;
+            let production = 0;
+            let sell = 0;
+            let imports = 0;
+            let buy = 0;
+            for (const name of division.products) {
+                let progress = 0;
+                try {
+                    progress = Number(c.getProduct(DIV_TOBACCO, HQ_CITY, name).developmentProgress ?? 0);
+                } catch { }
+                if (progress < 100) {
+                    activeProducts++;
+                    continue;
+                }
+                for (const city of division.cities) {
+                    try {
+                        const info = c.getProduct(DIV_TOBACCO, city, name);
+                        stored += Number(info.stored ?? 0);
+                        production += Number(info.productionAmount ?? 0);
+                        sell += Number(info.actualSellAmount ?? 0);
+                    } catch { }
+                }
+            }
+            let plants = 0;
+            for (const city of division.cities) {
+                try {
+                    const plant = c.getMaterial(DIV_TOBACCO, city, 'Plants');
+                    plants += Number(plant.stored ?? 0);
+                    imports += Number(plant.importAmount ?? 0);
+                    buy += Number(plant.buyAmount ?? 0);
+                } catch { }
+            }
+            const office = c.getOffice(DIV_TOBACCO, HQ_CITY);
+            const jobs = office.employeeJobs ?? {};
+            const assigned = Number(jobs[JOBS.ops] ?? 0) +
+                Number(jobs[JOBS.eng] ?? 0) +
+                Number(jobs[JOBS.biz] ?? 0) +
+                Number(jobs[JOBS.mgmt] ?? 0) +
+                Number(jobs[JOBS.rnd] ?? 0);
+            return {
+                activeProducts,
+                revenue,
+                expenses,
+                stored,
+                production,
+                sell,
+                imports,
+                buy,
+                plants,
+                idle: Math.max(0, Number(office.size ?? 0) - assigned),
+            };
+        } catch {
+            return {
+                activeProducts: 0, revenue: 0, expenses: 0, stored: 0, production: 0, sell: 0,
+                imports: 0, buy: 0, plants: 0, idle: 0,
+            };
+        }
+    }
+
+    function getTobaccoExportRouteStats() {
+        if (!hasDiv(DIV_AGRI) || !hasDiv(DIV_TOBACCO) || !c.hasUnlock(UNLOCKS.export)) return {};
+        try {
+            const exports = c.getMaterial(DIV_AGRI, HQ_CITY, 'Plants').exports ?? [];
+            const route = exports.find((exp) => exp.division === DIV_TOBACCO && exp.city === HQ_CITY);
+            return {
+                tobRoute: route ? 'yes' : 'no',
+                tobRouteAmt: route?.amount ?? 'none',
+            };
+        } catch {
+            return {};
+        }
+    }
+
+    function getTobaccoProductInvestment(bestOffer = 0) {
+        const funds = c.getCorporation().funds;
+        const { finishedProducts, highestProgress } = getTobaccoProductStats();
+        let investPct = useBn3HighBudgetRound2()
+            ? ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_PCT
+            : opts['aggressive-round2']
+                ? ROUND2_AGGR_PRODUCT_INVEST_PCT
+                : useBn3LeanTobRound2()
+                    ? ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_PCT
+                    : 0.01;
+        let investCap = useBn3HighBudgetRound2()
+            ? ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_CAP
+            : opts['aggressive-round2']
+                ? ROUND2_PRODUCT_MAX_INVEST_AGGR
+                : useBn3LeanTobRound2()
+                    ? ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_CAP
+                    : ROUND2_PRODUCT_MAX_INVEST;
+        let investMin = useBn3HighBudgetRound2() ? ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_MIN : ROUND2_PRODUCT_MIN_INVEST;
+        if (useBn3HighBudgetRound2() && finishedProducts > 0) {
+            const late = bestOffer >= ROUND2_BN3_LATE_VALUATION_TRIGGER;
+            investPct = late
+                ? ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_PCT_LATE
+                : ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_PCT_POSTDONE;
+            investCap = late
+                ? ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_CAP_LATE
+                : ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_CAP_POSTDONE;
+            investMin = late
+                ? ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_MIN_LATE
+                : ROUND2_BN3_HIGH_BUDGET_PRODUCT_INVEST_MIN_POSTDONE;
+        } else if (useBn3LeanTobRound2() && finishedProducts > 0) {
+            const late = bestOffer >= ROUND2_BN3_LEAN_TOB_SUPPORT_TRIGGER;
+            investPct = late
+                ? ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_PCT_LATE
+                : ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_PCT_POSTDONE;
+            investCap = late
+                ? ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_CAP_LATE
+                : ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_CAP_POSTDONE;
+            investMin = late
+                ? ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_MIN_LATE
+                : ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_MIN_POSTDONE;
+        }
+        return Math.max(investMin, Math.min(funds * investPct, investCap));
+    }
+
+    function isLeanTobaccoProductCycleReady(bestOffer = 0, stagnantChecks = 0) {
+        if (!useBn3LeanTobRound2()) return true;
+        if (bestOffer + ROUND2_BN3_LEAN_TOB_PRODUCT_CYCLE_TOLERANCE >= ROUND2_BN3_LEAN_TOB_PREFILL_HQ_TRIGGER) return true;
+        return stagnantChecks >= ROUND2_BN3_LEAN_TOB_PRODUCT_CYCLE_STAGNATION;
+    }
+
+    function shouldFreezeBn3LeanTobaccoProductCycle(bestOffer = 0) {
+        if (!useBn3LeanTobRound2() || !hasDiv(DIV_TOBACCO)) return false;
+        if (bestOffer < ROUND2_BN3_LATE_VALUATION_TRIGGER) return false;
+        if (!isBn3Round2MaterialFilled()) return false;
+        const { finishedProducts, highestProgress } = getTobaccoProductStats();
+        if (finishedProducts < 2) return false;
+        return getHighestTobaccoProductVersion() >= ROUND2_BN3_LEAN_TOB_PRODUCT_FREEZE_VERSION;
+    }
+
+    function ensureTobaccoProduct(reserve = 0, bestOffer = 0, stagnantChecks = 0) {
+        if (!hasDiv(DIV_TOBACCO) || hasActiveTobaccoDevelopment()) return;
+        if (shouldFreezeBn3LeanTobaccoProductCycle(bestOffer)) return;
+        if (!isBn3HighBudgetProductCycleReady(bestOffer, stagnantChecks)) {
+            noteBn3Gate(
+                'product-cycle',
+                'BN3 high-budget product cycle hold active - pausing new Tobacco product spending until cashflow and valuation recover.',
+            );
+            return;
+        }
+        try {
+            const invest = getTobaccoProductInvestment(bestOffer);
+            const funds = c.getCorporation().funds;
+            if (funds - invest < reserve) return;
+            const capacity = getTobaccoProductCapacity();
+            const products = tobaccoProducts();
+            if (products.length >= capacity) {
+                const cycleReady = isLeanTobaccoProductCycleReady(bestOffer, stagnantChecks);
+                if (!cycleReady) return;
+                const retired = getTobaccoRetirementCandidate();
+                if (!retired) return;
+                c.discontinueProduct(DIV_TOBACCO, retired);
+                log(ns, `INFO: Retired ${retired} to free a Tobacco product slot.`, true, 'info');
+            }
+            const name = nextTobaccoProductName();
+            c.makeProduct(DIV_TOBACCO, HQ_CITY, name, invest / 2, invest / 2);
+            lastTobaccoProductError = '';
+            log(ns, `INFO: Started product ${name} with ${formatMoney(invest)} investment.`, true, 'info');
+        } catch (e) {
+            const msg = e?.message ?? String(e);
+            if (msg !== lastTobaccoProductError) {
+                lastTobaccoProductError = msg;
+                log(ns, `WARN: Could not start Tobacco product: ${msg}`, true, 'warning');
+            }
+        }
+    }
+
+    function getBn3LeanTobaccoProductReserve(baseReserve) {
+        if (!useBn3ExpandedTobaccoRound2() || !hasDiv(DIV_TOBACCO)) return baseReserve;
+        const { finishedProducts } = getTobaccoProductStats();
+        if (finishedProducts > 0) return baseReserve;
+        const preFinishReserve = useBn3HighBudgetRound2()
+            ? ROUND2_BN3_HIGH_BUDGET_PRODUCT_RESERVE
+            : ROUND2_BN3_LEAN_TOB_PRODUCT_RESERVE;
+        return Math.max(baseReserve, preFinishReserve);
+    }
+
+    function canSpend(cost, reserve = 0) {
+        return Number.isFinite(cost) && cost >= 0 && c.getCorporation().funds - cost >= reserve;
+    }
+
+    function getRound2ReserveInfo(bestOffer, rpGateCleared) {
+        const funds = c.getCorporation().funds;
+        if (opts['aggressive-round2']) {
+            const { highestProgress, finishedProducts } = getTobaccoProductStats();
+            const productWarm = finishedProducts > 0 || highestProgress >= ROUND2_AGGR_FREEZE_PROGRESS;
+            if (rpGateCleared || bestOffer >= 2e12) return { reserve: Math.max(80e9, funds * 0.65), label: 'aggr-peak' };
+            if (productWarm && bestOffer >= ROUND2_FREEZE_BEST_OFFER) return { reserve: Math.max(55e9, funds * 0.48), label: 'aggr-high' };
+            if (bestOffer >= ROUND2_AGGR_EARLY_SUPPORT_TRIGGER || highestProgress >= ROUND2_AGGR_EARLY_SUPPORT_PROGRESS) {
+                return { reserve: Math.max(25e9, funds * 0.30), label: 'aggr-mid' };
+            }
+            return { reserve: Math.max(12e9, funds * 0.18), label: 'aggr-low' };
+        }
+        if (rpGateCleared || bestOffer >= 2e12) return { reserve: Math.max(ROUND2_RESERVE_PEAK, funds * 0.90), label: 'peak' };
+        if (bestOffer >= ROUND2_FREEZE_BEST_OFFER) return { reserve: Math.max(ROUND2_RESERVE_HIGH, funds * 0.82), label: 'high' };
+        if (bestOffer >= 5e11) return { reserve: Math.max(ROUND2_RESERVE_MID, funds * 0.72), label: 'mid' };
+        return { reserve: Math.max(ROUND2_RESERVE_MIN, funds * 0.58), label: 'low' };
+    }
+
+    function getRound2Reserve(bestOffer, rpGateCleared) {
+        return getRound2ReserveInfo(bestOffer, rpGateCleared).reserve;
+    }
+
+    function formatRound2Debug(parts) {
+        return Object.entries(parts)
+            .filter(([, value]) => value !== undefined && value !== null && value !== '')
+            .map(([key, value]) => `${key}=${value}`)
+            .join(' ');
+    }
+
+    function getRound2StagnationDebugStats() {
+        return {
+            meaningfulBest: formatMoney(latestMeaningfulRound2Offer),
+            stagnantNeed: formatMoney(latestRound2StagnantNeed),
+            floorHold: `${latestBn3PragmaticFloorChecks}/${ROUND2_BN3_PRAGMATIC_ACCEPT_FLOOR_HOLD_CHECKS}`,
+        };
+    }
+
+    function estimateRound2AssetProxy() {
+        try {
+            let assets = Number(c.getCorporation().funds ?? 0);
+            for (const div of c.getCorporation().divisions) {
+                let cities = [];
+                try { cities = c.getDivision(div).cities ?? []; } catch { }
+                for (const city of cities) {
+                    for (const mat of DEBUG_ASSET_MATS) {
+                        try {
+                            const info = c.getMaterial(div, city, mat);
+                            const stored = Number(info.stored ?? 0);
+                            const price = Number(info.averagePrice ?? info.marketPrice ?? 0);
+                            if (stored > 0 && price > 0) assets += stored * price;
+                        } catch { }
+                    }
+                }
+            }
+            return assets;
+        } catch {
+            return Number(c.getCorporation().funds ?? 0);
+        }
+    }
+
+    function countRound2OfficesAndWarehouses() {
+        try {
+            let total = 0;
+            for (const div of c.getCorporation().divisions) {
+                let cities = [];
+                try { cities = c.getDivision(div).cities ?? []; } catch { }
+                total += cities.length;
+                for (const city of cities) {
+                    try {
+                        if (c.hasWarehouse(div, city)) total++;
+                    } catch { }
+                }
+            }
+            return total;
+        } catch {
+            return 0;
+        }
+    }
+
+    function getAgriWarehouseUsageSummary() {
+        try {
+            if (!hasDiv(DIV_AGRI)) return { avg: 0, peak: 0 };
+            let totalUse = 0;
+            let totalSize = 0;
+            let peakUse = 0;
+            for (const city of CITIES) {
+                try {
+                    const wh = c.getWarehouse(DIV_AGRI, city);
+                    const size = Number(wh.size ?? 0);
+                    const used = Number(wh.sizeUsed ?? 0);
+                    if (size <= 0) continue;
+                    totalUse += used;
+                    totalSize += size;
+                    peakUse = Math.max(peakUse, used / size);
+                } catch { }
+            }
+            if (totalSize <= 0) return { avg: 0, peak: 0 };
+            return {
+                avg: totalUse / totalSize,
+                peak: peakUse,
+            };
+        } catch {
+            return { avg: 0, peak: 0 };
+        }
+    }
+
+    function getAgriWarehouseUseStats() {
+        const usage = getAgriWarehouseUsageSummary();
+        const stats = {
+            whAvg: `${(usage.avg * 100).toFixed(1)}%`,
+            whPeak: `${(usage.peak * 100).toFixed(1)}%`,
+        };
+        // Per-city breakdown: only shown when at least one city is 竕･ 85% full,
+        // so it's silent in normal operation and visible when a city is pinned.
+        try {
+            if (hasDiv(DIV_AGRI)) {
+                const parts = [];
+                for (const city of CITIES) {
+                    try {
+                        const wh = c.getWarehouse(DIV_AGRI, city);
+                        const pct = Number(wh.sizeUsed ?? 0) / Number(wh.size ?? 1);
+                        if (pct >= 0.85) parts.push(`${getAgriCityDebugLabel(city)}:${(pct * 100).toFixed(0)}%`);
+                    } catch { }
+                }
+                if (parts.length > 0) stats.whCities = parts.join(',');
+            }
+        } catch { }
+        return stats;
+    }
+
+    function getAgriFlowNumbers() {
+        try {
+            let production = 0;
+            let sell = 0;
+            let stored = 0;
+            let water = 0;
+            let chemicals = 0;
+            let foodStock = 0;
+            let plantsStock = 0;
+            for (const city of CITIES) {
+                try {
+                    const food = c.getMaterial(DIV_AGRI, city, 'Food');
+                    const plants = c.getMaterial(DIV_AGRI, city, 'Plants');
+                    const waterMat = c.getMaterial(DIV_AGRI, city, 'Water');
+                    const chemMat = c.getMaterial(DIV_AGRI, city, 'Chemicals');
+                    production += Number(food.productionAmount ?? 0) + Number(plants.productionAmount ?? 0);
+                    sell += Number(food.actualSellAmount ?? 0) + Number(plants.actualSellAmount ?? 0);
+                    foodStock += Number(food.stored ?? 0);
+                    plantsStock += Number(plants.stored ?? 0);
+                    stored += Number(food.stored ?? 0) + Number(plants.stored ?? 0);
+                    water += Number(waterMat.stored ?? 0);
+                    chemicals += Number(chemMat.stored ?? 0);
+                } catch { }
+            }
+            return { production, sell, stored, water, chemicals, foodStock, plantsStock };
+        } catch {
+            return { production: 0, sell: 0, stored: 0, water: 0, chemicals: 0, foodStock: 0, plantsStock: 0 };
+        }
+    }
+
+    function getBn3AgriPressureSnapshot() {
+        const usage = getAgriWarehouseUsageSummary();
+        const flow = getAgriFlowNumbers();
+        const production = Math.max(0, Number(flow.production ?? 0));
+        const sell = Math.max(0, Number(flow.sell ?? 0));
+        const stored = Math.max(0, Number(flow.stored ?? 0));
+        const sellRatio = production > 0 ? sell / production : 1;
+        const stockCycles = sell > 0
+            ? stored / sell
+            : (production > 0 ? stored / production : 0);
+        const moderate =
+            usage.peak >= ROUND2_BN3_HIGH_BUDGET_PRESSURE_SUPPORT_PCT ||
+            (usage.avg >= 0.88 &&
+                sellRatio < 1.02 &&
+                stockCycles >= ROUND2_BN3_HIGH_BUDGET_PRESSURE_STOCK_CYCLES);
+        const severe =
+            usage.peak >= ROUND2_BN3_HIGH_BUDGET_PRESSURE_FULL_SUPPORT_PCT ||
+            (usage.avg >= 0.94 &&
+                sellRatio < 1.01 &&
+                stockCycles >= ROUND2_BN3_HIGH_BUDGET_PRESSURE_STOCK_CYCLES_FULL);
+        return {
+            avg: usage.avg,
+            peak: usage.peak,
+            production,
+            sell,
+            stored,
+            sellRatio,
+            stockCycles,
+            moderate,
+            severe,
+        };
+    }
+
+    function getAgriCityFlowNumbers(city) {
+        try {
+            const food = c.getMaterial(DIV_AGRI, city, 'Food');
+            const plants = c.getMaterial(DIV_AGRI, city, 'Plants');
+            const waterMat = c.getMaterial(DIV_AGRI, city, 'Water');
+            const chemMat = c.getMaterial(DIV_AGRI, city, 'Chemicals');
+            return {
+                foodProduction: Math.max(0, Number(food.productionAmount ?? 0)),
+                plantsProduction: Math.max(0, Number(plants.productionAmount ?? 0)),
+                foodStored: Math.max(0, Number(food.stored ?? 0)),
+                plantsStored: Math.max(0, Number(plants.stored ?? 0)),
+                waterStored: Math.max(0, Number(waterMat.stored ?? 0)),
+                chemicalsStored: Math.max(0, Number(chemMat.stored ?? 0)),
+            };
+        } catch {
+            return {
+                foodProduction: 0,
+                plantsProduction: 0,
+                foodStored: 0,
+                plantsStored: 0,
+                waterStored: 0,
+                chemicalsStored: 0,
+            };
+        }
+    }
+
+    function getAgriFlowStats() {
+        try {
+            const { production, sell, stored, water, chemicals } = getAgriFlowNumbers();
+            return {
+                agriProd: `${production.toFixed(1)}/s`,
+                agriSell: `${sell.toFixed(1)}/s`,
+                agriStock: stored.toFixed(0),
+                agriWC: `${water.toFixed(0)}/${chemicals.toFixed(0)}`,
+            };
+        } catch {
+            return {};
+        }
+    }
+
+    function getAgriCityDebugLabel(city) {
+        switch (city) {
+            case 'Aevum': return 'Aev';
+            case 'Chongqing': return 'Cho';
+            case 'Sector-12': return 'S12';
+            case 'New Tokyo': return 'NT';
+            case 'Ishima': return 'Ish';
+            case 'Volhaven': return 'Vol';
+            default: return city.slice(0, 3);
+        }
+    }
+
+    function getAgriCityWarehouseCompositionDebug() {
+        try {
+            return CITIES.map((city) => {
+                try {
+                    if (!c.hasWarehouse(DIV_AGRI, city)) return `${getAgriCityDebugLabel(city)}:na`;
+                    const wh = c.getWarehouse(DIV_AGRI, city);
+                    const size = Math.max(0, Number(wh.size ?? 0));
+                    const used = Math.max(0, Number(wh.sizeUsed ?? 0));
+                    const flow = getAgriCityFlowNumbers(city);
+                    const wcSpace =
+                        (flow.waterStored * getPhysicalMaterialSize('Water', getMaterialSize('Water'))) +
+                        (flow.chemicalsStored * getPhysicalMaterialSize('Chemicals', getMaterialSize('Chemicals')));
+                    const fpSpace =
+                        (flow.foodStored * ROUND1_AGRI_PRODUCT_MAT_SIZES.Food) +
+                        (flow.plantsStored * ROUND1_AGRI_PRODUCT_MAT_SIZES.Plants);
+                    let boostSpace = 0;
+                    for (const mat of AGRI_MATS) {
+                        try {
+                            const stored = Math.max(0, Number(c.getMaterial(DIV_AGRI, city, mat).stored ?? 0));
+                            boostSpace += stored * getPhysicalMaterialSize(mat);
+                        } catch { }
+                    }
+                    const knownSpace = wcSpace + fpSpace + boostSpace;
+                    const otherSpace = Math.max(0, used - knownSpace);
+                    const freeSpace = Math.max(0, size - used);
+                    const pct = (value) => size > 0 ? Math.round((value / size) * 100) : 0;
+                    return (
+                        `${getAgriCityDebugLabel(city)}:${pct(used)}` +
+                        `(wc${pct(wcSpace)},fp${pct(fpSpace)},b${pct(boostSpace)},o${pct(otherSpace)},f${pct(freeSpace)})`
+                    );
+                } catch {
+                    return `${getAgriCityDebugLabel(city)}:err`;
+                }
+            }).join('|');
+        } catch {
+            return 'na';
+        }
+    }
+
+    function getAgriCityInputsDebug() {
+        try {
+            return CITIES.map((city) => {
+                try {
+                    const flow = getAgriCityFlowNumbers(city);
+                    return `${getAgriCityDebugLabel(city)}:${flow.waterStored.toFixed(0)}/${flow.chemicalsStored.toFixed(0)}`;
+                } catch {
+                    return `${getAgriCityDebugLabel(city)}:err`;
+                }
+            }).join('|');
+        } catch {
+            return 'na';
+        }
+    }
+
+    function getStableCorpCycleStats() {
+        try {
+            const corp = c.getCorporation();
+            let revenue = 0;
+            let expenses = 0;
+            for (const div of corp.divisions ?? []) {
+                try {
+                    const info = c.getDivision(div);
+                    revenue += Number(info.lastCycleRevenue ?? 0);
+                    expenses += Number(info.lastCycleExpenses ?? 0);
+                } catch { }
+            }
+            return {
+                revenue,
+                expenses,
+                liveRevenue: Number(corp.revenue ?? 0),
+                nextState: corp.nextState ?? '?',
+                prevState: corp.prevState ?? '?',
+            };
+        } catch {
+            return { revenue: 0, expenses: 0, liveRevenue: 0, nextState: '?', prevState: '?' };
+        }
+    }
+
+    function getRound2CorpDebugStats() {
+        try {
+            const cycle = getStableCorpCycleStats();
+            const revenue = cycle.revenue;
+            const expenses = cycle.expenses;
+            const assetProxy = estimateRound2AssetProxy();
+            const assetDelta = lastRound2AssetProxy === null ? 0 : assetProxy - lastRound2AssetProxy;
+            lastRound2AssetProxy = assetProxy;
+            const offerFunds = Number(latestRound2Offer ?? 0);
+            const valuationAvg = offerFunds > 0 ? offerFunds / ROUND2_EFFECTIVE_OFFER_MULT : 0;
+            const ow = countRound2OfficesAndWarehouses();
+            const divisions = Number(c.getCorporation().divisions?.length ?? 0);
+            const salesBots = Number(c.getUpgradeLevel('ABC SalesBots') ?? 0);
+            const smartFactories = Number(c.getUpgradeLevel('Smart Factories') ?? 0);
+            const smartStorage = Number(c.getUpgradeLevel('Smart Storage') ?? 0);
+            const agriSmartSupply = getDivisionSmartSupplyCounts(DIV_AGRI);
+            const liveRevenueDrift = Math.abs(cycle.liveRevenue - revenue) > Math.max(1e3, Math.abs(revenue) * 0.05);
+            return {
+                assets: formatMoney(assetProxy),
+                dAssets: formatMoney(assetDelta),
+                avgVal: formatMoney(valuationAvg),
+                to5t: formatMoney(Math.max(0, MIN_ROUND2 - offerFunds)),
+                goal: `${((offerFunds / MIN_ROUND2) * 100).toFixed(1)}%`,
+                rev: formatMoney(revenue),
+                exp: formatMoney(expenses),
+                profit: formatMoney(revenue - expenses),
+                state: `${cycle.prevState}->${cycle.nextState}`,
+                revNow: liveRevenueDrift ? formatMoney(cycle.liveRevenue) : undefined,
+                sf: smartFactories,
+                ss: smartStorage,
+                divs: divisions,
+                divMult: `${Math.pow(1.1, divisions).toFixed(3)}x`,
+                ow,
+                owMult: `${Math.pow(ROUND2_OW_MULT_BASE, ow).toFixed(3)}x`,
+                salesBots,
+                agriSS: `${agriSmartSupply.enabled}/${agriSmartSupply.total}`,
+                tea: latestTeaSpend > 0 ? formatMoney(latestTeaSpend) : undefined,
+                party: latestPartySpend > 0 ? formatMoney(latestPartySpend) : undefined,
+                ...getAgriWarehouseUseStats(),
+                ...getAgriFlowStats(),
+            };
+        } catch {
+            return {};
+        }
+    }
+
+    function getExpandedTobaccoDebugStats() {
+        if (!useBn3ExpandedTobaccoRound2()) return {};
+        const route = useBn3HighBudgetRound2() ? 'high' : 'lean';
+        if (!hasDiv(DIV_TOBACCO)) {
+            return {
+                tobPath: route,
+                tobDiv: 'no',
+                exportUnlock: c.hasUnlock(UNLOCKS.export) ? 'yes' : 'no',
+            };
+        }
+        try {
+            const off = c.getOffice(DIV_TOBACCO, HQ_CITY);
+            const cityCount = c.getDivision(DIV_TOBACCO).cities.length;
+            const { highestProgress, activeProgress, activeProducts, finishedProducts } = getTobaccoProductStats();
+            return {
+                tobPath: route,
+                tobHQ: off.size,
+                tobAdv: c.getHireAdVertCount(DIV_TOBACCO),
+                tobCities: cityCount,
+                tobProd: (activeProducts > 0 ? activeProgress : highestProgress).toFixed(0),
+                tobDone: finishedProducts,
+                ...getTobaccoFlowStats(),
+                ...getTobaccoExportRouteStats(),
+            };
+        } catch {
+            return { tobPath: route };
+        }
+    }
+
+    function supportCities() {
+        return CITIES.filter((city) => city !== HQ_CITY);
+    }
+
+    function getRound2AgriOfficeTarget() {
+        if (useBn3HighBudgetRound2() && isBn3HighBudgetBuildoutMode()) {
+            // Profit-gated: true profit (boost mats excluded) must comfortably cover
+            // salaries + morale overhead before scaling from 6 竊・9 employees.
+            return getBn3HighBudgetAgriDynamicTarget();
+        }
+        return (opts['classic-round2'] || useBn3Round2()) ? ROUND2_CLASSIC_AGRI_OFFICE : ROUND2_AGRI_OFFICE;
+    }
+
+    function getRound2AgriWarehouseTarget() {
+        return (opts['classic-round2'] || useBn3Round2()) ? ROUND2_CLASSIC_AGRI_WAREHOUSE : ROUND2_AGRI_WAREHOUSE;
+    }
+
+    function getRound2AgriAdvertTarget() {
+        return opts['classic-round2'] ? getRound1AdvertTarget() : ROUND2_AGRI_ADVERT;
+    }
+
+    function getRound2AgriJobs(size) {
+        if (useBn3HighBudgetRound2()) {
+            // Formula-based, RP-aware allocation 窶・scales continuously with office size
+            // and Agri research progress.  Agri needs balanced Ops/Eng for output and
+            // quality, Biz for sell throughput, Mgmt at 竕･6 to buffer morale/energy.
+            //
+            // R&D ratio interpolates from 22% (RP=0) down to 8% (RP=700) as the
+            // quality loop matures and production weight becomes more valuable.
+            let agriRP = 0;
+            try { agriRP = Number(c.getDivision(DIV_AGRI).researchPoints ?? 0); } catch { }
+            const rpProgress = Math.min(1, agriRP / RP_TARGET_AGRI);
+            const rndRatio  = 0.22 - rpProgress * (0.22 - 0.08);  // 22% 竊・8%
+
+            const rndCount  = Math.max(1, Math.round(size * rndRatio));
+            const mgmtCount = size >= 6 ? Math.max(1, Math.round(size * 0.20)) : 0;
+            const bizCount  = Math.max(1, Math.round(size * 0.12));
+            const engCount  = Math.max(1, Math.round(size * 0.25));
+            const opsCount  = size - rndCount - mgmtCount - bizCount - engCount;
+            if (opsCount >= 1) return { ops: opsCount, eng: engCount, biz: bizCount, mgmt: mgmtCount, rnd: rndCount };
+            // Fallback: ensure at least 1 Ops and keep sensible proportions
+            const safeRnd  = Math.max(1, Math.floor(size / 5));
+            const safeMgmt = size >= 6 ? 1 : 0;
+            const safeBiz  = 1;
+            const safeEng  = Math.max(1, Math.round((size - safeRnd - safeMgmt - safeBiz) * 0.45));
+            return { ops: Math.max(1, size - safeRnd - safeMgmt - safeBiz - safeEng), eng: safeEng, biz: safeBiz, mgmt: safeMgmt, rnd: safeRnd };
+        }
+        if (opts['classic-round2'] || useBn3Round2()) {
+            if (size >= ROUND2_CLASSIC_AGRI_OFFICE) return ROUND2_CLASSIC_AGRI_JOBS;
+            if (size >= 8) return ROUND2_CLASSIC_AGRI_MID_JOBS;
+            if (size <= 4) return ROUND2_AGRI_PRODUCTION_JOBS;
+        }
+        return size >= ROUND2_AGRI_OFFICE ? ROUND2_AGRI_JOBS : ROUND2_AGRI_SMALL_JOBS;
+    }
+
+    function getRound2AgriPostfillSalesJobs(size) {
+        if (size >= ROUND2_CLASSIC_AGRI_OFFICE) return ROUND2_CLASSIC_AGRI_POSTFILL_SALES_JOBS;
+        if (size >= 8) return ROUND2_CLASSIC_AGRI_POSTFILL_SALES_MID_JOBS;
+        return getRound2AgriJobs(size);
+    }
+
+    function getBn3AgriPressureReliefJobs(size) {
+        if (size >= ROUND2_CLASSIC_AGRI_OFFICE) return { ops: 2, eng: 2, biz: 2, mgmt: 2, rnd: Math.max(0, size - 8) };
+        if (size >= 8) return { ops: 2, eng: 2, biz: 2, mgmt: 1, rnd: Math.max(0, size - 7) };
+        return getRound2AgriJobs(size);
+    }
+
+    function getBn3AgriPostfillReliefJobs(size) {
+        if (size >= ROUND2_CLASSIC_AGRI_OFFICE) return { ops: 1, eng: 1, biz: 5, mgmt: 2 };
+        if (size >= 8) return { ops: 1, eng: 1, biz: 4, mgmt: 2 };
+        if (size <= 4) return { ops: 1, biz: 2, mgmt: 1 };
+        return { ops: 1, eng: 1, biz: 3, mgmt: 1, rnd: Math.max(0, size - 6) };
+    }
+
+    function shouldUseBn3AgriPressureRelief(city) {
+        if (!useBn3Round2()) return false;
+        if (isBn3Round2MaterialFilled()) return false;
+        try {
+            const wh = c.getWarehouse(DIV_AGRI, city);
+            const usage = Number(wh.size ?? 0) > 0 ? Number(wh.sizeUsed ?? 0) / Number(wh.size ?? 1) : 0;
+            if (usage >= 0.95) return true;
+            const food = c.getMaterial(DIV_AGRI, city, 'Food');
+            const plants = c.getMaterial(DIV_AGRI, city, 'Plants');
+            const stored = Number(food.stored ?? 0) + Number(plants.stored ?? 0);
+            const actualSell = Number(food.actualSellAmount ?? 0) + Number(plants.actualSellAmount ?? 0);
+            return usage >= 0.85 && stored > 25 && actualSell <= 0;
+        } catch {
+            return false;
+        }
+    }
+
+    function shouldUseBn3AgriPostfillRelief(city) {
+        if (!useBn3Round2()) return false;
+        if (!isBn3Round2MaterialFilled() && !isBn3HighBudgetPostfillUnlocked()) return false;
+        try {
+            const wh = c.getWarehouse(DIV_AGRI, city);
+            const usage = Number(wh.size ?? 0) > 0 ? Number(wh.sizeUsed ?? 0) / Number(wh.size ?? 1) : 0;
+            const food = c.getMaterial(DIV_AGRI, city, 'Food');
+            const plants = c.getMaterial(DIV_AGRI, city, 'Plants');
+            const stored = Number(food.stored ?? 0) + Number(plants.stored ?? 0);
+            const production = Math.max(0, Number(food.productionAmount ?? 0)) + Math.max(0, Number(plants.productionAmount ?? 0));
+            const actualSell = Math.max(0, Number(food.actualSellAmount ?? 0)) + Math.max(0, Number(plants.actualSellAmount ?? 0));
+            if (usage >= 0.95) return true;
+            return usage >= 0.80 &&
+                stored > Math.max(250, production * 5) &&
+                actualSell < production * 0.97;
+        } catch {
+            return false;
+        }
+    }
+
+    function getBn3PostfillSalesMode() {
+        if (!useBn3PostfillSales()) return 'off';
+        if (!isBn3Round2MaterialFilled() && !isBn3HighBudgetPostfillUnlocked()) return 'armed';
+        return 'balanced';
+    }
+
+    function shouldStabilizeBn3Round2Offer(bestOffer, stagnantChecks) {
+        if (!useBn3Round2() || !useBn3LeanTobRound2()) return false;
+        if (!isBn3Round2MaterialFilled()) return false;
+        if (bestOffer < ROUND2_BN3_LATE_VALUATION_TRIGGER) return false;
+        if (stagnantChecks > ROUND2_BN3_PEAK_STABILIZE_MAX_STAGNATION) return false;
+        const currentOffer = Math.max(0, Number(latestRound2Offer ?? 0));
+        return currentOffer >= bestOffer * ROUND2_BN3_PEAK_STABILIZE_RATIO;
+    }
+
+    function getRound2AgriProductionJobs(size) {
+        if (size <= 4) return ROUND2_AGRI_PRODUCTION_JOBS;
+        if (size < ROUND2_AGRI_OFFICE) return { ops: 2, eng: 2, biz: 1, mgmt: 1, rnd: Math.max(0, size - 6) };
+        return { ops: 2, eng: 3, biz: 1, mgmt: 1, rnd: Math.max(0, size - 7) };
+    }
+
+    function getRound2TobaccoHQTargetSize() {
+        if (useBn3LeanTobRound2()) return ROUND2_BN3_LEAN_TOB_HQ_OFFICE;
+        if (useBn3HighBudgetRound2() && isBn3HighBudgetBuildoutMode()) {
+            // Profit-gated: keep HQ small while true cash flow is thin, scale up as
+            // operational profit (boost-mat revenue excluded) justifies the overhead.
+            return getBn3HighBudgetTobHQDynamicTarget();
+        }
+        return useAggressiveRound2Targets() ? ROUND2_TOB_HQ_OFFICE_AGGR : ROUND2_TOB_HQ_OFFICE;
+    }
+
+    function getRound2TobaccoHQProgressJobs(size) {
+        if (useBn3ExpandedTobaccoRound2()) {
+            // Product development speed only depends on Operations, Engineer, and
+            // Management in the creation-city office. Choose the best O/E/M split
+            // for the current office size using the game's own progress formula.
+            let best = { ops: 0, eng: Math.max(1, size), mgmt: 0 };
+            let bestScore = -Infinity;
+            for (let ops = 0; ops <= size; ops++) {
+                for (let eng = 1; eng <= size - ops; eng++) {
+                    const mgmt = size - ops - eng;
+                    const total = ops + eng + mgmt;
+                    if (total <= 0) continue;
+                    const mgmtFactor = 1 + mgmt / (1.2 * total);
+                    const score = (Math.pow(eng, 0.34) + Math.pow(Math.max(ops, 0), 0.2)) * mgmtFactor;
+                    if (score > bestScore) {
+                        bestScore = score;
+                        best = { ops, eng, mgmt };
+                    }
+                }
+            }
+            return best;
+        }
+        if (size <= 6) return { ops: 1, eng: Math.max(1, size - 2), mgmt: 1 };
+        if (size <= 9) return { ops: 2, eng: Math.max(1, size - 4), mgmt: 2 };
+        if (size <= 15) return { ops: 3, eng: Math.max(1, size - 7), mgmt: 4 };
+        return { ops: 4, eng: Math.max(1, size - 9), mgmt: 5 };
+    }
+
+    function getRound2TobaccoHQJobs(size) {
+        if (hasActiveTobaccoDevelopment()) return getRound2TobaccoHQProgressJobs(size);
+        if (useAggressiveRound2Targets() && size >= ROUND2_TOB_HQ_OFFICE_AGGR) return ROUND2_TOB_HQ_JOBS_AGGR;
+        return getRound2TobaccoHQCompletedJobs(size);
+    }
+
+    function getRound2TobaccoSupportTargetSize() {
+        if (useBn3LeanTobRound2()) {
+            const { finishedProducts } = getTobaccoProductStats();
+            return finishedProducts > 0 ? ROUND2_BN3_LEAN_TOB_SUPPORT_OFFICE_POSTDONE : 3;
+        }
+        if (useBn3HighBudgetRound2() && isBn3HighBudgetBuildoutMode()) {
+            // Profit-gated: support cities start at 3 (pre-v1 R&D only) and scale up
+            // to 6 or 9 only once genuine operational profit comfortably covers overhead.
+            return getBn3HighBudgetTobSupportDynamicTarget();
+        }
+        return useAggressiveRound2Targets() ? ROUND2_TOB_SUPPORT_OFFICE_AGGR : ROUND2_TOB_SUPPORT_OFFICE;
+    }
+
+    function getRound2TobaccoSupportJobs(size = getRound2TobaccoSupportTargetSize()) {
+        const { finishedProducts } = getTobaccoProductStats();
+
+        // TA.II researched: pricing already optimal, R&D adds nothing in support cities.
+        // Switch to pure production regardless of path and size.
+        let hasTA2 = false;
+        try { hasTA2 = c.hasResearched(DIV_TOBACCO, 'Market-TA.II'); } catch { }
+        if (hasTA2) {
+            const mgmt = size >= 6 ? Math.max(1, Math.round(size * 0.20)) : 0;
+            const eng  = Math.max(1, Math.round(size * 0.35));
+            const ops  = Math.max(1, size - eng - mgmt);
+            return { ops, eng, mgmt };
+        }
+
+        // Lean path already has the post/pre-product split (static sizes, unchanged).
+        if (useBn3LeanTobRound2()) {
+            return finishedProducts > 0 ? ROUND2_BN3_LEAN_TOB_SUPPORT_JOBS_POSTDONE : ROUND2_BN3_LEAN_TOB_SUPPORT_JOBS_PREFINISHED;
+        }
+
+        // High-budget path: formula-based allocation that scales with office size.
+        if (useBn3HighBudgetRound2()) {
+            if (finishedProducts === 0) {
+                // Pre-v1: R&D-dominant to build RP; small Eng for quality baseline.
+                // Support cities can't develop products 窶・maximize RP accumulation.
+                const rndCount  = Math.max(1, Math.round(size * 0.70));
+                const engCount  = Math.max(1, Math.round(size * 0.15));
+                const mgmtCount = size >= 6 ? Math.max(1, size - rndCount - engCount) : 0;
+                const opsCount  = Math.max(0, size - rndCount - engCount - mgmtCount);
+                return { ops: opsCount, eng: engCount, mgmt: mgmtCount, rnd: rndCount };
+            }
+            // Post-v1: produce and sell; keep trailing R&D for RP 竊・TA.I/TA.II.
+            // As office grows, add Biz for sell throughput and more Mgmt for morale.
+            const rndCount  = Math.max(1, Math.round(size * 0.14));
+            const mgmtCount = size >= 6 ? Math.max(1, Math.round(size * 0.22)) : 0;
+            const bizCount  = Math.max(1, Math.round(size * 0.20));
+            const engCount  = Math.max(1, Math.round(size * 0.30));
+            const opsCount  = size - rndCount - mgmtCount - bizCount - engCount;
+            if (opsCount >= 1) return { ops: opsCount, eng: engCount, biz: bizCount, mgmt: mgmtCount, rnd: rndCount };
+            // Fallback: guarantee at least Eng + Biz + R&D when office is tiny
+            const safeRnd  = Math.max(1, Math.floor(size / 5));
+            const safeMgmt = size >= 6 ? 1 : 0;
+            const safeBiz  = size >= 3 ? 1 : 0;
+            const safeEng  = Math.max(1, size - safeRnd - safeMgmt - safeBiz);
+            return { ops: 0, eng: safeEng, biz: safeBiz, mgmt: safeMgmt, rnd: safeRnd };
+        }
+
+        // Aggressive path: post-v1 swap the heavy R&D into production roles.
+        if (useAggressiveRound2Targets()) {
+            // Pre-v1: ROUND2_TOB_SUPPORT_JOBS_AGGR = { eng:1, mgmt:1, rnd:7 } 窶・R&D dominant while building RP.
+            if (finishedProducts === 0) return ROUND2_TOB_SUPPORT_JOBS_AGGR;
+            // Post-v1: production-focused, keep 1 R&D slot for residual RP accumulation.
+            return { eng: 2, ops: 1, mgmt: 1, rnd: 1 };
+        }
+
+        // Standard path.
+        // Pre-v1: support cities can't develop products, so pure R&D builds RP fastest.
+        if (finishedProducts === 0) return ROUND2_TOB_SUPPORT_JOBS; // { rnd: 3 }
+        // Post-v1: produce and sell. ~20% R&D slot keeps RP flowing toward TA.I/TA.II.
+        return { eng: 2, ops: 1, mgmt: 1, rnd: 1 };
+    }
+
+    // Generic profit-gated office size selector used by all high-budget divisions.
+    // trueProfit (boost-mat revenue excluded during liquidation) must comfortably
+    // cover total overhead before each size step is unlocked:
+    //   minSz  窶・returned when profit < SCALE_RATIO_MID ﾃ・baseOverhead
+    //   midSz  窶・returned when profit >= SCALE_RATIO_MID ﾃ・baseOverhead
+    //   maxSz  窶・returned when profit >= SCALE_RATIO_FULL ﾃ・(baseOverhead + one morale unit)
+    // The extra morale unit in the maxSz gate prices in the new tea/party obligation
+    // that comes with expanding a city to 竕･9 employees.
+    function getBn3HighBudgetDynamicOfficeTarget(minSz, midSz, maxSz) {
+        const trueProfit = getBn3HighBudgetTrueProfit();
+        const finance = getRound2FinanceSnapshot();
+        const qualifyingCount = getBn3HighBudgetQualifyingOfficeCount();
+        const moraleCost = qualifyingCount * ROUND2_BN3_HIGH_BUDGET_MORALE_COST_PER_OFFICE_S;
+        const baseOverhead = finance.expenses + moraleCost;
+        const overheadWithMax = baseOverhead + ROUND2_BN3_HIGH_BUDGET_MORALE_COST_PER_OFFICE_S;
+        if (trueProfit >= overheadWithMax * ROUND2_BN3_HIGH_BUDGET_SCALE_RATIO_FULL) return maxSz;
+        if (trueProfit >= baseOverhead    * ROUND2_BN3_HIGH_BUDGET_SCALE_RATIO_MID)  return midSz;
+        return minSz;
+    }
+
+    function getBn3HighBudgetChemDynamicTarget() {
+        return getBn3HighBudgetDynamicOfficeTarget(
+            ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_PRELAUNCH,  // 3
+            ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_POSTDONE,   // 6
+            ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_BUILDOUT,   // 9
+        );
+    }
+
+    function getBn3HighBudgetAgriDynamicTarget() {
+        // Agri starts at 6 (2 employees per role minimum) 窶・below that production
+        // degrades too far. Top is 9 (classic target), same as ROUND2_CLASSIC_AGRI_OFFICE.
+        return getBn3HighBudgetDynamicOfficeTarget(
+            ROUND2_BN3_HIGH_BUDGET_AGRI_OFFICE_PRELAUNCH,  // 6
+            ROUND2_BN3_HIGH_BUDGET_AGRI_OFFICE_FULL,       // 9
+            ROUND2_BN3_HIGH_BUDGET_AGRI_OFFICE_FULL,       // 9 (no further expansion in round2)
+        );
+    }
+
+    function getBn3HighBudgetTobHQDynamicTarget() {
+        return getBn3HighBudgetDynamicOfficeTarget(
+            ROUND2_BN3_HIGH_BUDGET_TOB_HQ_PRELAUNCH,       // 6
+            ROUND2_BN3_HIGH_BUDGET_TOB_HQ_MID,             // 9
+            ROUND2_BN3_HIGH_BUDGET_TOB_HQ_FULL,            // 15
+        );
+    }
+
+    function getBn3HighBudgetTobSupportDynamicTarget() {
+        return getBn3HighBudgetDynamicOfficeTarget(
+            ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_PRELAUNCH,  // 3
+            ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_MID,        // 6
+            ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_FULL,       // 9
+        );
+    }
+
+    function getRound2ChemTargetOffice() {
+        if (useBn3HighBudgetRound2()) {
+            const { finishedProducts } = getTobaccoProductStats();
+            const postfillUnlocked = isBn3HighBudgetPostfillUnlocked();
+            const agriPressure = postfillUnlocked ? getBn3AgriPressureSnapshot() : null;
+            if (agriPressure?.severe) return ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_PRESSURE_FULL;
+            if (agriPressure?.moderate) return ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_PRESSURE;
+            if (isBn3HighBudgetBuildoutMode()) {
+                // Profit-gated: true profit (boost mats excluded) must comfortably
+                // cover salaries + morale overhead before each size step is unlocked.
+                return getBn3HighBudgetChemDynamicTarget();
+            }
+            if (finishedProducts > 0 || postfillUnlocked) return ROUND2_BN3_HIGH_BUDGET_CHEM_OFFICE_POSTDONE;
+        }
+        return useAggressiveRound2Targets() ? ROUND2_CHEM_OFFICE_AGGR : ROUND2_CHEM_OFFICE;
+    }
+
+    function getRound2ChemHQTargetOffice() {
+        if (useBn3HighBudgetRound2()) {
+            const { finishedProducts } = getTobaccoProductStats();
+            const postfillUnlocked = isBn3HighBudgetPostfillUnlocked();
+            const agriPressure = postfillUnlocked ? getBn3AgriPressureSnapshot() : null;
+            if (agriPressure?.severe) return ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_PRESSURE_FULL;
+            if (agriPressure?.moderate) return ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_PRESSURE;
+            if (isBn3HighBudgetBuildoutMode()) {
+                // Dynamic: start at 9 (POSTDONE), scale to 12 (BUILDOUT) once profit
+                // comfortably covers overhead 窶・replaces the always-true buildoutHealthy gate.
+                return getBn3HighBudgetDynamicOfficeTarget(
+                    ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_POSTDONE,   // 9
+                    ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_BUILDOUT,   // 12
+                    ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_BUILDOUT,   // 12 (no further HQ expansion in round2)
+                );
+            }
+            if (finishedProducts > 0 || postfillUnlocked) return ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_POSTDONE;
+        }
+        return getRound2ChemTargetOffice();
+    }
+
+    function getRound2ChemWarehouseTarget(city = HQ_CITY, readinessMode = false) {
+        if (useBn3HighBudgetRound2()) {
+            const isHQ = city === HQ_CITY;
+            if (readinessMode) {
+                return isHQ
+                    ? ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_BUILDOUT
+                    : ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_BUILDOUT;
+            }
+            const { finishedProducts } = getTobaccoProductStats();
+            const postfillUnlocked = isBn3HighBudgetPostfillUnlocked();
+            const agriPressure = postfillUnlocked ? getBn3AgriPressureSnapshot() : null;
+            const buildoutHealthy = isBn3HighBudgetBuildoutHealthy();
+            if (isHQ) {
+                if (agriPressure?.severe) return ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_PRESSURE_FULL;
+                if (agriPressure?.moderate) return ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_PRESSURE;
+                if (isBn3HighBudgetBuildoutMode()) {
+                    return buildoutHealthy
+                        ? ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_BUILDOUT
+                        : ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_POSTDONE;
+                }
+                if (finishedProducts > 0 || postfillUnlocked) return ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_POSTDONE;
+                return PHASE3_CHEM_INITIAL_WAREHOUSE;
+            }
+            if (agriPressure?.severe) return ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_PRESSURE_FULL;
+            if (agriPressure?.moderate) return ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_PRESSURE;
+            if (isBn3HighBudgetBuildoutMode()) {
+                return buildoutHealthy
+                    ? ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_BUILDOUT
+                    : ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_POSTDONE;
+            }
+            if (finishedProducts > 0 || postfillUnlocked) return ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_POSTDONE;
+        }
+        return city === HQ_CITY ? PHASE3_CHEM_INITIAL_WAREHOUSE : 1;
+    }
+
+    function getRound2ChemJobs(size = getRound2ChemTargetOffice()) {
+        if (useBn3HighBudgetRound2()) {
+            // Formula-based, RP-aware allocation 窶・scales continuously with office
+            // size and division research progress rather than hardcoded breakpoints.
+            //
+            // R&D ratio interpolates from 40% (RP=0, build quality loop fast) down
+            // to 12% (RP=target, shift toward production now loop is established).
+            // This ensures Chem RP grows proportionally as offices scale, not just
+            // when the static fill order happens to slot in an R&D employee.
+            let chemRP = 0;
+            try { chemRP = Number(c.getDivision(DIV_CHEM).researchPoints ?? 0); } catch { }
+            const rpProgress = Math.min(1, chemRP / RP_TARGET_CHEM);
+            const rndRatio = 0.40 - rpProgress * (0.40 - 0.12); // 40% 竊・12%
+
+            const rndCount  = Math.max(1, Math.round(size * rndRatio));
+            // Management only at sz >= 6 窶・buffers morale/energy at higher headcounts
+            const mgmtCount = size >= 6 ? Math.max(1, Math.round(size * 0.15)) : 0;
+            const opsCount  = Math.max(1, Math.round(size * 0.15));
+            const engCount  = size - rndCount - mgmtCount - opsCount;
+            if (engCount >= 1) return { ops: opsCount, eng: engCount, mgmt: mgmtCount, rnd: rndCount };
+            // Fallback if rounding leaves no room for engineers
+            const safeRnd = Math.max(1, Math.floor(size / 3));
+            const safeMgmt = size >= 6 ? 1 : 0;
+            return { ops: 1, eng: Math.max(1, size - safeRnd - 1 - safeMgmt), mgmt: safeMgmt, rnd: safeRnd };
+        }
+        if (useAggressiveRound2Targets()) {
+            if (size <= 3) return ROUND2_CHEM_JOBS_SMALL;
+            if (size < ROUND2_CHEM_OFFICE_AGGR) return ROUND2_CHEM_JOBS_MID;
+            return size <= ROUND2_CHEM_OFFICE_AGGR
+                ? ROUND2_CHEM_JOBS_AGGR
+                : fillJobRemainder(ROUND2_CHEM_JOBS_AGGR, size, ['eng', 'rnd', 'ops', 'mgmt']);
+        }
+        // Production-focused: eng and ops drive Chemical output; rnd last.
+        return size <= 3 ? ROUND2_CHEM_JOBS : fillJobRemainder({ ops: 1, eng: 2, mgmt: 1, rnd: 1 }, size, ['eng', 'ops', 'mgmt', 'rnd']);
+    }
+
+    function shouldPreserveAggressiveRound2(bestOffer, rpGateCleared, stagnantChecks) {
+        if (!opts['aggressive-round2']) return false;
+        const { highestProgress, finishedProducts } = getTobaccoProductStats();
+        return !rpGateCleared &&
+            finishedProducts === 0 &&
+            highestProgress >= ROUND2_AGGR_FREEZE_PROGRESS &&
+            bestOffer >= ROUND2_AGGR_WARMUP_TARGET &&
+            stagnantChecks < ROUND2_AGGR_WARMUP_STAGNATION;
+    }
+
+    function shouldPreferChemBeforeTobaccoInBn3HighBudget(highestProgress, finishedProducts, agriPressure = null) {
+        if (!useBn3HighBudgetRound2()) return false;
+        if (agriPressure?.moderate || agriPressure?.severe) return true;
+        if (finishedProducts > 0) return false;
+        return highestProgress < ROUND2_BN3_HIGH_BUDGET_TOB_NEAR_COMPLETION_PROGRESS;
+    }
+
+    function tryBn3HighBudgetPriorityStep(reserve, highestProgress, finishedProducts, agriPressure, allowTobSupport, chemSupportCities, coreOnly = false) {
+        const preferChem = shouldPreferChemBeforeTobaccoInBn3HighBudget(highestProgress, finishedProducts, agriPressure);
+        const chemAction = () => tryRound2ChemStep(reserve, coreOnly ? 0 : chemSupportCities);
+        const tobAction = () => tryRound2TobaccoStep(reserve, coreOnly ? false : allowTobSupport, true);
+        if (coreOnly) {
+            return preferChem
+                ? chemAction() ?? tobAction()
+                : tobAction() ?? chemAction();
+        }
+        if (finishedProducts > 0) {
+            const chemFirstTurn = (bn3HighBudgetSupportTurn % 2) === 0;
+            const action = chemFirstTurn
+                ? chemAction() ?? tobAction()
+                : tobAction() ?? chemAction();
+            if (action) bn3HighBudgetSupportTurn++;
+            return action;
+        }
+        return preferChem
+            ? chemAction() ?? tobAction()
+            : tobAction() ?? chemAction();
+    }
+
+    function maintainRound2DivisionState(preserveOffer = false, stabilizeOffer = false) {
+        if (hasDiv(DIV_AGRI)) {
+            const bn3PostfillSalesMode = getBn3PostfillSalesMode();
+            for (const city of CITIES) {
+                try {
+                    c.sellMaterial(DIV_AGRI, city, 'Food', 'MAX', 'MP');
+                    c.sellMaterial(DIV_AGRI, city, 'Plants', 'MAX', 'MP');
+                    const office = c.getOffice(DIV_AGRI, city);
+                    const pressureRelief = !preserveOffer && !stabilizeOffer && bn3PostfillSalesMode === 'armed' && shouldUseBn3AgriPressureRelief(city);
+                    const postfillRelief = !preserveOffer && !stabilizeOffer && bn3PostfillSalesMode === 'balanced' && shouldUseBn3AgriPostfillRelief(city);
+                    const agriJobs = preserveOffer
+                        ? getRound2AgriProductionJobs(office.size)
+                        : stabilizeOffer
+                                ? getRound2AgriJobs(office.size)
+                        : pressureRelief
+                                ? getBn3AgriPressureReliefJobs(office.size)
+                        : postfillRelief
+                                ? getBn3AgriPostfillReliefJobs(office.size)
+                        : bn3PostfillSalesMode === 'balanced'
+                                ? getRound2AgriPostfillSalesJobs(office.size)
+                                : getRound2AgriJobs(office.size);
+                    fillOffice(
+                        DIV_AGRI,
+                        city,
+                        office.size,
+                        agriJobs,
+                    );
+                } catch { }
+            }
+        }
+
+        if (hasDiv(DIV_CHEM)) {
+            for (const city of c.getDivision(DIV_CHEM).cities) {
+                try {
+                    const office = c.getOffice(DIV_CHEM, city);
+                    fillOffice(DIV_CHEM, city, office.size, getRound2ChemJobs(office.size));
+                    if (c.hasWarehouse(DIV_CHEM, city)) c.sellMaterial(DIV_CHEM, city, 'Chemicals', 'MAX', 'MP');
+                } catch { }
+            }
+        }
+
+        if (hasDiv(DIV_TOBACCO)) {
+            for (const city of c.getDivision(DIV_TOBACCO).cities) {
+                try {
+                    if (city !== HQ_CITY && !c.hasWarehouse(DIV_TOBACCO, city)) continue;
+                    const office = c.getOffice(DIV_TOBACCO, city);
+                    const jobs = city === HQ_CITY ? getRound2TobaccoHQJobs(office.size) : getRound2TobaccoSupportJobs();
+                    fillOffice(DIV_TOBACCO, city, office.size, jobs);
+                } catch { }
+            }
+        }
+    }
+
+    function tryRound2AgriStep(reserve, allowOfficeGrowth = false) {
+        const targetWarehouse = getRound2AgriWarehouseTarget();
+        const targetAdvert = getRound2AgriAdvertTarget();
+        const targetOffice = getRound2AgriOfficeTarget();
+        for (const city of CITIES) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                if (wh.level < targetWarehouse) {
+                    const spendCost = estimateWarehouseUpgradeSpend(DIV_AGRI, city);
+                    if (canSpend(spendCost, reserve)) {
+                        c.upgradeWarehouse(DIV_AGRI, city, 1);
+                        return `Agriculture ${city} warehouse -> ${wh.level + 1}`;
+                    }
+                }
+            } catch { }
+        }
+        try {
+            if (c.getHireAdVertCount(DIV_AGRI) < targetAdvert) {
+                const cost = c.getHireAdVertCost(DIV_AGRI);
+                if (canSpend(cost, reserve)) {
+                    c.hireAdVert(DIV_AGRI);
+                    return `Agriculture advert -> ${c.getHireAdVertCount(DIV_AGRI)}`;
+                }
+            }
+        } catch { }
+        if (!allowOfficeGrowth) return null;
+        for (const city of CITIES) {
+            try {
+                const off = c.getOffice(DIV_AGRI, city);
+                if (off.size < targetOffice) {
+                    const increase = targetOffice - off.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_AGRI, city, increase);
+                    if (canSpend(cost, reserve)) {
+                        fillOffice(DIV_AGRI, city, targetOffice, getRound2AgriJobs(targetOffice));
+                        return `Agriculture ${city} office -> ${targetOffice}`;
+                    }
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function isRound2AgriBuiltOut() {
+        try {
+            if (c.getHireAdVertCount(DIV_AGRI) < getRound2AgriAdvertTarget()) return false;
+        } catch { return false; }
+        for (const city of CITIES) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                const off = c.getOffice(DIV_AGRI, city);
+                if (wh.level < getRound2AgriWarehouseTarget()) return false;
+                if (off.size < getRound2AgriOfficeTarget()) return false;
+            } catch {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function tryRound2UpgradeStep(reserve, target = ROUND2_GLOBAL_UPGRADE_TARGET) {
+        for (const upg of ['Smart Factories', 'Smart Storage']) {
+            try {
+                if (c.getUpgradeLevel(upg) >= target) continue;
+                const cost = c.getUpgradeLevelCost(upg);
+                const spendCost = upg === 'Smart Storage' ? estimateSmartStorageUpgradeSpend() : cost;
+                if (!canSpend(spendCost, reserve)) continue;
+                c.levelUpgrade(upg);
+                return `${upg} -> ${c.getUpgradeLevel(upg)}`;
+            } catch { }
+        }
+        return null;
+    }
+
+    function tryRound2LateAgriStep(reserve) {
+        for (const city of CITIES) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                if (wh.level < ROUND2_AGRI_WAREHOUSE_LATE) {
+                    const spendCost = estimateWarehouseUpgradeSpend(DIV_AGRI, city);
+                    if (canSpend(spendCost, reserve)) {
+                        c.upgradeWarehouse(DIV_AGRI, city, 1);
+                        return `Agriculture ${city} warehouse -> ${wh.level + 1}`;
+                    }
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function tryRound2ChemStep(reserve, maxSupportCities = supportCities().length) {
+        if (!hasDiv(DIV_CHEM)) return null;
+        const chemTargetOffice = getRound2ChemTargetOffice();
+        const chemJobs = getRound2ChemJobs(chemTargetOffice);
+        const chemHQTargetOffice = getRound2ChemHQTargetOffice();
+        const chemHQJobs = getRound2ChemJobs(chemHQTargetOffice);
+        const chemHQWarehouseTarget = getRound2ChemWarehouseTarget(HQ_CITY);
+        try {
+            const hqWh = c.getWarehouse(DIV_CHEM, HQ_CITY);
+            if (hqWh.level < chemHQWarehouseTarget) {
+                const cost = estimateWarehouseUpgradeSpend(DIV_CHEM, HQ_CITY);
+                if (canSpend(cost, reserve)) {
+                    c.upgradeWarehouse(DIV_CHEM, HQ_CITY, 1);
+                    return `Chemical ${HQ_CITY} warehouse -> ${hqWh.level + 1}`;
+                }
+            }
+        } catch { }
+        try {
+            const hqOffice = c.getOffice(DIV_CHEM, HQ_CITY);
+            if (hqOffice.numEmployees < hqOffice.size) {
+                fillOffice(DIV_CHEM, HQ_CITY, hqOffice.size, getRound2ChemJobs(hqOffice.size));
+                return `Chemical staffed in ${HQ_CITY}`;
+            }
+            if (hqOffice.size < chemHQTargetOffice) {
+                const increase = chemHQTargetOffice - hqOffice.size;
+                const cost = c.getOfficeSizeUpgradeCost(DIV_CHEM, HQ_CITY, increase);
+                if (canSpend(cost, reserve)) {
+                    fillOffice(DIV_CHEM, HQ_CITY, chemHQTargetOffice, chemHQJobs);
+                    return `Chemical ${HQ_CITY} office -> ${chemHQTargetOffice}`;
+                }
+            }
+            assignJobs(DIV_CHEM, HQ_CITY, getRound2ChemJobs(hqOffice.size));
+            try { c.sellMaterial(DIV_CHEM, HQ_CITY, 'Chemicals', 'MAX', 'MP'); } catch { }
+        } catch { }
+        for (const city of supportCities().slice(0, Math.max(0, maxSupportCities))) {
+            try {
+                if (!c.getDivision(DIV_CHEM).cities.includes(city)) {
+                    if (canSpend(9e9, reserve)) {
+                        c.expandCity(DIV_CHEM, city);
+                        return `Chemical expanded to ${city}`;
+                    }
+                    continue;
+                }
+                if (!c.hasWarehouse(DIV_CHEM, city)) {
+                    if (canSpend(5e9, reserve)) {
+                        c.purchaseWarehouse(DIV_CHEM, city);
+                        return `Chemical warehouse purchased in ${city}`;
+                    }
+                    continue;
+                }
+                const wh = c.getWarehouse(DIV_CHEM, city);
+                const chemCityWarehouseTarget = getRound2ChemWarehouseTarget(city);
+                if (wh.level < chemCityWarehouseTarget) {
+                    const spendCost = estimateWarehouseUpgradeSpend(DIV_CHEM, city);
+                    if (canSpend(spendCost, reserve)) {
+                        c.upgradeWarehouse(DIV_CHEM, city, 1);
+                        return `Chemical ${city} warehouse -> ${wh.level + 1}`;
+                    }
+                }
+                const off = c.getOffice(DIV_CHEM, city);
+                if (off.numEmployees < off.size) {
+                    fillOffice(DIV_CHEM, city, chemTargetOffice, getRound2ChemJobs(off.size));
+                    return `Chemical staffed in ${city}`;
+                }
+                if (off.size < chemTargetOffice) {
+                    const increase = chemTargetOffice - off.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_CHEM, city, increase);
+                    if (canSpend(cost, reserve)) {
+                        fillOffice(DIV_CHEM, city, chemTargetOffice, chemJobs);
+                        return `Chemical ${city} office -> ${chemTargetOffice}`;
+                    }
+                }
+                assignJobs(DIV_CHEM, city, getRound2ChemJobs(off.size));
+                try { c.sellMaterial(DIV_CHEM, city, 'Chemicals', 'MAX', 'MP'); } catch { }
+            } catch { }
+        }
+        try {
+            const hqOffice = c.getOffice(DIV_CHEM, HQ_CITY);
+            // Use actual office size (not just target) so normalizeJobCountsForOffice
+            // assigns all employees 窶・if target < actual size the office can't shrink
+            // and passing target as targetSize would leave extras unassigned.
+            const safeSize = Math.max(hqOffice.size, chemHQTargetOffice);
+            tryFillOffice(DIV_CHEM, HQ_CITY, safeSize, getRound2ChemJobs(safeSize));
+        } catch {
+            tryFillOffice(DIV_CHEM, HQ_CITY, chemHQTargetOffice, chemHQJobs);
+        }
+        try { c.sellMaterial(DIV_CHEM, HQ_CITY, 'Chemicals', 'MAX', 'MP'); } catch { }
+        return null;
+    }
+
+    function tryBn3HighBudgetWilsonSeedStep(reserve) {
+        if (!useBn3HighBudgetRound2() || !hasDiv(DIV_TOBACCO)) return null;
+        try {
+            if (c.getHireAdVertCount(DIV_TOBACCO) >= (useBn3HighBudgetRound2() ? ROUND2_BN3_HIGH_BUDGET_TOB_ADVERT : ROUND2_TOB_ADVERT)) return null;
+            if (c.getUpgradeLevel('Wilson Analytics') >= ROUND2_BN3_HIGH_BUDGET_EARLY_WILSON_TARGET) return null;
+            const cost = c.getUpgradeLevelCost('Wilson Analytics');
+            if (canSpend(cost, reserve)) {
+                c.levelUpgrade('Wilson Analytics');
+                return `Wilson Analytics -> ${c.getUpgradeLevel('Wilson Analytics')}`;
+            }
+        } catch { }
+        return null;
+    }
+
+    function tryBn3LeanTobWilsonSeedStep(reserve) {
+        // Buy Wilson 1 before the first Tobacco AdVert so every future AdVert purchase
+        // benefits from the +5% multiplier. Only fires when Tob has 0 adverts and
+        // Wilson is still at 0 窶・a one-shot bootstrap, not an ongoing spend.
+        if (!useBn3LeanTobRound2() || !hasDiv(DIV_TOBACCO)) return null;
+        try {
+            if (c.getHireAdVertCount(DIV_TOBACCO) >= ROUND2_BN3_LEAN_TOB_ADVERT) return null;
+            if (c.getUpgradeLevel('Wilson Analytics') >= 1) return null;
+            const cost = c.getUpgradeLevelCost('Wilson Analytics');
+            if (canSpend(cost, reserve)) {
+                c.levelUpgrade('Wilson Analytics');
+                return `Wilson Analytics -> ${c.getUpgradeLevel('Wilson Analytics')}`;
+            }
+        } catch { }
+        return null;
+    }
+
+    function tryBn3LeanTobSpikeStorageStep(reserve) {
+        // Pre-spike: push Smart Storage to the spike target so warehouses are as large
+        // as possible before the debt fill begins. Only runs after base maturity (v5+,
+        // finished product) but before spike unlocks 窶・once spiking, the bootstrap is
+        // skipped entirely so this step won't fire during the fill.
+        if (!useBn3LeanTobRound2()) return null;
+        if (isLeanTobSpikeUnlocked()) return null;
+        if (!isBn3Round2MaterialTargetSetFilled(getBn3BaseMaterialTargets())) return null;
+        if (getHighestTobaccoProductVersion() < 5) return null;
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            if (finishedProducts <= 0) return null;
+            const level = c.getUpgradeLevel('Smart Storage');
+            if (level >= ROUND2_BN3_LEAN_TOB_SPIKE_SMART_STORAGE) return null;
+            // Defer to profit upgrades unless warehouses are getting full OR we're in
+            // the final push to the spike target (竕､ 3 levels away 窶・can't afford to wait).
+            const levelsLeft = ROUND2_BN3_LEAN_TOB_SPIKE_SMART_STORAGE - level;
+            if (levelsLeft > 3 && getAgriWarehouseUsageSummary().peak < 0.85) return null;
+            const cost = c.getUpgradeLevelCost('Smart Storage');
+            if (canSpend(cost, reserve)) {
+                c.levelUpgrade('Smart Storage');
+                return `Smart Storage -> ${c.getUpgradeLevel('Smart Storage')} (spike prep)`;
+            }
+        } catch { }
+        return null;
+    }
+
+    function tryBn3LeanTobPreSpikeBoostStep(reserve) {
+        // Buys profit-boosting upgrades with surplus funds during the pre-spike development
+        // phase. Ordered by ROI; each has a large reserve buffer so material fill and
+        // Tobacco investment remain the priority. Does not run once spike is active.
+        if (!useBn3LeanTobRound2()) return null;
+        if (isLeanTobSpikeUnlocked()) return null;
+
+        // 1. Project Insight: each level boosts research speed 竊・earlier TA-I/TA-II
+        //    which multiplies Tobacco product prices. Gated by a large buffer since
+        //    it's expensive but has the highest long-run ROI.
+        try {
+            const level = c.getUpgradeLevel('Project Insight');
+            if (level < ROUND2_BN3_LEAN_TOB_PRSPIKE_INSIGHT_TARGET) {
+                const cost = c.getUpgradeLevelCost('Project Insight');
+                if (canSpend(cost, reserve + ROUND2_BN3_LEAN_TOB_PRSPIKE_INSIGHT_BUFFER)) {
+                    c.levelUpgrade('Project Insight');
+                    return `Project Insight -> ${c.getUpgradeLevel('Project Insight')} (pre-spike)`;
+                }
+            }
+        } catch { }
+
+        // 2. Employee upgrades (FocusWires, Neural Accelerators, Speech Processor,
+        //    Nuoptimal) to level 1 窶・improves all employee roles in Agri and Tobacco.
+        for (const upg of ROUND2_BN3_LATE_EMPLOYEE_UPGRADES) {
+            try {
+                if (c.getUpgradeLevel(upg) >= ROUND2_BN3_LEAN_TOB_PRSPIKE_EMPUPG_TARGET) continue;
+                const cost = c.getUpgradeLevelCost(upg);
+                if (canSpend(cost, reserve + ROUND2_BN3_LEAN_TOB_PRSPIKE_EMPUPG_BUFFER)) {
+                    c.levelUpgrade(upg);
+                    return `${upg} -> ${c.getUpgradeLevel(upg)} (pre-spike)`;
+                }
+            } catch { }
+        }
+
+        // 3. Tobacco AdVert up to 3 (post-v1 gate). Level 3 is also the spike-unlock
+        //    requirement, so this pulls forward a mandatory spend.
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            if (finishedProducts > 0) {
+                const adverts = c.getHireAdVertCount(DIV_TOBACCO);
+                if (adverts < ROUND2_BN3_LEAN_TOB_PRSPIKE_TOB_ADVERT) {
+                    const cost = c.getHireAdVertCost(DIV_TOBACCO);
+                    if (canSpend(cost, reserve + ROUND2_BN3_LEAN_TOB_PRSPIKE_TOB_ADVERT_BUFFER)) {
+                        c.hireAdVert(DIV_TOBACCO);
+                        return `Tobacco advert -> ${c.getHireAdVertCount(DIV_TOBACCO)} (pre-spike)`;
+                    }
+                }
+            }
+        } catch { }
+
+        // 4. Wilson Analytics beyond seed (level 2-3). Only worthwhile after Tobacco
+        //    has at least one advert so the multiplier has something to amplify.
+        try {
+            const level = c.getUpgradeLevel('Wilson Analytics');
+            if (level >= 1 && level < ROUND2_BN3_LEAN_TOB_PRSPIKE_WILSON_TARGET &&
+                c.getHireAdVertCount(DIV_TOBACCO) >= 1) {
+                const cost = c.getUpgradeLevelCost('Wilson Analytics');
+                if (canSpend(cost, reserve + ROUND2_BN3_LEAN_TOB_PRSPIKE_WILSON_BUFFER)) {
+                    c.levelUpgrade('Wilson Analytics');
+                    return `Wilson Analytics -> ${c.getUpgradeLevel('Wilson Analytics')} (pre-spike)`;
+                }
+            }
+        } catch { }
+
+        // 5. ABC SalesBots beyond the initial post-fill target (5 竊・8). Improves sell
+        //    rates for Agri before and Tobacco after v1. Lower priority since the main
+        //    salesbot step already handles the first five.
+        try {
+            const level = c.getUpgradeLevel('ABC SalesBots');
+            if (level >= ROUND2_BN3_SALESBOT_TARGET && level < ROUND2_BN3_LEAN_TOB_PRSPIKE_SALESBOT_TARGET) {
+                const cost = c.getUpgradeLevelCost('ABC SalesBots');
+                if (canSpend(cost, reserve + ROUND2_BN3_LEAN_TOB_PRSPIKE_SALESBOT_BUFFER)) {
+                    c.levelUpgrade('ABC SalesBots');
+                    return `ABC SalesBots -> ${c.getUpgradeLevel('ABC SalesBots')} (pre-spike)`;
+                }
+            }
+        } catch { }
+
+        return null;
+    }
+
+    function tryBn3LeanTobPreSpikeDummyStep(reserve) {
+        // Creates dummy divisions just before the spike with a settle period after
+        // the last one. Each dummy adds +10% to divMult (1.1^numDivisions) on the
+        // final accepted offer 窶・at $3-5t scale each dummy is worth ~$300-500B for
+        // a ~$5B creation cost. Created here (post-v5, pre-spike) rather than by
+        // dynamic late so the offer has time to recover before the debt fill begins.
+        if (!useBn3LeanTobRound2()) return null;
+        if (isLeanTobSpikeUnlocked()) return null;
+        if (getHighestTobaccoProductVersion() < 5) return null;
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            if (finishedProducts <= 0) return null;
+            const divNames = c.getCorporation().divisions;
+            // Find the first missing dummy in the target range.
+            for (let i = 1; i <= ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_TARGET; i++) {
+                if (divNames.includes(`Dummy-${i}`)) continue;
+                const cost = expandIndustryCost('Restaurant');
+                if (!canSpend(cost, reserve + ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_BUFFER)) return null;
+                c.expandIndustry('Restaurant', `Dummy-${i}`);
+                // Reset settle counter so spike waits for recovery after this creation.
+                bn3LeanTobPreSpikeDummySettleCounter = ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_SETTLE;
+                return `Dummy-${i} launched (pre-spike, settle=${ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_SETTLE} cycles)`;
+            }
+            // All dummies exist 窶・if settle counter is still 0, start the final settle now.
+            // (Handles the case where all dummies were already created by dynamic late
+            // before this step could run 窶・we still want a settle period before the spike.)
+            const allPresent = [...Array(ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_TARGET).keys()]
+                .every((i) => divNames.includes(`Dummy-${i + 1}`));
+            if (allPresent && bn3LeanTobPreSpikeDummySettleCounter === 0) {
+                bn3LeanTobPreSpikeDummySettleCounter = ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_SETTLE;
+                return `All ${ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_TARGET} dummies present 窶・settling ${ROUND2_BN3_LEAN_TOB_SPIKE_DUMMY_SETTLE} cycles before spike`;
+            }
+        } catch { }
+        return null;
+    }
+
+    function tryRound2TobaccoStep(reserve, allowSupportCities = false, allowAdvert = true) {
+        if (!hasDiv(DIV_TOBACCO)) return null;
+        const tobHQTarget = getRound2TobaccoHQTargetSize();
+        const tobHQJobs = getRound2TobaccoHQJobs(tobHQTarget);
+        const tobSupportTarget = getRound2TobaccoSupportTargetSize();
+        const tobSupportJobs = getRound2TobaccoSupportJobs();
+        const targetAdvert = useBn3LeanTobRound2()
+            ? ROUND2_BN3_LEAN_TOB_ADVERT
+            : useBn3HighBudgetRound2()
+                ? ROUND2_BN3_HIGH_BUDGET_TOB_ADVERT
+                : ROUND2_TOB_ADVERT;
+        const supportExpandCost = useBn3LeanTobRound2() ? 4e9 : 5e9; // lowered from 9e9: high-budget expansion was permanently blocked because funds never reached the 9b threshold
+        const supportWarehouseCost = 5e9;
+        const leanSupportPackaging = useBn3LeanTobRound2();
+        let holdAdvertForWilson = false;
+        if (useBn3HighBudgetRound2() && allowAdvert) {
+            try {
+                holdAdvertForWilson =
+                    c.getHireAdVertCount(DIV_TOBACCO) < targetAdvert &&
+                    c.getUpgradeLevel('Wilson Analytics') < ROUND2_BN3_HIGH_BUDGET_EARLY_WILSON_TARGET &&
+                    canSpend(c.getUpgradeLevelCost('Wilson Analytics'), reserve);
+            } catch { }
+        }
+        try {
+            const off = c.getOffice(DIV_TOBACCO, HQ_CITY);
+            if (off.size < tobHQTarget) {
+                const increase = tobHQTarget - off.size;
+                const cost = c.getOfficeSizeUpgradeCost(DIV_TOBACCO, HQ_CITY, increase);
+                if (canSpend(cost, reserve)) {
+                    fillOffice(DIV_TOBACCO, HQ_CITY, tobHQTarget, tobHQJobs);
+                    return `Tobacco HQ office -> ${tobHQTarget}`;
+                }
+            } else {
+                assignJobs(DIV_TOBACCO, HQ_CITY, getRound2TobaccoHQJobs(off.size));
+            }
+        } catch { }
+        if (allowAdvert && !holdAdvertForWilson) {
+            try {
+                if (c.getHireAdVertCount(DIV_TOBACCO) < targetAdvert) {
+                    const cost = c.getHireAdVertCost(DIV_TOBACCO);
+                    if (canSpend(cost, reserve)) {
+                        c.hireAdVert(DIV_TOBACCO);
+                        return `Tobacco advert -> ${c.getHireAdVertCount(DIV_TOBACCO)}`;
+                    }
+                }
+            } catch { }
+        }
+        if (!allowSupportCities) return null;
+        for (const city of supportCities()) {
+            try {
+                if (!c.getDivision(DIV_TOBACCO).cities.includes(city)) continue;
+                if (c.hasWarehouse(DIV_TOBACCO, city)) continue;
+                if (canSpend(supportWarehouseCost, reserve)) {
+                    c.purchaseWarehouse(DIV_TOBACCO, city);
+                    return `Tobacco warehouse purchased in ${city}`;
+                }
+                if (leanSupportPackaging) return null;
+                continue;
+            } catch { }
+        }
+        for (const city of supportCities()) {
+            try {
+                if (!c.getDivision(DIV_TOBACCO).cities.includes(city)) continue;
+                if (!c.hasWarehouse(DIV_TOBACCO, city)) continue;
+                const off = c.getOffice(DIV_TOBACCO, city);
+                if (off.size < tobSupportTarget) {
+                    const nextSupportTarget = useBn3LeanTobRound2() && getTobaccoProductStats().finishedProducts > 0
+                        ? getBn3LeanSupportOfficeStepTarget(off.size, tobSupportTarget)
+                        : tobSupportTarget;
+                    const increase = nextSupportTarget - off.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_TOBACCO, city, increase);
+                    if (canSpend(cost, reserve)) {
+                        fillOffice(DIV_TOBACCO, city, nextSupportTarget, getRound2TobaccoSupportJobsForSize(nextSupportTarget));
+                        return `Tobacco ${city} office -> ${nextSupportTarget}`;
+                    }
+                    continue;
+                }
+                if (off.numEmployees < off.size) {
+                    fillOffice(DIV_TOBACCO, city, tobSupportTarget, tobSupportJobs);
+                    return `Tobacco staffed in ${city}`;
+                }
+                assignJobs(DIV_TOBACCO, city, tobSupportJobs);
+            } catch { }
+        }
+        for (const city of supportCities()) {
+            try {
+                if (c.getDivision(DIV_TOBACCO).cities.includes(city)) continue;
+                if (leanSupportPackaging) {
+                    const packageCost = supportExpandCost + supportWarehouseCost;
+                    if (canSpend(packageCost, reserve)) {
+                        c.expandCity(DIV_TOBACCO, city);
+                        c.purchaseWarehouse(DIV_TOBACCO, city);
+                        return `Tobacco expanded to ${city} with warehouse`;
+                    }
+                    continue;
+                }
+                if (canSpend(supportExpandCost, reserve)) {
+                    c.expandCity(DIV_TOBACCO, city);
+                    return `Tobacco expanded to ${city}`;
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function tryBn3LeanTobaccoStep(reserve, bestOffer = 0, stagnantChecks = 0) {
+        if (!useBn3LeanTobRound2() || !hasDiv(DIV_TOBACCO)) return null;
+        const { finishedProducts, highestProgress } = getTobaccoProductStats();
+        const preFirstFinished = finishedProducts <= 0;
+        const postDonePush = finishedProducts > 0;
+        const speedHQPush =
+            highestProgress >= ROUND2_BN3_LEAN_TOB_SPEED_HQ_PROGRESS &&
+            (bestOffer >= ROUND2_BN3_LEAN_TOB_SPEED_HQ_TRIGGER ||
+                stagnantChecks >= ROUND2_BN3_LEAN_TOB_SPEED_HQ_STAGNATION);
+        const prefillHQPush =
+            bestOffer >= ROUND2_BN3_LEAN_TOB_PREFILL_HQ_TRIGGER ||
+            stagnantChecks >= ROUND2_BN3_LEAN_TOB_PREFILL_HQ_STAGNATION;
+        const targetOffice = postDonePush
+            ? ROUND2_BN3_LEAN_TOB_POSTDONE_HQ_OFFICE
+            : speedHQPush
+                ? ROUND2_BN3_LEAN_TOB_SPEED_HQ_OFFICE
+                : prefillHQPush
+                    ? ROUND2_BN3_LEAN_TOB_HQ_PUSH_OFFICE
+                    : ROUND2_BN3_LEAN_TOB_HQ_OFFICE;
+        const targetAdvert = preFirstFinished
+            ? ROUND2_BN3_LEAN_TOB_ADVERT
+            : postDonePush
+                ? ROUND2_BN3_LEAN_TOB_POSTDONE_ADVERT
+                : (speedHQPush || prefillHQPush)
+                    ? ROUND2_BN3_LEAN_TOB_HQ_PUSH_ADVERT
+                    : ROUND2_BN3_LEAN_TOB_ADVERT;
+        const officeFloor = postDonePush
+            ? ROUND2_BN3_LEAN_TOB_POSTDONE_HQ_MIN_CASH
+            : speedHQPush
+                ? reserve + ROUND2_BN3_LEAN_TOB_SPEED_HQ_BUFFER
+                : prefillHQPush
+                    ? reserve + ROUND2_BN3_LEAN_TOB_PREFILL_HQ_BUFFER
+                    : reserve;
+        const advertFloor = preFirstFinished
+            ? reserve
+            : postDonePush
+                ? ROUND2_BN3_LEAN_TOB_POSTDONE_ADVERT_MIN_CASH
+                : speedHQPush
+                    ? reserve + ROUND2_BN3_LEAN_TOB_SPEED_ADVERT_BUFFER
+                    : prefillHQPush
+                        ? reserve + ROUND2_BN3_LEAN_TOB_PREFILL_ADVERT_BUFFER
+                        : reserve;
+        try {
+            const off = c.getOffice(DIV_TOBACCO, HQ_CITY);
+            if (off.size < targetOffice) {
+                const increase = targetOffice - off.size;
+                const cost = c.getOfficeSizeUpgradeCost(DIV_TOBACCO, HQ_CITY, increase);
+                if (canSpend(cost, officeFloor)) {
+                    fillOffice(DIV_TOBACCO, HQ_CITY, targetOffice, getRound2TobaccoHQJobs(targetOffice));
+                    return `Tobacco HQ office -> ${targetOffice}`;
+                }
+            }
+            if (off.numEmployees < off.size) {
+                fillOffice(DIV_TOBACCO, HQ_CITY, off.size, getRound2TobaccoHQJobs(off.size));
+                return 'Tobacco HQ staffed';
+            }
+            assignJobs(DIV_TOBACCO, HQ_CITY, getRound2TobaccoHQJobs(off.size));
+        } catch { }
+        try {
+            if (c.getHireAdVertCount(DIV_TOBACCO) < targetAdvert) {
+                const cost = c.getHireAdVertCost(DIV_TOBACCO);
+                if (canSpend(cost, advertFloor)) {
+                    c.hireAdVert(DIV_TOBACCO);
+                    return `Tobacco advert -> ${c.getHireAdVertCount(DIV_TOBACCO)}`;
+                }
+            }
+        } catch { }
+        return null;
+    }
+
+    function tryBn3LeanTobaccoEarlySupportStep(reserve, bestOffer, stagnantChecks) {
+        if (!useBn3LeanTobRound2() || !hasDiv(DIV_TOBACCO)) return null;
+        const { highestProgress } = getTobaccoProductStats();
+        if (highestProgress < ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_PROGRESS) return null;
+        if (bestOffer < ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_TRIGGER &&
+            stagnantChecks < ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_STAGNATION) return null;
+        try {
+            if (c.getDivision(DIV_TOBACCO).cities.length > 1) return null;
+        } catch {
+            return null;
+        }
+        return tryRound2TobaccoStep(ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_MIN_CASH, true, false);
+    }
+
+    function tryBn3LeanTobaccoPostdoneSupportStep(reserve, bestOffer, stagnantChecks) {
+        if (!useBn3LeanTobRound2() || !hasDiv(DIV_TOBACCO)) return null;
+        const { finishedProducts } = getTobaccoProductStats();
+        if (finishedProducts <= 0) return null;
+        if (shouldStabilizeBn3Round2Offer(bestOffer, stagnantChecks)) return null;
+        return tryRound2TobaccoStep(Math.max(reserve, ROUND2_BN3_LEAN_TOB_POSTDONE_HQ_MIN_CASH), true, false);
+    }
+
+    function tryAggressiveWarmupHQStep(reserve) {
+        if (hasDiv(DIV_TOBACCO)) {
+            try {
+                const off = c.getOffice(DIV_TOBACCO, HQ_CITY);
+                if (off.size < ROUND2_AGGR_TOB_HQ_WARMUP) {
+                    const increase = ROUND2_AGGR_TOB_HQ_WARMUP - off.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_TOBACCO, HQ_CITY, increase);
+                    if (canSpend(cost, reserve)) {
+                        fillOffice(DIV_TOBACCO, HQ_CITY, ROUND2_AGGR_TOB_HQ_WARMUP, ROUND2_AGGR_TOB_HQ_WARMUP_JOBS);
+                        return `Tobacco HQ office -> ${ROUND2_AGGR_TOB_HQ_WARMUP}`;
+                    }
+                }
+            } catch { }
+        }
+        if (hasDiv(DIV_CHEM)) {
+            try {
+                const off = c.getOffice(DIV_CHEM, HQ_CITY);
+                if (off.size < ROUND2_AGGR_CHEM_HQ_WARMUP) {
+                    const increase = ROUND2_AGGR_CHEM_HQ_WARMUP - off.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_CHEM, HQ_CITY, increase);
+                    if (canSpend(cost, reserve)) {
+                        fillOffice(DIV_CHEM, HQ_CITY, ROUND2_AGGR_CHEM_HQ_WARMUP, getRound2ChemJobs(ROUND2_AGGR_CHEM_HQ_WARMUP));
+                        return `Chemical HQ office -> ${ROUND2_AGGR_CHEM_HQ_WARMUP}`;
+                    }
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function tryRound2DummyStep(bestOffer, stagnantChecks, reserve, allowEarly = false) {
+        if (!allowEarly && (bestOffer < ROUND2_DUMMY_TRIGGER || stagnantChecks < ROUND2_DUMMY_STAGNATION_LIMIT)) return null;
+        const cityCost = supportCities().length * 9e9;
+        const warehouseCost = CITIES.length * 5e9;
+        const dummyCost = expandIndustryCost('Restaurant') + cityCost + warehouseCost;
+        const floor = opts['aggressive-round2'] ? Math.max(15e9, reserve * 0.35) : Math.max(25e9, reserve * 0.5);
+        if (!canSpend(dummyCost, floor)) return null;
+        try {
+            for (let i = 1; i <= 5; i++) {
+                const dName = `Dummy-${i}`;
+                if (c.getCorporation().divisions.includes(dName)) continue;
+                c.expandIndustry('Restaurant', dName);
+                for (const city of CITIES) {
+                    try { c.expandCity(dName, city); } catch { }
+                    try { c.purchaseWarehouse(dName, city); } catch { }
+                }
+                return `Created ${dName}`;
+            }
+        } catch { }
+        return null;
+    }
+
+    function getBn3Round2Reserve() {
+        const funds = c.getCorporation().funds;
+        if (useBn3HighBudgetRound2()) {
+            if (isBn3HighBudgetPostfillUnlocked()) {
+                let reserve = Math.max(
+                    ROUND2_BN3_HIGH_BUDGET_POSTFILL_RESERVE,
+                    funds * ROUND2_BN3_HIGH_BUDGET_POSTFILL_RESERVE_PCT,
+                );
+                if (isBn3HighBudgetBuildoutMode() && !isBn3HighBudgetBuildoutHealthy()) {
+                    const rawRecovery = Math.max(
+                        ROUND2_BN3_HIGH_BUDGET_BUILDOUT_RECOVERY_RESERVE,
+                        funds * ROUND2_BN3_HIGH_BUDGET_BUILDOUT_RECOVERY_RESERVE_PCT,
+                    );
+                    // Cap so the reserve never exceeds 50% of funds.
+                    // Without this, a low-funds early buildout ($215M funds) would hit
+                    // the $1B recovery floor and block all spending indefinitely.
+                    reserve = Math.max(reserve, Math.min(rawRecovery, funds * 0.5));
+                }
+                return reserve;
+            }
+            return Math.max(ROUND2_BN3_HIGH_BUDGET_RESERVE, funds * ROUND2_BN3_HIGH_BUDGET_RESERVE_PCT);
+        }
+        return Math.max(ROUND2_BN3_RESERVE, funds * ROUND2_BN3_RESERVE_PCT);
+    }
+
+    function getBn3HighBudgetMaterialSpendFloor(reserve) {
+        if (!useBn3HighBudgetRound2() || !isBn3HighBudgetLateSpikeReady()) {
+            // Lean-tob spike: once unlocked, allow up to SPIKE_DEBT_MAX in debt.
+            // The investment received will far exceed the debt, so this is safe.
+            if (useBn3LeanTobRound2() && isLeanTobSpikeUnlocked()) {
+                return -ROUND2_BN3_LEAN_TOB_SPIKE_DEBT_MAX;
+            }
+            return reserve;
+        }
+        let profit = 0;
+        try {
+            const corp = c.getCorporation();
+            profit = Math.max(0, Number(corp.revenue ?? 0) - Number(corp.expenses ?? 0));
+        } catch { }
+        const debtAllowance = clamp(
+            Math.max(
+                ROUND2_BN3_HIGH_BUDGET_SPIKE_DEBT_MIN,
+                profit * ROUND2_BN3_HIGH_BUDGET_SPIKE_DEBT_RECOVERY_SECS,
+            ),
+            ROUND2_BN3_HIGH_BUDGET_SPIKE_DEBT_MIN,
+            ROUND2_BN3_HIGH_BUDGET_SPIKE_DEBT_MAX,
+        );
+        return -debtAllowance;
+    }
+
+    function estimateBn3RemainingMaterialSpend() {
+        let total = 0;
+        const targets = getBn3MaterialTargets();
+        for (const city of CITIES) {
+            total += estimateMaterialTargetSpend(DIV_AGRI, city, targets);
+        }
+        return total;
+    }
+
+    function getBn3DynamicDummyExtraBuffer(finance = null) {
+        const liveFinance = finance ?? getBn3LateFinanceProfile(latestRound2Offer);
+        const remainingMaterialSpend = estimateBn3RemainingMaterialSpend();
+        const runwayBuffer = liveFinance.profit > 0
+            ? liveFinance.profit * 120
+            : liveFinance.expenses * 240;
+        const cashPctBuffer = liveFinance.progress < 0.55
+            ? liveFinance.funds * 0.06
+            : liveFinance.funds * 0.03;
+        const extra = clamp(
+            Math.max(2e9, remainingMaterialSpend + runwayBuffer, cashPctBuffer),
+            2e9,
+            7e9,
+        );
+        return extra;
+    }
+
+    function getBn3DummySpendFloor(reserve, finance = null) {
+        return Math.max(reserve, reserve + getBn3DynamicDummyExtraBuffer(finance));
+    }
+
+    function getBn3ValuationCashDragWeight(finance = null) {
+        const liveFinance = finance ?? getBn3LateFinanceProfile(latestRound2Offer);
+        return clamp(0.25 + liveFinance.progress * 0.35 + (liveFinance.margin < 0.25 ? 0.10 : 0), 0.25, 0.75);
+    }
+
+    function isBn3LateValuationSpendReady(bestOffer, materialFilled, stagnantChecks) {
+        if (!useBn3ExpandedTobaccoRound2() || !hasDiv(DIV_TOBACCO)) return false;
+        if (materialFilled) return true;
+        return bestOffer >= ROUND2_BN3_LATE_VALUATION_TRIGGER &&
+            stagnantChecks >= ROUND2_BN3_LATE_VALUATION_STAGNATION;
+    }
+
+    function isBn3LateThroughputReady() {
+        if (!useBn3ExpandedTobaccoRound2() || !hasDiv(DIV_TOBACCO)) return false;
+        try {
+            if (c.getDivision(DIV_TOBACCO).cities.length < CITIES.length) return false;
+            if (c.getUpgradeLevel('Smart Storage') < ROUND2_BN3_LATE_POSTFILL_SMART_STORAGE_TARGET) return false;
+            if (c.getUpgradeLevel('ABC SalesBots') < ROUND2_BN3_LATE_SALESBOT_TARGET) return false;
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function shouldUseBn3LatePostdoneBoost(bestOffer, stagnantChecks) {
+        if (!useBn3ExpandedTobaccoRound2() || !hasDiv(DIV_TOBACCO)) return false;
+        if (!isBn3Round2MaterialFilled()) return false;
+        if (!isBn3LateThroughputReady()) return false;
+        const { finishedProducts } = getTobaccoProductStats();
+        if (finishedProducts <= 0) return false;
+        return bestOffer >= ROUND2_BN3_LATE_POSTDONE_BOOST_TRIGGER ||
+            stagnantChecks >= ROUND2_BN3_LATE_POSTDONE_BOOST_STAGNATION;
+    }
+
+    function getBn3LateWilsonTarget(bestOffer, stagnantChecks) {
+        return shouldUseBn3LatePostdoneBoost(bestOffer, stagnantChecks)
+            ? ROUND2_BN3_LATE_WILSON_BOOST_TARGET
+            : ROUND2_BN3_LATE_WILSON_TARGET;
+    }
+
+    function getBn3LateTobaccoAdvertTarget(bestOffer, stagnantChecks) {
+        const { finishedProducts } = getTobaccoProductStats();
+        if (finishedProducts <= 0) return ROUND2_BN3_LEAN_TOB_ADVERT;
+        if (!isBn3LateThroughputReady()) return ROUND2_BN3_LATE_TOB_ADVERT_TARGET;
+        const version = getHighestTobaccoProductVersion();
+        const lateBoost = shouldUseBn3LatePostdoneBoost(bestOffer, stagnantChecks);
+        let target = ROUND2_BN3_LATE_TOB_ADVERT_TARGET;
+        if (version >= 5 &&
+            (bestOffer >= ROUND2_BN3_LATE_TOB_ADVERT4_TRIGGER ||
+                stagnantChecks >= ROUND2_BN3_LATE_TOB_ADVERT4_STAGNATION)) {
+            target = 4;
+        }
+        if (version >= 6 &&
+            (bestOffer >= ROUND2_BN3_LATE_TOB_ADVERT5_TRIGGER ||
+                stagnantChecks >= ROUND2_BN3_LATE_TOB_ADVERT5_STAGNATION)) {
+            target = 5;
+        }
+        if (version >= 7 && lateBoost) {
+            target = Math.max(target, ROUND2_BN3_LATE_POSTDONE_ADVERT_BOOST_TARGET);
+        }
+        if (version >= 7 &&
+            (bestOffer >= ROUND2_BN3_LATE_TOB_ADVERT6_TRIGGER ||
+                stagnantChecks >= ROUND2_BN3_LATE_TOB_ADVERT6_STAGNATION)) {
+            target = 6;
+        }
+        return target;
+    }
+
+    function isBn3Round2OfficeBuiltOut() {
+        for (const city of CITIES) {
+            try {
+                const off = c.getOffice(DIV_AGRI, city);
+                if (off.size < ROUND2_CLASSIC_AGRI_OFFICE || off.numEmployees < off.size) return false;
+            } catch {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function isBn3Round2UpgradeBuiltOut() {
+        return ['Smart Factories', 'Smart Storage'].every((upg) => {
+            try { return c.getUpgradeLevel(upg) >= ROUND2_BN3_SMART_TARGET; }
+            catch { return false; }
+        });
+    }
+
+    function isBn3Round2WarehouseBuiltOut() {
+        for (const city of CITIES) {
+            try {
+                if (c.getWarehouse(DIV_AGRI, city).level < ROUND2_CLASSIC_AGRI_WAREHOUSE) return false;
+            } catch {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function isBn3Round2MaterialFilled() {
+        return isBn3Round2MaterialTargetSetFilled(getBn3MaterialTargets());
+    }
+
+    function isBn3PragmaticAcceptReady() {
+        if (!useBn3Round2() || !useBn3LeanTobRound2()) return false;
+        if (!isBn3Round2MaterialFilled()) return false;
+        if (!isBn3LateThroughputReady()) return false;
+        if (getHighestTobaccoProductVersion() < 5) return false;
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            const requiredAdvert = finishedProducts > 0
+                ? ROUND2_BN3_LATE_TOB_ADVERT_TARGET
+                : ROUND2_BN3_LEAN_TOB_ADVERT;
+            if (c.getUpgradeLevel('Wilson Analytics') < ROUND2_BN3_LATE_WILSON_TARGET) return false;
+            if (c.getHireAdVertCount(DIV_TOBACCO) < requiredAdvert) return false;
+        } catch {
+            return false;
+        }
+        return true;
+    }
+
+    function getBn3Round2AcceptReason(offerFunds, bestOffer, stagnantChecks, floorChecks = 0) {
+        if (!useBn3SoftAccept()) return null;
+        if (!useBn3Round2()) return null;
+        if (!isBn3Round2MaterialFilled()) return null;
+        if (!isBn3PragmaticAcceptReady()) return null;
+        if (
+            bestOffer >= ROUND2_BN3_PRAGMATIC_ACCEPT &&
+            stagnantChecks >= ROUND2_BN3_PRAGMATIC_ACCEPT_NEAR_BEST_STAGNATION &&
+            offerFunds >= bestOffer * ROUND2_BN3_PRAGMATIC_ACCEPT_NEAR_BEST_RATIO
+        ) {
+            return 'pragmatic plateau';
+        }
+        if (
+            bestOffer >= ROUND2_BN3_PRAGMATIC_ACCEPT_FLOOR &&
+            floorChecks >= ROUND2_BN3_PRAGMATIC_ACCEPT_FLOOR_HOLD_CHECKS &&
+            stagnantChecks >= ROUND2_BN3_PRAGMATIC_ACCEPT_DECAY_STAGNATION &&
+            offerFunds >= bestOffer * ROUND2_BN3_PRAGMATIC_ACCEPT_DECAY_RATIO
+        ) {
+            return 'pragmatic fallback';
+        }
+        return null;
+    }
+
+    function tryBn3Round2OfficeStep(reserve) {
+        const targetOffice = getRound2AgriOfficeTarget();
+        for (const city of CITIES) {
+            try {
+                const off = c.getOffice(DIV_AGRI, city);
+                if (off.size < targetOffice) {
+                    const increase = targetOffice - off.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_AGRI, city, increase);
+                    if (canSpend(cost, reserve)) {
+                        fillOffice(DIV_AGRI, city, targetOffice, getRound2AgriJobs(targetOffice));
+                        return `Agriculture ${city} office -> ${targetOffice}`;
+                    }
+                }
+                if (off.numEmployees < off.size) {
+                    fillOffice(DIV_AGRI, city, off.size, getRound2AgriJobs(off.size));
+                    return `Agriculture staffed in ${city}`;
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function tryBn3Round2UpgradeStep(reserve) {
+        if (shouldDeferBn3HighBudgetGenericUpgradesForChem()) return null;
+        for (const upg of ['Smart Factories', 'Smart Storage']) {
+            try {
+                if (c.getUpgradeLevel(upg) >= ROUND2_BN3_SMART_TARGET) continue;
+                const cost = c.getUpgradeLevelCost(upg);
+                if (canSpend(cost, reserve)) {
+                    c.levelUpgrade(upg);
+                    return `${upg} -> ${c.getUpgradeLevel(upg)}`;
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function tryBn3Round2WarehouseStep(reserve) {
+        const candidates = [];
+        for (const city of CITIES) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                if (wh.level < ROUND2_CLASSIC_AGRI_WAREHOUSE) candidates.push({ city, level: wh.level });
+            } catch { }
+        }
+        candidates.sort((a, b) => a.level - b.level || a.city.localeCompare(b.city));
+        for (const { city } of candidates) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                const cost = c.getUpgradeWarehouseCost(DIV_AGRI, city, 1);
+                if (canSpend(cost, reserve)) {
+                    c.upgradeWarehouse(DIV_AGRI, city, 1);
+                    return `Agriculture ${city} warehouse -> ${wh.level + 1}`;
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function runBn3Round2BootstrapBatch(reserve, bestOffer, stagnantChecks, materialFilled = false, maxActions = 32) {
+        const actions = [];
+        const actionLimit = useBn3HighBudgetRound2()
+            ? Math.min(maxActions, getBn3HighBudgetBootstrapActionLimit(bestOffer))
+            : maxActions;
+        for (let i = 0; i < actionLimit; i++) {
+            let action = null;
+            if (useBn3HighBudgetRound2()) {
+                const { highestProgress, finishedProducts } = getTobaccoProductStats();
+                const agriPressure = materialFilled ? getBn3AgriPressureSnapshot() : null;
+                const buildoutMode = isBn3HighBudgetBuildoutMode();
+                const buildoutHealthy = isBn3HighBudgetBuildoutHealthy(bestOffer);
+                const preFinishTobSupportReady =
+                    highestProgress >= ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_PROGRESS &&
+                    bestOffer >= ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_TRIGGER;
+                const sustainablePostdoneSupportReady =
+                    finishedProducts > 0 &&
+                    buildoutHealthy;
+                const allowTobSupport =
+                    // Gate ALL Tob support expansion on product revenue existing first.
+                    // Before v1 is done the corp runs on Agri + boost-mat sales; adding
+                    // support-city offices pre-product creates salary overhead that
+                    // goes negative once boost mats sell out.
+                    finishedProducts > 0 && (
+                        sustainablePostdoneSupportReady ||
+                        preFinishTobSupportReady ||
+                        (buildoutMode && buildoutHealthy)
+                    );
+                const preFinishChemSupportReady =
+                    highestProgress >= ROUND2_BN3_HIGH_BUDGET_CHEM_SUPPORT_PROGRESS &&
+                    bestOffer >= ROUND2_BN3_HIGH_BUDGET_CHEM_SUPPORT_TRIGGER;
+                const fullChemSupportReady =
+                    sustainablePostdoneSupportReady ||
+                    (highestProgress >= ROUND2_BN3_HIGH_BUDGET_FULL_SUPPORT_PROGRESS &&
+                        bestOffer >= ROUND2_BN3_HIGH_BUDGET_FULL_SUPPORT_TRIGGER);
+                const pressureChemSupportReady = Boolean(agriPressure?.moderate);
+                const pressureFullChemSupportReady = Boolean(agriPressure?.severe);
+                const chemSupportCities =
+                    fullChemSupportReady || pressureFullChemSupportReady
+                        ? supportCities().length
+                        : (preFinishChemSupportReady || pressureChemSupportReady)
+                            ? ROUND2_CHEM_BOOTSTRAP_SUPPORT_CITIES
+                            : (buildoutMode && buildoutHealthy)
+                                ? supportCities().length
+                            : 0;
+                action =
+                    tryAggressiveWarmupHQStep(reserve) ??
+                    tryBn3HighBudgetPriorityStep(
+                        reserve,
+                        highestProgress,
+                        finishedProducts,
+                        agriPressure,
+                        false,
+                        0,
+                        true,
+                    ) ??
+                    tryBn3HighBudgetWilsonSeedStep(reserve) ??
+                    tryBn3Round2OfficeStep(reserve) ??
+                    tryBn3Round2WarehouseStep(reserve) ??
+                    tryBn3HighBudgetPriorityStep(
+                        reserve,
+                        highestProgress,
+                        finishedProducts,
+                        agriPressure,
+                        allowTobSupport,
+                        chemSupportCities,
+                        false,
+                    ) ??
+                    tryBn3Round2UpgradeStep(reserve);
+            } else if (isLeanTobSpikeUnlocked()) {
+                // Spike fill is in progress: don't compete with tryBn3Round2MaterialStep.
+                // All cash (and debt allowance) should go toward buying boost mats.
+                // Bootstrap does nothing here 窶・material step runs after this batch.
+                action = null;
+            } else {
+                action =
+                    tryBn3Round2OfficeStep(reserve) ??
+                    tryBn3LeanTobWilsonSeedStep(reserve) ??
+                    tryBn3LeanTobaccoStep(reserve, bestOffer, stagnantChecks) ??
+                    tryBn3LeanTobaccoPostdoneSupportStep(reserve, bestOffer, stagnantChecks) ??
+                    tryBn3LeanTobPreSpikeDummyStep(reserve) ??
+                    tryBn3Round2UpgradeStep(reserve) ??
+                    tryBn3LeanTobSpikeStorageStep(reserve) ??
+                    tryBn3LeanTobPreSpikeBoostStep(reserve) ??
+                    tryBn3Round2WarehouseStep(reserve) ??
+                    tryBn3LeanTobaccoEarlySupportStep(reserve, bestOffer, stagnantChecks);
+            }
+            if (!action) break;
+            actions.push(action);
+        }
+        return actions;
+    }
+
+    async function tryBn3Round2MaterialStep(reserve) {
+        const targets = getBn3MaterialTargets();
+        const targetProfile = getBn3MaterialTargetProfileLabel();
+        const pending = [];
+        const availableFunds = Number(c.getCorporation().funds ?? 0);
+        const materialFloor = getBn3HighBudgetMaterialSpendFloor(reserve);
+        for (const city of CITIES) {
+            try {
+                let needsFill = false;
+                for (const [mat, target] of Object.entries(targets)) {
+                    if ((c.getMaterial(DIV_AGRI, city, mat).stored ?? 0) + 0.5 < target) {
+                        needsFill = true;
+                        break;
+                    }
+                }
+                if (!needsFill) continue;
+                const cost = estimateMaterialTargetSpend(DIV_AGRI, city, targets);
+                if (!Number.isFinite(cost) || cost <= 0) continue;
+                pending.push({ city, cost });
+            } catch { }
+        }
+        if (pending.length <= 0) return null;
+
+        pending.sort((a, b) => a.cost - b.cost || a.city.localeCompare(b.city));
+        const selected = [];
+        let spend = 0;
+        for (const entry of pending) {
+            if (availableFunds - (spend + entry.cost) < materialFloor) continue;
+            selected.push(entry);
+            spend += entry.cost;
+        }
+        if (selected.length <= 0) return null;
+
+        const selectedCities = selected.map((entry) => entry.city);
+        for (const city of selectedCities) {
+            stopRound1AgriSupply([city]);
+            stopChemicalWaterSupply([city]);
+            for (const [mat, target] of Object.entries(targets)) {
+                try {
+                    const stored = c.getMaterial(DIV_AGRI, city, mat).stored ?? 0;
+                    const needed = Math.max(0, target - stored);
+                    c.buyMaterial(DIV_AGRI, city, mat, needed > 0.5 ? needed / CYCLE_SECS : 0);
+                } catch { }
+            }
+        }
+        try {
+            await waitCycles(1);
+        } finally {
+            for (const city of selectedCities) {
+                for (const mat of Object.keys(targets)) {
+                    try { c.buyMaterial(DIV_AGRI, city, mat, 0); } catch { }
+                }
+            }
+            maintainPreRound2SupplyState(selectedCities);
+        }
+
+        const targetLabel = targetProfile === 'late-spike'
+            ? 'BN3 late-spike targets'
+            : useBn3HeadroomFill()
+                ? 'BN3 headroom targets'
+                : 'BN3 targets';
+        return selected.length === 1
+            ? `Agriculture ${selected[0].city} materials -> ${targetLabel}`
+            : `Agriculture materials -> ${targetLabel} (${selected.length} cities, ${formatMoney(spend)})`;
+    }
+
+    function getRound1PrepStatus() {
+        const smartStorageTarget = getRound1SmartStorageTarget();
+        const advertTarget = getRound1AdvertTarget();
+        const warehouseTarget = getRound1WarehouseTarget();
+        let smartStorageCurrent = 0;
+        let advertCurrent = 0;
+        let warehouseMin = Infinity;
+        const missingWarehouseCities = [];
+
+        try { smartStorageCurrent = Number(c.getUpgradeLevel('Smart Storage') ?? 0); } catch { }
+        try { advertCurrent = Number(c.getHireAdVertCount(DIV_AGRI) ?? 0); } catch { }
+        for (const city of CITIES) {
+            try {
+                const level = Number(c.getWarehouse(DIV_AGRI, city).level ?? 0);
+                warehouseMin = Math.min(warehouseMin, level);
+                if (level < warehouseTarget) missingWarehouseCities.push(`${city}:${level}/${warehouseTarget}`);
+            } catch {
+                warehouseMin = 0;
+                missingWarehouseCities.push(`${city}:0/${warehouseTarget}`);
+            }
+        }
+        if (!Number.isFinite(warehouseMin)) warehouseMin = 0;
+
+        const missing = [];
+        if (smartStorageCurrent < smartStorageTarget) missing.push(`SS ${smartStorageCurrent}/${smartStorageTarget}`);
+        if (advertCurrent < advertTarget) missing.push(`AdVert ${advertCurrent}/${advertTarget}`);
+        if (warehouseMin < warehouseTarget) {
+            const cityPreview = missingWarehouseCities.slice(0, 2).join(', ');
+            missing.push(
+                `Warehouses ${warehouseMin}/${warehouseTarget}` +
+                (cityPreview ? ` (${cityPreview}${missingWarehouseCities.length > 2 ? ', ...' : ''})` : ''),
+            );
+        }
+
+        return {
+            complete: missing.length === 0,
+            smartStorageCurrent,
+            smartStorageTarget,
+            advertCurrent,
+            advertTarget,
+            warehouseMin,
+            warehouseTarget,
+            missing,
+        };
+    }
+
+    async function tryBn3Round2RealEstatePush(reserve) {
+        const reSize = AGRI_SIZES[AGRI_MATS.indexOf('Real Estate')];
+        if (!Number.isFinite(reSize) || reSize <= 0) return null;
+
+        for (const city of CITIES) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                const targetUsage = wh.size * ROUND2_BN3_RE_PUSH_USAGE_PCT;
+                const freeHeadroom = Math.max(0, targetUsage - wh.sizeUsed);
+                if (freeHeadroom < reSize) continue;
+
+                const price = getMaterialBuyPrice(DIV_AGRI, city, 'Real Estate');
+                if (!Number.isFinite(price) || price <= 0) continue;
+
+                const budget = Math.max(0, c.getCorporation().funds - reserve);
+                const affordable = Math.floor(budget / price);
+                const spaceLimited = Math.floor(freeHeadroom / reSize);
+                const needed = Math.min(affordable, spaceLimited);
+                if (!Number.isFinite(needed) || needed <= 0) continue;
+                if (needed * price < ROUND2_BN3_RE_PUSH_MIN_SPEND) continue;
+
+                await waitUntilNotPurchase();
+                c.buyMaterial(DIV_AGRI, city, 'Real Estate', needed / CYCLE_SECS);
+                try {
+                    await waitForFreshPurchasePass();
+                } finally {
+                    try { c.buyMaterial(DIV_AGRI, city, 'Real Estate', 0); } catch { }
+                }
+                return `Agriculture ${city} extra Real Estate push`;
+            } catch { }
+        }
+        return null;
+    }
+
+    function tryBn3DummyExpansion(floor, maxDummies = ROUND2_BN3_DUMMY_MAX) {
+        for (let i = 1; i <= maxDummies; i++) {
+            const dName = `Dummy-${i}`;
+            if (c.getCorporation().divisions.includes(dName)) continue;
+            const startCost = expandIndustryCost('Restaurant');
+            if (!canSpend(startCost, floor)) return null;
+            try {
+                c.expandIndustry('Restaurant', dName);
+                return `${dName} launched`;
+            } catch {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    function tryBn3Round2DummyStep(reserve, bestOffer, materialFilled) {
+        if (!useBn3Round2Dummy()) return null;
+        if (!materialFilled && bestOffer < ROUND2_BN3_DUMMY_TRIGGER) return null;
+        return tryBn3DummyExpansion(getBn3DummySpendFloor(reserve));
+    }
+
+    function scaleJobPlanToSize(jobCounts, targetSize, order = ['eng', 'mgmt', 'biz', 'ops', 'rnd']) {
+        const roles = ['ops', 'eng', 'biz', 'mgmt', 'rnd'];
+        const base = Object.fromEntries(roles.map((role) => [role, Math.max(0, Number(jobCounts?.[role] ?? 0))]));
+        if (targetSize <= 0) return Object.fromEntries(roles.map((role) => [role, 0]));
+        const total = sumJobCounts(base);
+        if (total <= 0) return fillJobRemainder({}, targetSize, order);
+        if (total === targetSize) return base;
+        if (total < targetSize) return fillJobRemainder(base, targetSize, order);
+
+        const scaled = {};
+        let assigned = 0;
+        const fractions = [];
+        for (const role of roles) {
+            const raw = (base[role] * targetSize) / total;
+            scaled[role] = Math.floor(raw);
+            assigned += scaled[role];
+            fractions.push({ role, frac: raw - scaled[role], pref: Math.max(0, order.indexOf(role)) });
+        }
+        fractions.sort((a, b) => b.frac - a.frac || a.pref - b.pref || a.role.localeCompare(b.role));
+        let remaining = targetSize - assigned;
+        for (const item of fractions) {
+            if (remaining <= 0) break;
+            scaled[item.role] += 1;
+            remaining--;
+        }
+        return scaled;
+    }
+
+    function getBn3UpgradeMultiplierEstimate(name, level) {
+        switch (name) {
+            case 'Smart Factories': return 1 + level * 0.03;
+            case 'Smart Storage': return 1 + level * 0.10;
+            case 'Wilson Analytics': return 1 + level * 0.005;
+            case 'ABC SalesBots': return 1 + level * 0.01;
+            case 'Project Insight': return 1 + level * 0.05;
+            case 'FocusWires':
+            case 'Neural Accelerators':
+            case 'Speech Processor Implants':
+            case 'Nuoptimal Nootropic Injector Implants':
+                return 1 + level * 0.10;
+            default:
+                return 1;
+        }
+    }
+
+    function estimateOfficeProductivityFromJobs(opProd, engProd, mgmtProd, forProduct = false) {
+        const total = opProd + engProd + mgmtProd;
+        if (total <= 0) return 0;
+        const mgmtFactor = 1 + mgmtProd / (1.2 * total);
+        const prod = (Math.pow(Math.max(0, opProd), 0.4) + Math.pow(Math.max(0, engProd), 0.3)) * mgmtFactor;
+        return (forProduct ? 0.5 : 1) * 0.05 * prod;
+    }
+
+    function estimateProductDevelopmentScore(opProd, engProd, mgmtProd) {
+        const total = opProd + engProd + mgmtProd;
+        if (total <= 0) return 0;
+        const mgmtFactor = 1 + mgmtProd / (1.2 * total);
+        return (Math.pow(Math.max(0, engProd), 0.34) + Math.pow(Math.max(0, opProd), 0.2)) * mgmtFactor;
+    }
+
+    function estimateBusinessFactorFromProduction(bizProd) {
+        return Math.pow(Math.max(1, 1 + bizProd), 0.26);
+    }
+
+    function getDivisionRolePerHeadFallback(div, roleKey, excludeCity = null) {
+        try {
+            let totalProd = 0;
+            let totalWorkers = 0;
+            for (const city of c.getDivision(div).cities ?? []) {
+                if (city === excludeCity) continue;
+                if (div === DIV_TOBACCO && city !== HQ_CITY) {
+                    try { if (!c.hasWarehouse(div, city)) continue; } catch { continue; }
+                }
+                try {
+                    const office = c.getOffice(div, city);
+                    const jobs = office.employeeJobs ?? {};
+                    const prod = office.employeeProductionByJob ?? {};
+                    const count = Number(jobs[JOBS[roleKey]] ?? 0);
+                    const amount = Number(prod[JOBS[roleKey]] ?? 0);
+                    if (count > 0 && amount > 0) {
+                        totalWorkers += count;
+                        totalProd += amount;
+                    }
+                } catch { }
+            }
+            return totalWorkers > 0 ? totalProd / totalWorkers : 0;
+        } catch {
+            return 0;
+        }
+    }
+
+    function getProjectedRoleProduction(div, city, office, roleKey, targetCount, gains = null) {
+        if (targetCount <= 0) return 0;
+        const jobs = office?.employeeJobs ?? {};
+        const prod = office?.employeeProductionByJob ?? {};
+        const currentCount = Number(jobs[JOBS[roleKey]] ?? 0);
+        const currentProd = Number(prod[JOBS[roleKey]] ?? 0);
+        let perHead = currentCount > 0 && currentProd > 0 ? currentProd / currentCount : 0;
+        if (perHead <= 0) perHead = getDivisionRolePerHeadFallback(div, roleKey, city);
+        if (perHead <= 0 && office) {
+            const totalProd = Number(prod.total ?? 0);
+            const numEmployees = Number(office.numEmployees ?? 0);
+            if (totalProd > 0 && numEmployees > 0) perHead = totalProd / numEmployees / 2;
+        }
+        if (perHead <= 0) perHead = 1;
+        return targetCount * perHead * (1 + Number(gains?.[roleKey] ?? 0));
+    }
+
+    function getProjectedTobaccoOfficeScores(city, targetSize, targetJobs) {
+        let office = null;
+        try { office = c.getOffice(DIV_TOBACCO, city); } catch { }
+        const jobs = targetJobs ?? (city === HQ_CITY ? getRound2TobaccoHQJobs(targetSize) : getRound2TobaccoSupportJobsForSize(targetSize));
+        const opProd = getProjectedRoleProduction(DIV_TOBACCO, city, office, 'ops', Number(jobs.ops ?? 0));
+        const engProd = getProjectedRoleProduction(DIV_TOBACCO, city, office, 'eng', Number(jobs.eng ?? 0));
+        const bizProd = getProjectedRoleProduction(DIV_TOBACCO, city, office, 'biz', Number(jobs.biz ?? 0));
+        const mgmtProd = getProjectedRoleProduction(DIV_TOBACCO, city, office, 'mgmt', Number(jobs.mgmt ?? 0));
+        const finishedScore = estimateOfficeProductivityFromJobs(opProd, engProd, mgmtProd, true) * estimateBusinessFactorFromProduction(bizProd);
+        const devScore = estimateProductDevelopmentScore(opProd, engProd, mgmtProd);
+        return { opProd, engProd, bizProd, mgmtProd, finishedScore, devScore };
+    }
+
+    function getCurrentTobaccoOfficeScores() {
+        const perCity = {};
+        let total = 0;
+        try {
+            if (!hasDiv(DIV_TOBACCO)) return { total: 0, perCity };
+            const hasDev = hasActiveTobaccoDevelopment();
+            for (const city of c.getDivision(DIV_TOBACCO).cities ?? []) {
+                let office = null;
+                try { office = c.getOffice(DIV_TOBACCO, city); } catch { }
+                if (!office) continue;
+                const prod = office.employeeProductionByJob ?? {};
+                const opProd = Number(prod[JOBS.ops] ?? 0);
+                const engProd = Number(prod[JOBS.eng] ?? 0);
+                const bizProd = Number(prod[JOBS.biz] ?? 0);
+                const mgmtProd = Number(prod[JOBS.mgmt] ?? 0);
+                const hasWarehouse = city === HQ_CITY || safeHasWarehouse(DIV_TOBACCO, city);
+                const finishedScore = hasWarehouse
+                    ? estimateOfficeProductivityFromJobs(opProd, engProd, mgmtProd, true) * estimateBusinessFactorFromProduction(bizProd)
+                    : 0;
+                const devScore = city === HQ_CITY && hasDev
+                    ? estimateProductDevelopmentScore(opProd, engProd, mgmtProd) * ROUND2_BN3_TOB_DEV_VALUE_WEIGHT
+                    : 0;
+                const value = finishedScore + devScore;
+                perCity[city] = { finishedScore, devScore, value };
+                total += value;
+            }
+            return { total, perCity };
+        } catch {
+            return { total, perCity };
+        }
+    }
+
+    function safeHasWarehouse(div, city) {
+        try { return c.hasWarehouse(div, city); } catch { return false; }
+    }
+
+    function getRound2TobaccoSupportJobsForSize(size) {
+        // High-budget path: the formula already produces exact counts for any size 窶・
+        // pass size directly instead of scaling a fixed-size template.
+        if (useBn3HighBudgetRound2()) return getRound2TobaccoSupportJobs(size);
+        const { finishedProducts } = getTobaccoProductStats();
+        let hasTA2 = false;
+        try { hasTA2 = c.hasResearched(DIV_TOBACCO, 'Market-TA.II'); } catch { }
+        // Pre-v1: fill extras into R&D first, then eng/ops to ensure some throughput capability.
+        // Post-v1 (or TA.II): fill extras into production roles; R&D last.
+        const fillOrder = (hasTA2 || finishedProducts > 0)
+            ? ['eng', 'ops', 'mgmt', 'biz', 'rnd']
+            : ['rnd', 'eng', 'ops', 'mgmt'];
+        return scaleJobPlanToSize(getRound2TobaccoSupportJobs(), size, fillOrder);
+    }
+
+    function getBn3LeanSupportOfficeStepTarget(currentSize, targetSize) {
+        const current = Math.max(0, Number(currentSize ?? 0));
+        const target = Math.max(current, Number(targetSize ?? current));
+        return Math.min(target, Math.max(current + 3, 3));
+    }
+
+    function getBn3LateFinanceProfile(bestOffer) {
+        const cycle = getStableCorpCycleStats();
+        const revenue = Math.max(0, Number(cycle.revenue ?? 0));
+        const expenses = Math.max(0, Number(cycle.expenses ?? 0));
+        const profit = revenue - expenses;
+        const margin = revenue > 0 ? profit / revenue : (profit > 0 ? 1 : 0);
+        return {
+            funds: Math.max(0, Number(c.getCorporation().funds ?? 0)),
+            revenue,
+            expenses,
+            profit,
+            margin,
+            progress: clamp(Number(bestOffer ?? 0) / MIN_ROUND2, 0, 1.25),
+        };
+    }
+
+    function calculateBn3AdvertisingSalesFactor(awareness, popularity, advertisingFactor = ROUND2_BN3_TOB_ADVERTISING_FACTOR) {
+        const safeAwareness = Math.max(0, awareness);
+        const safePopularity = Math.max(0, popularity);
+        const awarenessFac = Math.pow(safeAwareness + 1, advertisingFactor);
+        const popularityFac = Math.pow(safePopularity + 1, advertisingFactor);
+        const ratioFac = safeAwareness <= 0 ? 0.01 : Math.max((safePopularity + 0.001) / safeAwareness, 0.01);
+        return Math.pow(awarenessFac * popularityFac * ratioFac, 0.85);
+    }
+
+    function simulateBn3NextTobaccoAdvertFactor(wilsonLevelOffset = 0, popularityRoll = 1.01) {
+        if (!hasDiv(DIV_TOBACCO)) return 0;
+        try {
+            const division = c.getDivision(DIV_TOBACCO);
+            const currentWilson = c.getUpgradeLevel('Wilson Analytics');
+            const advMult = getBn3UpgradeMultiplierEstimate('Wilson Analytics', currentWilson + wilsonLevelOffset);
+            const nextAwareness = (Number(division.awareness ?? 0) + 3 * advMult) * (1.005 * advMult);
+            const nextPopularity = (Number(division.popularity ?? 0) + 1 * advMult) * (popularityRoll * advMult);
+            return calculateBn3AdvertisingSalesFactor(nextAwareness, nextPopularity);
+        } catch {
+            return 0;
+        }
+    }
+
+    function getBn3TobaccoValueShare() {
+        if (!hasDiv(DIV_TOBACCO)) return 0.03;
+        try {
+            const cycle = getStableCorpCycleStats();
+            const division = c.getDivision(DIV_TOBACCO);
+            const tobaccoRevenue = Math.max(0, Number(division.lastCycleRevenue ?? 0));
+            const tobaccoExpenses = Math.max(0, Number(division.lastCycleExpenses ?? 0));
+            const { finishedProducts } = getTobaccoProductStats();
+            const corpRevenue = Math.max(0, Number(cycle.revenue ?? 0));
+            const corpProfit = Math.max(0, corpRevenue - Math.max(0, Number(cycle.expenses ?? 0)));
+            const tobaccoProfit = Math.max(0, tobaccoRevenue - tobaccoExpenses);
+            const revenueShare = corpRevenue > 0 ? tobaccoRevenue / corpRevenue : 0;
+            const profitShare = corpProfit > 0 ? tobaccoProfit / corpProfit : revenueShare;
+            const fallback = finishedProducts <= 0
+                ? 0.03
+                : finishedProducts === 1
+                    ? 0.05
+                    : 0.07;
+            const weightedShare = Math.max(
+                revenueShare,
+                profitShare * 0.9,
+                Math.min(revenueShare, profitShare) * 1.1,
+            );
+            if (tobaccoRevenue > 0 || tobaccoProfit > 0) {
+                return clamp(Math.max(0.01, weightedShare), 0.01, 0.65);
+            }
+            return clamp(Math.max(fallback, weightedShare), fallback, 0.65);
+        } catch {
+            return 0.07;
+        }
+    }
+
+    function simulateBn3TobaccoAdvertFactorAfterPurchases(additionalAdverts = 1, wilsonLevelOffset = 0, popularityRoll = 1.01) {
+        if (!hasDiv(DIV_TOBACCO)) return 0;
+        try {
+            const division = c.getDivision(DIV_TOBACCO);
+            const currentWilson = c.getUpgradeLevel('Wilson Analytics');
+            const advMult = getBn3UpgradeMultiplierEstimate('Wilson Analytics', currentWilson + wilsonLevelOffset);
+            let awareness = Number(division.awareness ?? 0);
+            let popularity = Number(division.popularity ?? 0);
+            const count = Math.max(0, Math.floor(Number(additionalAdverts ?? 0)));
+            if (count <= 0) return calculateBn3AdvertisingSalesFactor(awareness, popularity);
+            for (let i = 0; i < count; i++) {
+                awareness = (awareness + 3 * advMult) * (1.005 * advMult);
+                popularity = (popularity + 1 * advMult) * (popularityRoll * advMult);
+            }
+            return calculateBn3AdvertisingSalesFactor(awareness, popularity);
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBn3NextTobaccoAdvertRelativeGain(wilsonLevelOffset = 0) {
+        const currentFactor = simulateBn3TobaccoAdvertFactorAfterPurchases(0, wilsonLevelOffset);
+        const nextFactor = simulateBn3TobaccoAdvertFactorAfterPurchases(1, wilsonLevelOffset);
+        if (currentFactor <= 0) return nextFactor > 0 ? 1 : 0;
+        return Math.max(0, nextFactor / currentFactor - 1);
+    }
+
+    function estimateBn3WilsonRelativeGain(bestOffer, stagnantChecks) {
+        if (!hasDiv(DIV_TOBACCO)) return 0;
+        try {
+            const currentAdvert = c.getHireAdVertCount(DIV_TOBACCO);
+            const targetAdvert = getBn3LateTobaccoAdvertTarget(bestOffer, stagnantChecks);
+            const remainingAdverts = Math.max(0, targetAdvert - currentAdvert);
+            if (remainingAdverts <= 0) return 0;
+            const currentPlan = simulateBn3TobaccoAdvertFactorAfterPurchases(remainingAdverts, 0);
+            const boostedPlan = simulateBn3TobaccoAdvertFactorAfterPurchases(remainingAdverts, 1);
+            if (currentPlan <= 0) return boostedPlan > 0 ? getBn3TobaccoValueShare() : 0;
+            return Math.max(0, boostedPlan / currentPlan - 1) * getBn3TobaccoValueShare();
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBn3StoredSalesRealization(stored, sell, marginalRelGain) {
+        const currentSell = Math.max(0, Number(sell ?? 0));
+        const marginalGain = Math.max(0, Number(marginalRelGain ?? 0));
+        if (currentSell <= 0 || marginalGain <= 0) return 0;
+        const availableSellPerSecond = Math.max(0, Number(stored ?? 0)) / CYCLE_SECS;
+        const extraPossible = Math.max(0, availableSellPerSecond - currentSell);
+        const extraFromUpgrade = currentSell * marginalGain;
+        if (extraFromUpgrade <= 0) return 0;
+        return clamp(extraPossible / extraFromUpgrade, 0, 1);
+    }
+
+    function estimateBn3SalesBotRelativeGain() {
+        try {
+            const level = c.getUpgradeLevel('ABC SalesBots');
+            const marginalRelGain = 0.01 / getBn3UpgradeMultiplierEstimate('ABC SalesBots', level);
+            const agri = getAgriFlowNumbers();
+            const tob = getTobaccoFlowNumbers();
+            const tobaccoShare = getBn3TobaccoValueShare();
+            const agriRealization = estimateBn3StoredSalesRealization(agri.stored, agri.sell, marginalRelGain);
+            const tobRealization = estimateBn3StoredSalesRealization(tob.stored, tob.sell, marginalRelGain);
+            return marginalRelGain * ((1 - tobaccoShare) * agriRealization + tobaccoShare * tobRealization);
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBn3SmartFactoriesRelativeGain() {
+        try {
+            const level = c.getUpgradeLevel('Smart Factories');
+            const base = 0.03 / getBn3UpgradeMultiplierEstimate('Smart Factories', level);
+            const agri = getAgriFlowNumbers();
+            const tob = getTobaccoFlowNumbers();
+            const agriUtil = agri.production > 0 ? clamp(agri.sell / agri.production, 0.35, 1.0) : 0.5;
+            const tobUtil = tob.production > 0 ? clamp(tob.sell / tob.production, 0.35, 1.0) : (tob.stored <= 100 ? 0.8 : 0.45);
+            const tobaccoShare = getBn3TobaccoValueShare();
+            return base * ((1 - tobaccoShare) * agriUtil + tobaccoShare * tobUtil);
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBn3StorageRelativeGain() {
+        try {
+            const usage = getAgriWarehouseUsageSummary();
+            const { production, sell, stored } = getAgriFlowNumbers();
+            const avgPressure = clamp((usage.avg - 0.78) / 0.15, 0, 1.5);
+            const peakPressure = clamp((usage.peak - 0.90) / 0.08, 0, 1.5);
+            const flowPressure = production > 0 ? clamp((production - sell) / production, 0, 1) : 0;
+            const stockPressure = clamp(stored / 125000, 0, 1);
+            const pressure = Math.max(avgPressure, peakPressure, flowPressure * 0.8, stockPressure * 0.6);
+            if (pressure <= 0) return 0;
+            const level = c.getUpgradeLevel('Smart Storage');
+            return (0.10 / getBn3UpgradeMultiplierEstimate('Smart Storage', level)) * pressure;
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBn3EmployeeUpgradeRelativeGain(upgrade) {
+        const gains = ROUND2_BN3_EMPLOYEE_UPGRADE_ROLE_GAINS[upgrade];
+        if (!gains) return 0;
+        try {
+            let productionBefore = 0;
+            let productionAfter = 0;
+            let businessBefore = 0;
+            let businessAfter = 0;
+            for (const div of c.getCorporation().divisions ?? []) {
+                if (`${div}`.startsWith('Dummy-')) continue;
+                let cities = [];
+                try { cities = c.getDivision(div).cities ?? []; } catch { continue; }
+                for (const city of cities) {
+                    try {
+                        if (div === DIV_TOBACCO && !c.hasWarehouse(div, city)) continue;
+                    } catch { }
+                    try {
+                        const office = c.getOffice(div, city);
+                        const prod = office.employeeProductionByJob ?? {};
+                        const opProd = Number(prod[JOBS.ops] ?? 0);
+                        const engProd = Number(prod[JOBS.eng] ?? 0);
+                        const bizProd = Number(prod[JOBS.biz] ?? 0);
+                        const mgmtProd = Number(prod[JOBS.mgmt] ?? 0);
+                        const forProduct = div === DIV_TOBACCO;
+                        productionBefore += estimateOfficeProductivityFromJobs(opProd, engProd, mgmtProd, forProduct);
+                        productionAfter += estimateOfficeProductivityFromJobs(
+                            opProd * (1 + gains.ops),
+                            engProd * (1 + gains.eng),
+                            mgmtProd * (1 + gains.mgmt),
+                            forProduct,
+                        );
+                        businessBefore += bizProd;
+                        businessAfter += bizProd * (1 + gains.biz);
+                    } catch { }
+                }
+            }
+            const prodRel = productionBefore > 0 ? Math.max(0, productionAfter / productionBefore - 1) : 0;
+            const bizRel = businessBefore > 0 ? Math.max(0, businessAfter / businessBefore - 1) : 0;
+            return prodRel * 0.75 + bizRel * 0.25;
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBn3ProjectInsightRelativeGain() {
+        try {
+            const unfinishedAgriResearch = MAT_RESEARCH.some((r) => !c.hasResearched(DIV_AGRI, r));
+            const unfinishedTobResearch = TOB_RESEARCH.some((r) => !c.hasResearched(DIV_TOBACCO, r));
+            if (!unfinishedAgriResearch && !unfinishedTobResearch) return 0;
+            const level = c.getUpgradeLevel('Project Insight');
+            const base = 0.05 / getBn3UpgradeMultiplierEstimate('Project Insight', level);
+            return base * 0.10;
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBn3OwRelativeGain(additionalCount) {
+        return Math.max(0, Math.pow(ROUND2_OW_MULT_BASE, Math.max(0, Number(additionalCount ?? 0))) - 1);
+    }
+
+    function estimateBn3DivisionRelativeGain(additionalCount = 1) {
+        // Source valuation uses a 1.1^divisions multiplier while private.
+        return Math.max(0, Math.pow(1.1, Math.max(0, Number(additionalCount ?? 0))) - 1);
+    }
+
+    function estimateBn3DummyCandidate(maxDummies = ROUND2_BN3_DUMMY_MAX) {
+        for (let i = 1; i <= maxDummies; i++) {
+            const dName = `Dummy-${i}`;
+            if (!c.getCorporation().divisions.includes(dName)) {
+                return {
+                    label: `${dName} launched`,
+                    cost: expandIndustryCost('Restaurant'),
+                    relGain: estimateBn3DivisionRelativeGain(1),
+                    maxDummies,
+                };
+            }
+        }
+        return null;
+    }
+
+    function getBn3PeakStabilizeDummyBypassCandidate(reserve, bestOffer, stagnantChecks) {
+        if (!useBn3LeanTobRound2() || !hasDiv(DIV_TOBACCO)) return null;
+        if (!isBn3Round2MaterialFilled()) return null;
+        if (bestOffer < ROUND2_BN3_PEAK_STABILIZE_DUMMY_TRIGGER) return null;
+
+        try {
+            // During lean-tob pre-spike, dummy creation is managed exclusively by
+            // tryBn3LeanTobPreSpikeDummyStep. Block dynamic-late from interfering.
+            const leanTobPreSpikeOwns = useBn3LeanTobRound2() && !isLeanTobSpikeUnlocked();
+            const allowSecondDummy = !leanTobPreSpikeOwns && getHighestTobaccoProductVersion() >= 6 &&
+                (bestOffer >= ROUND2_BN3_LATE_SECOND_DUMMY_TRIGGER ||
+                    stagnantChecks >= ROUND2_BN3_LATE_SECOND_DUMMY_STAGNATION ||
+                    shouldUseBn3LatePostdoneBoost(bestOffer, stagnantChecks));
+            const maxDummies = leanTobPreSpikeOwns ? 0 : (allowSecondDummy ? 2 : 1);
+            const dummy = maxDummies > 0 ? estimateBn3DummyCandidate(maxDummies) : null;
+            if (!dummy) return null;
+
+            const finance = getBn3LateFinanceProfile(bestOffer);
+            let relGain = dummy.relGain;
+            if (!isBn3LateThroughputReady()) relGain *= 0.35;
+            if (c.getHireAdVertCount(DIV_TOBACCO) < getBn3LateTobaccoAdvertTarget(bestOffer, stagnantChecks)) relGain *= 0.5;
+            const dummyBias = clamp(0.45 + finance.progress * 0.85, 0.45, 1.25) * clamp(finance.margin / 0.35, 0.25, 1.0);
+            relGain *= dummyBias;
+
+            const floor = getBn3DummySpendFloor(reserve, finance);
+            const candidate = buildBn3DynamicLateCandidate({
+                id: 'dummy',
+                label: dummy.label,
+                cost: dummy.cost,
+                floor,
+                relGain,
+                bestOffer,
+                finance,
+                perform: () => tryBn3DummyExpansion(floor, dummy.maxDummies),
+            });
+            if (!candidate?.affordable) return null;
+            if (candidate.cost > finance.funds * ROUND2_BN3_PEAK_STABILIZE_DUMMY_MAX_SPEND_PCT) return null;
+            return candidate;
+        } catch {
+            return null;
+        }
+    }
+
+    function getBn3DynamicTobaccoHQTarget(bestOffer, stagnantChecks) {
+        const { finishedProducts, highestProgress } = getTobaccoProductStats();
+        const speedHQPush =
+            highestProgress >= ROUND2_BN3_LEAN_TOB_SPEED_HQ_PROGRESS &&
+            (bestOffer >= ROUND2_BN3_LEAN_TOB_SPEED_HQ_TRIGGER ||
+                stagnantChecks >= ROUND2_BN3_LEAN_TOB_SPEED_HQ_STAGNATION);
+        const prefillHQPush =
+            bestOffer >= ROUND2_BN3_LEAN_TOB_PREFILL_HQ_TRIGGER ||
+            stagnantChecks >= ROUND2_BN3_LEAN_TOB_PREFILL_HQ_STAGNATION;
+        if (finishedProducts > 0) {
+            return shouldUseBn3LatePostdoneBoost(bestOffer, stagnantChecks)
+                ? ROUND2_BN3_LATE_POSTDONE_HQ_BOOST_OFFICE
+                : ROUND2_BN3_LEAN_TOB_POSTDONE_HQ_OFFICE;
+        }
+        if (speedHQPush) return ROUND2_BN3_LEAN_TOB_SPEED_HQ_OFFICE;
+        if (prefillHQPush) return ROUND2_BN3_LEAN_TOB_HQ_PUSH_OFFICE;
+        return ROUND2_BN3_LEAN_TOB_HQ_OFFICE;
+    }
+
+    function getBn3DynamicTobaccoSupportTarget(bestOffer, stagnantChecks) {
+        const baseTarget = getRound2TobaccoSupportTargetSize();
+        const { finishedProducts } = getTobaccoProductStats();
+        if (finishedProducts <= 0) return baseTarget;
+        return shouldUseBn3LatePostdoneBoost(bestOffer, stagnantChecks)
+            ? Math.max(baseTarget, ROUND2_BN3_LATE_POSTDONE_SUPPORT_BOOST_OFFICE)
+            : baseTarget;
+    }
+
+    function estimateBn3TobaccoOfficeRelativeGain(city, targetSize, targetJobs = null) {
+        try {
+            const current = getCurrentTobaccoOfficeScores();
+            const currentValue = Number(current.perCity?.[city]?.value ?? 0);
+            const scores = getProjectedTobaccoOfficeScores(city, targetSize, targetJobs ?? (city === HQ_CITY ? getRound2TobaccoHQJobs(targetSize) : getRound2TobaccoSupportJobsForSize(targetSize)));
+            const projectedValue = Number(scores.finishedScore ?? 0) +
+                (city === HQ_CITY && hasActiveTobaccoDevelopment() ? Number(scores.devScore ?? 0) * ROUND2_BN3_TOB_DEV_VALUE_WEIGHT : 0);
+            if (projectedValue <= currentValue) return 0;
+            const tobaccoBase = Math.max(0.05, current.total);
+            return getBn3TobaccoValueShare() * Math.max(0, projectedValue - currentValue) / tobaccoBase;
+        } catch {
+            return 0;
+        }
+    }
+
+    function estimateBn3NewTobaccoSupportCityRelativeGain(targetSize = 3, targetJobs = null) {
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            if (finishedProducts <= 0) return 0;
+            const current = getCurrentTobaccoOfficeScores();
+            const projected = getProjectedTobaccoOfficeScores(
+                '__new__',
+                targetSize,
+                targetJobs ?? getRound2TobaccoSupportJobsForSize(targetSize),
+            );
+            const projectedValue = Number(projected.finishedScore ?? 0);
+            if (projectedValue <= 0) return 0;
+            return getBn3TobaccoValueShare() * projectedValue / Math.max(0.05, current.total);
+        } catch {
+            return 0;
+        }
+    }
+
+    function buildBn3DynamicLateCandidate({ id, label, cost, floor, relGain, perform, bestOffer, finance = null }) {
+        if (!Number.isFinite(cost) || cost <= 0) return null;
+        if (!Number.isFinite(relGain) || relGain <= 0) return null;
+        const liveFinance = finance ?? getBn3LateFinanceProfile(bestOffer);
+        const funds = Math.max(0, Number(liveFinance.funds ?? c.getCorporation().funds ?? 0));
+        const requiredFunds = Math.max(0, Number(floor ?? 0)) + cost;
+        const shortfall = Math.max(0, requiredFunds - funds);
+        const waitSeconds = estimateFundsWaitSeconds(requiredFunds, funds, liveFinance.profit);
+        const offerBasis = Math.max(1, Number(bestOffer ?? 0), Number(latestRound2Offer ?? 0));
+        const grossOfferGain = offerBasis * relGain;
+        const cashDrag = cost * ROUND2_EFFECTIVE_OFFER_MULT * getBn3ValuationCashDragWeight(liveFinance);
+        const dragPenalty = grossOfferGain > 0
+            ? clamp(1 - cashDrag / grossOfferGain, 0, 1)
+            : 0;
+        const baseScore = grossOfferGain * dragPenalty / cost;
+        const waitPenalty = waitSeconds <= 0
+            ? 1
+            : (Number.isFinite(waitSeconds) ? 1 / (1 + waitSeconds / ROUND2_BN3_DYNAMIC_WAIT_HORIZON_SEC) : 0);
+        return {
+            id,
+            label,
+            cost,
+            floor,
+            requiredFunds,
+            shortfall,
+            waitSeconds,
+            relGain,
+            offerBasis,
+            grossOfferGain,
+            cashDrag,
+            score: baseScore,
+            futureScore: baseScore * waitPenalty,
+            affordable: shortfall <= 0,
+            perform,
+        };
+    }
+
+    function getBn3DynamicAffordablePackage(candidates, startingFunds) {
+        let funds = Math.max(0, Number(startingFunds ?? 0));
+        let relGain = 0;
+        let spent = 0;
+        const picked = [];
+        for (const candidate of candidates) {
+            if (picked.length >= ROUND2_BN3_DYNAMIC_PACKAGE_MAX) break;
+            if (funds - candidate.cost < candidate.floor) continue;
+            picked.push(candidate);
+            relGain = combineRelativeGains(relGain, candidate.relGain);
+            spent += candidate.cost;
+            funds -= candidate.cost;
+        }
+        return { picked, relGain, spent };
+    }
+
+    function chooseBn3DynamicLateCandidate(candidates, finance) {
+        const affordable = candidates
+            .filter((candidate) => candidate.affordable)
+            .sort((a, b) => b.score - a.score || b.relGain - a.relGain || a.cost - b.cost);
+        const blocked = candidates
+            .filter((candidate) => !candidate.affordable)
+            .sort((a, b) => b.futureScore - a.futureScore || b.relGain - a.relGain || a.requiredFunds - b.requiredFunds);
+
+        const bestAffordable = affordable[0] ?? null;
+        const bestBlocked = blocked[0] ?? null;
+        const packageNow = getBn3DynamicAffordablePackage(affordable, finance.funds);
+
+        if (!bestAffordable) return { mode: 'wait', bestBlocked, packageNow };
+        if (!bestBlocked) return { mode: 'buy', candidate: bestAffordable, packageNow };
+
+        const blockedBeatsSingle = bestBlocked.futureScore > bestAffordable.score * ROUND2_BN3_DYNAMIC_WAIT_EDGE;
+        const blockedBeatsPackage = bestBlocked.relGain > packageNow.relGain * ROUND2_BN3_DYNAMIC_WAIT_EDGE;
+        const blockedSoon = Number.isFinite(bestBlocked.waitSeconds) &&
+            bestBlocked.waitSeconds <= ROUND2_BN3_DYNAMIC_WAIT_HORIZON_SEC;
+        const currentOffer = Math.max(0, Number(latestRound2Offer ?? 0));
+        const bestSeen = Math.max(
+            currentOffer,
+            Number(bestAffordable.offerBasis ?? 0),
+            Number(bestBlocked.offerBasis ?? 0),
+        );
+        const nearPeak = bestSeen > 0 && currentOffer >= bestSeen * ROUND2_BN3_DYNAMIC_NEAR_PEAK_RATIO;
+        const bigSpend = finance.funds > 0 && bestAffordable.cost >= finance.funds * ROUND2_BN3_DYNAMIC_NEAR_PEAK_BIG_SPEND_PCT;
+        const modestGain = bestAffordable.relGain <= ROUND2_BN3_DYNAMIC_NEAR_PEAK_MIN_REL_GAIN;
+        if (nearPeak && blockedSoon && bigSpend && modestGain) {
+            return { mode: 'wait', bestBlocked, packageNow, bestAffordable };
+        }
+
+        if (blockedSoon && blockedBeatsSingle && blockedBeatsPackage) {
+            return { mode: 'wait', bestBlocked, packageNow, bestAffordable };
+        }
+        return { mode: 'buy', candidate: bestAffordable, packageNow, bestBlocked };
+    }
+
+    function getBn3DynamicLateCandidates(reserve, bestOffer, materialFilled, stagnantChecks) {
+        if (!isBn3LateValuationSpendReady(bestOffer, materialFilled, stagnantChecks)) return [];
+        if (!materialFilled || !useBn3ExpandedTobaccoRound2() || !hasDiv(DIV_TOBACCO)) return [];
+
+        const candidates = [];
+        const productGuard = hasActiveTobaccoDevelopment() || shouldFreezeBn3LeanTobaccoProductCycle(bestOffer)
+            ? 0
+            : getTobaccoProductInvestment(bestOffer);
+        const tobaccoShare = getBn3TobaccoValueShare();
+        const finance = getBn3LateFinanceProfile(bestOffer);
+        const throughputBias = finance.margin < 0.45 ? 1.15 : 1.0;
+        const dummyBias = clamp(0.45 + finance.progress * 0.85, 0.45, 1.25) * clamp(finance.margin / 0.35, 0.25, 1.0);
+        const researchBias = clamp(1.1 - finance.progress * 0.5, 0.45, 1.05);
+
+        try {
+            const level = c.getUpgradeLevel('Smart Storage');
+            if (level < ROUND2_BN3_LATE_POSTFILL_SMART_STORAGE_TARGET) {
+                const cost = c.getUpgradeLevelCost('Smart Storage');
+                const floor = Math.max(reserve, reserve + ROUND2_BN3_LATE_POSTFILL_STORAGE_BUFFER);
+                // Pre-spike: storage competes at a fraction of normal weight unless
+                // warehouses are genuinely filling up. Profit-boosting upgrades should
+                // win at moderate utilization; storage only dominates near capacity.
+                const leanPreSpikeFactor = (useBn3LeanTobRound2() && !isLeanTobSpikeUnlocked())
+                    ? clamp((getAgriWarehouseUsageSummary().peak - 0.90) / 0.06, 0, 1)
+                    : 1.0;
+                const candidate = buildBn3DynamicLateCandidate({
+                    id: 'storage',
+                    label: 'Smart Storage',
+                    cost,
+                    floor,
+                    relGain: estimateBn3StorageRelativeGain() * throughputBias * leanPreSpikeFactor,
+                    bestOffer,
+                    perform: () => {
+                        if (!canSpend(cost, floor)) return null;
+                        c.levelUpgrade('Smart Storage');
+                        return `Smart Storage -> ${c.getUpgradeLevel('Smart Storage')}`;
+                    },
+                });
+                if (candidate) candidates.push(candidate);
+            }
+        } catch { }
+
+        try {
+            const level = c.getUpgradeLevel('ABC SalesBots');
+            if (level < ROUND2_BN3_LATE_SALESBOT_TARGET) {
+                const cost = c.getUpgradeLevelCost('ABC SalesBots');
+                const floor = Math.max(reserve, reserve + ROUND2_BN3_LATE_SALESBOT_BUFFER);
+                const candidate = buildBn3DynamicLateCandidate({
+                    id: 'salesbots',
+                    label: 'ABC SalesBots',
+                    cost,
+                    floor,
+                    relGain: estimateBn3SalesBotRelativeGain() * throughputBias,
+                    bestOffer,
+                    perform: () => {
+                        if (!canSpend(cost, floor)) return null;
+                        c.levelUpgrade('ABC SalesBots');
+                        return `ABC SalesBots -> ${c.getUpgradeLevel('ABC SalesBots')}`;
+                    },
+                });
+                if (candidate) candidates.push(candidate);
+            }
+        } catch { }
+
+        try {
+            const level = c.getUpgradeLevel('Smart Factories');
+            if (level < ROUND2_BN3_SMART_TARGET) {
+                const cost = c.getUpgradeLevelCost('Smart Factories');
+                const floor = reserve + productGuard;
+                const candidate = buildBn3DynamicLateCandidate({
+                    id: 'smart-factories',
+                    label: 'Smart Factories',
+                    cost,
+                    floor,
+                    relGain: estimateBn3SmartFactoriesRelativeGain() * throughputBias,
+                    bestOffer,
+                    perform: () => {
+                        if (!canSpend(cost, floor)) return null;
+                        c.levelUpgrade('Smart Factories');
+                        return `Smart Factories -> ${c.getUpgradeLevel('Smart Factories')}`;
+                    },
+                });
+                if (candidate) candidates.push(candidate);
+            }
+        } catch { }
+
+        try {
+            const level = c.getUpgradeLevel('Wilson Analytics');
+            const target = getBn3LateWilsonTarget(bestOffer, stagnantChecks);
+            if (level < target) {
+                const cost = c.getUpgradeLevelCost('Wilson Analytics');
+                const floor = reserve + ROUND2_BN3_LATE_WILSON_BUFFER;
+                const candidate = buildBn3DynamicLateCandidate({
+                    id: 'wilson',
+                    label: 'Wilson Analytics',
+                    cost,
+                    floor,
+                    relGain: estimateBn3WilsonRelativeGain(bestOffer, stagnantChecks),
+                    bestOffer,
+                    perform: () => {
+                        if (!canSpend(cost, floor)) return null;
+                        c.levelUpgrade('Wilson Analytics');
+                        return `Wilson Analytics -> ${c.getUpgradeLevel('Wilson Analytics')}`;
+                    },
+                });
+                if (candidate) candidates.push(candidate);
+            }
+        } catch { }
+
+        try {
+            const level = c.getUpgradeLevel('Project Insight');
+            if (level < 1) {
+                const cost = c.getUpgradeLevelCost('Project Insight');
+                const floor = reserve + productGuard;
+                const candidate = buildBn3DynamicLateCandidate({
+                    id: 'project-insight',
+                    label: 'Project Insight',
+                    cost,
+                    floor,
+                    relGain: estimateBn3ProjectInsightRelativeGain() * researchBias,
+                    bestOffer,
+                    perform: () => {
+                        if (!canSpend(cost, floor)) return null;
+                        c.levelUpgrade('Project Insight');
+                        return `Project Insight -> ${c.getUpgradeLevel('Project Insight')}`;
+                    },
+                });
+                if (candidate) candidates.push(candidate);
+            }
+        } catch { }
+
+        try {
+            const { finishedProducts } = getTobaccoProductStats();
+            if (finishedProducts > 0) {
+                const floor = reserve + productGuard;
+                for (const upg of ROUND2_BN3_LATE_EMPLOYEE_UPGRADES) {
+                    if (c.getUpgradeLevel(upg) >= ROUND2_BN3_LATE_EMPLOYEE_UPGRADE_TARGET) continue;
+                    const cost = c.getUpgradeLevelCost(upg);
+                    const candidate = buildBn3DynamicLateCandidate({
+                        id: `employee-${upg}`,
+                        label: upg,
+                        cost,
+                        floor,
+                        relGain: estimateBn3EmployeeUpgradeRelativeGain(upg) * throughputBias,
+                        bestOffer,
+                        perform: () => {
+                            if (!canSpend(cost, floor)) return null;
+                            c.levelUpgrade(upg);
+                            return `${upg} -> ${c.getUpgradeLevel(upg)}`;
+                        },
+                    });
+                    if (candidate) candidates.push(candidate);
+                }
+            }
+        } catch { }
+
+        try {
+            const targetAdvert = getBn3LateTobaccoAdvertTarget(bestOffer, stagnantChecks);
+            const adverts = c.getHireAdVertCount(DIV_TOBACCO);
+            if (adverts < targetAdvert) {
+                const cost = c.getHireAdVertCost(DIV_TOBACCO);
+                const extraProductGuard = targetAdvert > ROUND2_BN3_LATE_TOB_ADVERT_TARGET
+                    ? ROUND2_BN3_LEAN_TOB_PRODUCT_INVEST_MIN_LATE
+                    : 0;
+                const floor = reserve + ROUND2_BN3_LATE_TOB_ADVERT_BUFFER + productGuard + extraProductGuard;
+                const candidate = buildBn3DynamicLateCandidate({
+                    id: 'advert',
+                    label: 'Tobacco advert',
+                    cost,
+                    floor,
+                    relGain: estimateBn3NextTobaccoAdvertRelativeGain(0) * tobaccoShare,
+                    bestOffer,
+                    perform: () => {
+                        if (!canSpend(cost, floor)) return null;
+                        c.hireAdVert(DIV_TOBACCO);
+                        return `Tobacco advert -> ${c.getHireAdVertCount(DIV_TOBACCO)}`;
+                    },
+                });
+                if (candidate) candidates.push(candidate);
+            }
+        } catch { }
+
+        try {
+            const hqTarget = getBn3DynamicTobaccoHQTarget(bestOffer, stagnantChecks);
+            const hqOffice = c.getOffice(DIV_TOBACCO, HQ_CITY);
+            if (hqOffice.size < hqTarget) {
+                const increase = hqTarget - hqOffice.size;
+                const cost = c.getOfficeSizeUpgradeCost(DIV_TOBACCO, HQ_CITY, increase);
+                const floor = reserve + productGuard + 1e9;
+                const candidate = buildBn3DynamicLateCandidate({
+                    id: 'tob-hq-office',
+                    label: 'Tobacco HQ office',
+                    cost,
+                    floor,
+                    relGain: estimateBn3TobaccoOfficeRelativeGain(HQ_CITY, hqTarget, getRound2TobaccoHQJobs(hqTarget)) * throughputBias,
+                    bestOffer,
+                    perform: () => {
+                        if (!canSpend(cost, floor)) return null;
+                        fillOffice(DIV_TOBACCO, HQ_CITY, hqTarget, getRound2TobaccoHQJobs(hqTarget));
+                        return `Tobacco HQ office -> ${hqTarget}`;
+                    },
+                });
+                if (candidate) candidates.push(candidate);
+            }
+        } catch { }
+
+        try {
+            const division = c.getDivision(DIV_TOBACCO);
+            const supportTarget = getBn3DynamicTobaccoSupportTarget(bestOffer, stagnantChecks);
+            for (const city of supportCities()) {
+                if (!division.cities.includes(city)) continue;
+                if (!safeHasWarehouse(DIV_TOBACCO, city)) {
+                    const cost = getCorpWarehouseInitialCost();
+                    const floor = reserve + productGuard + 5e8;
+                    const office = c.getOffice(DIV_TOBACCO, city);
+                    const targetSize = Math.max(3, Number(office.size ?? 3));
+                    const targetJobs = getRound2TobaccoSupportJobsForSize(targetSize);
+                    const candidate = buildBn3DynamicLateCandidate({
+                        id: `tob-support-warehouse-${city}`,
+                        label: `Tobacco warehouse ${city}`,
+                        cost,
+                        floor,
+                        relGain: combineRelativeGains(
+                            estimateBn3TobaccoOfficeRelativeGain(city, targetSize, targetJobs) * throughputBias,
+                            estimateBn3OwRelativeGain(1),
+                        ),
+                        bestOffer,
+                        perform: () => {
+                            if (!canSpend(cost, floor)) return null;
+                            c.purchaseWarehouse(DIV_TOBACCO, city);
+                            fillOffice(DIV_TOBACCO, city, targetSize, targetJobs);
+                            return `Tobacco warehouse purchased in ${city}`;
+                        },
+                    });
+                    if (candidate) candidates.push(candidate);
+                    continue;
+                }
+                const office = c.getOffice(DIV_TOBACCO, city);
+                const supportStepTarget = useBn3LeanTobRound2() && getTobaccoProductStats().finishedProducts > 0
+                    ? getBn3LeanSupportOfficeStepTarget(office.size, supportTarget)
+                    : supportTarget;
+                if (office.size < supportStepTarget) {
+                    const increase = supportStepTarget - office.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_TOBACCO, city, increase);
+                    const floor = reserve + productGuard + 5e8;
+                    const candidate = buildBn3DynamicLateCandidate({
+                        id: `tob-support-office-${city}`,
+                        label: `Tobacco ${city} office`,
+                        cost,
+                        floor,
+                        relGain: estimateBn3TobaccoOfficeRelativeGain(city, supportStepTarget, getRound2TobaccoSupportJobsForSize(supportStepTarget)) * throughputBias,
+                        bestOffer,
+                        perform: () => {
+                            if (!canSpend(cost, floor)) return null;
+                            fillOffice(DIV_TOBACCO, city, supportStepTarget, getRound2TobaccoSupportJobsForSize(supportStepTarget));
+                            return `Tobacco ${city} office -> ${supportStepTarget}`;
+                        },
+                    });
+                    if (candidate) candidates.push(candidate);
+                }
+            }
+            const missingSupportCity = supportCities().find((city) => !division.cities.includes(city));
+            // For lean-tob: don't expand to new cities before the first product is done.
+            // Pre-product cities add salary overhead with zero Tobacco revenue, causing
+            // the valuation to drop immediately after the spend (seen as ~12% crash).
+            // The bootstrap early-support step has its own gate; this closes the same
+            // gap for the dynamic-late evaluator.
+            const allowNewSupportCity = !useBn3LeanTobRound2() || getTobaccoProductStats().finishedProducts > 0;
+            if (missingSupportCity && allowNewSupportCity) {
+                const packageCost = getCorpOfficeInitialCost() + getCorpWarehouseInitialCost();
+                const floor = reserve + productGuard + 5e8;
+                const initialSize = 3;
+                const initialJobs = getRound2TobaccoSupportJobsForSize(initialSize);
+                const candidate = buildBn3DynamicLateCandidate({
+                    id: `tob-support-expand-${missingSupportCity}`,
+                    label: `Tobacco ${missingSupportCity} city+warehouse`,
+                    cost: packageCost,
+                    floor,
+                    relGain: combineRelativeGains(
+                        estimateBn3NewTobaccoSupportCityRelativeGain(initialSize, initialJobs) * throughputBias,
+                        estimateBn3OwRelativeGain(2),
+                    ),
+                    bestOffer,
+                    perform: () => {
+                        if (!canSpend(packageCost, floor)) return null;
+                        c.expandCity(DIV_TOBACCO, missingSupportCity);
+                        c.purchaseWarehouse(DIV_TOBACCO, missingSupportCity);
+                        fillOffice(DIV_TOBACCO, missingSupportCity, initialSize, initialJobs);
+                        return `Tobacco expanded to ${missingSupportCity} with warehouse`;
+                    },
+                });
+                if (candidate) candidates.push(candidate);
+            }
+        } catch { }
+
+        try {
+            // During lean-tob pre-spike, dummy creation is managed exclusively by
+            // tryBn3LeanTobPreSpikeDummyStep. Block dynamic-late from interfering.
+            const leanTobPreSpikeOwns = useBn3LeanTobRound2() && !isLeanTobSpikeUnlocked();
+            const allowSecondDummy = !leanTobPreSpikeOwns && getHighestTobaccoProductVersion() >= 6 &&
+                (bestOffer >= ROUND2_BN3_LATE_SECOND_DUMMY_TRIGGER ||
+                    stagnantChecks >= ROUND2_BN3_LATE_SECOND_DUMMY_STAGNATION ||
+                    shouldUseBn3LatePostdoneBoost(bestOffer, stagnantChecks));
+            const maxDummies = leanTobPreSpikeOwns ? 0 : (allowSecondDummy ? 2 : 1);
+            const dummy = maxDummies > 0 ? estimateBn3DummyCandidate(maxDummies) : null;
+            if (dummy) {
+                let relGain = dummy.relGain;
+                if (!isBn3LateThroughputReady()) relGain *= 0.35;
+                if (c.getHireAdVertCount(DIV_TOBACCO) < getBn3LateTobaccoAdvertTarget(bestOffer, stagnantChecks)) relGain *= 0.5;
+                relGain *= dummyBias;
+                const floor = getBn3DummySpendFloor(reserve, finance);
+                const candidate = buildBn3DynamicLateCandidate({
+                    id: 'dummy',
+                    label: dummy.label,
+                    cost: dummy.cost,
+                    floor,
+                    relGain,
+                    bestOffer,
+                    perform: () => tryBn3DummyExpansion(floor, dummy.maxDummies),
+                });
+                if (candidate) candidates.push(candidate);
+            }
+        } catch { }
+
+        candidates.sort((a, b) => b.score - a.score || b.relGain - a.relGain || a.cost - b.cost);
+        return candidates;
+    }
+
+    function shouldEvaluateBn3DynamicLate(materialFilled) {
+        if (!materialFilled) {
+            bn3DynamicLateCheckCounter = 0;
+            bn3DynamicLateSettleChecks = 0;
+            return false;
+        }
+        if (bn3DynamicLateSettleChecks > 0) {
+            bn3DynamicLateSettleChecks -= 1;
+            return false;
+        }
+        bn3DynamicLateCheckCounter += 1;
+        return bn3DynamicLateCheckCounter === 1 ||
+            ((bn3DynamicLateCheckCounter - 1) % ROUND2_BN3_DYNAMIC_LATE_INTERVAL) === 0;
+    }
+
+    function tryBn3DynamicLateSpendStep(reserve, bestOffer, materialFilled, stagnantChecks) {
+        if (!useBn3LeanTobRound2() || !hasDiv(DIV_TOBACCO)) return null;
+        if (!isBn3LateValuationSpendReady(bestOffer, materialFilled, stagnantChecks)) {
+            if (!materialFilled) {
+                bn3DynamicLateCheckCounter = 0;
+                bn3DynamicLateSettleChecks = 0;
+                bn3DynamicLateRecoveryBasis = 0;
+                bn3DynamicLateRecoveryLabel = '';
+            }
+            return null;
+        }
+        const currentOffer = Math.max(0, Number(latestRound2Offer ?? 0));
+        if (shouldStabilizeBn3Round2Offer(bestOffer, stagnantChecks)) {
+            const dummyBypass = getBn3PeakStabilizeDummyBypassCandidate(reserve, bestOffer, stagnantChecks);
+            if (dummyBypass) {
+                const action = dummyBypass.perform?.();
+                if (action) {
+                    bn3DynamicLateCheckCounter = 0;
+                    bn3DynamicLateSettleChecks = ROUND2_BN3_DYNAMIC_SETTLE_CHECKS;
+                    bn3DynamicLateRecoveryBasis = Math.max(currentOffer, bestOffer);
+                    bn3DynamicLateRecoveryLabel = dummyBypass.label;
+                    noteBn3Gate(
+                        'dynamic-late',
+                        `BN3 dynamic late used a peak-hold bypass for ${dummyBypass.label} - est +${(dummyBypass.relGain * 100).toFixed(2)}% for ${formatMoney(dummyBypass.cost)}.`,
+                    );
+                    return action;
+                }
+            }
+            noteBn3Gate(
+                'dynamic-late-recovery',
+                `BN3 dynamic late holding near the current peak - current ${formatMoney(currentOffer)} vs best ${formatMoney(bestOffer)}.`,
+            );
+            return null;
+        }
+        if (bn3DynamicLateRecoveryBasis > 0) {
+            const recoveryTarget = bn3DynamicLateRecoveryBasis * ROUND2_BN3_DYNAMIC_RECOVERY_RATIO;
+            if (currentOffer >= recoveryTarget || stagnantChecks >= ROUND2_BN3_DYNAMIC_RECOVERY_STAGNATION) {
+                bn3DynamicLateRecoveryBasis = 0;
+                bn3DynamicLateRecoveryLabel = '';
+            } else {
+                noteBn3Gate(
+                    'dynamic-late-recovery',
+                    `BN3 dynamic late holding after ${bn3DynamicLateRecoveryLabel || 'the last late spend'} - current ${formatMoney(currentOffer)}, wants about ${formatMoney(recoveryTarget)} before another late buy.`,
+                );
+                return null;
+            }
+        }
+        if (!shouldEvaluateBn3DynamicLate(materialFilled)) return null;
+
+        const candidates = getBn3DynamicLateCandidates(reserve, bestOffer, materialFilled, stagnantChecks);
+        if (candidates.length <= 0) {
+            noteBn3Gate('dynamic-late', 'BN3 dynamic late eval found no positive post-fill spend candidates worth buying right now.');
+            return null;
+        }
+
+        const finance = getBn3LateFinanceProfile(bestOffer);
+        const decision = chooseBn3DynamicLateCandidate(candidates, finance);
+        if (decision.mode === 'buy' && decision.candidate) {
+            const action = decision.candidate.perform();
+            if (!action) return null;
+            bn3DynamicLateCheckCounter = 0;
+            bn3DynamicLateSettleChecks = ROUND2_BN3_DYNAMIC_SETTLE_CHECKS;
+            bn3DynamicLateRecoveryBasis = Math.max(currentOffer, Number(decision.candidate.offerBasis ?? 0), Number(bestOffer ?? 0));
+            bn3DynamicLateRecoveryLabel = decision.candidate.label;
+            noteBn3Gate(
+                'dynamic-late',
+                `BN3 dynamic late chose ${decision.candidate.label} - est +${(decision.candidate.relGain * 100).toFixed(2)}% for ${formatMoney(decision.candidate.cost)}.` +
+                (decision.bestBlocked && Number.isFinite(decision.bestBlocked.waitSeconds)
+                    ? ` Held over ${decision.bestBlocked.label} (ETA ${formatEta(decision.bestBlocked.waitSeconds)}).`
+                    : ''),
+            );
+            return action;
+        }
+
+        const bestBlocked = decision.bestBlocked ?? candidates[0];
+        const packageMsg = decision.packageNow?.picked?.length
+            ? ` Best cheaper bundle now is +${(decision.packageNow.relGain * 100).toFixed(2)}% for ${formatMoney(decision.packageNow.spent)} (${decision.packageNow.picked.map((candidate) => candidate.label).join(', ')}).`
+            : '';
+        noteBn3Gate(
+            'dynamic-late',
+            `BN3 dynamic late waiting - best next option ${bestBlocked.label} is est +${(bestBlocked.relGain * 100).toFixed(2)}% for ${formatMoney(bestBlocked.cost)}; ` +
+            `needs total ${formatMoney(bestBlocked.requiredFunds)} (${formatMoney(bestBlocked.cost)} + floor ${formatMoney(bestBlocked.floor)}), ` +
+            `short ${formatMoney(bestBlocked.shortfall)}, ETA ${formatEta(bestBlocked.waitSeconds)} at current profit.${packageMsg}`,
+        );
+        return null;
+    }
+
+    function hasAgriEarlyPressure() {
+        if (!useBn3HighBudgetRound2() || !hasDiv(DIV_AGRI)) return false;
+        try {
+            for (const city of CITIES) {
+                try {
+                    const wh = c.getWarehouse(DIV_AGRI, city);
+                    if (Number(wh.size ?? 1) > 0 &&
+                        Number(wh.sizeUsed ?? 0) / Number(wh.size ?? 1) >= ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_PCT)
+                        return true;
+                } catch { }
+            }
+        } catch { }
+        return false;
+    }
+
+    function tryBn3Round2SalesBotStep(reserve, materialFilled) {
+        const autoLate = useBn3ExpandedTobaccoRound2() && hasDiv(DIV_TOBACCO);
+        if (!(useBn3Round2SalesBots() || autoLate) || !materialFilled) return null;
+        // Allow bypass of the Chem deferral gate when any Agri city is actively
+        // pinching 窶・higher sell rate is the most direct fix for warehouse overflow.
+        if (!hasAgriEarlyPressure() && shouldDeferBn3HighBudgetGenericUpgradesForChem()) return null;
+        try {
+            const level = c.getUpgradeLevel('ABC SalesBots');
+            const agriPressure = useBn3HighBudgetRound2() ? getBn3AgriPressureSnapshot() : null;
+            let target = autoLate ? ROUND2_BN3_LATE_SALESBOT_TARGET : ROUND2_BN3_SALESBOT_TARGET;
+            if (useBn3HighBudgetRound2() && agriPressure?.moderate) {
+                target = Math.max(target, ROUND2_BN3_HIGH_BUDGET_PRESSURE_SALESBOT_TARGET);
+            }
+            if (level >= target) return null;
+            const cost = c.getUpgradeLevelCost('ABC SalesBots');
+            const floor = Math.max(reserve, reserve + (autoLate ? ROUND2_BN3_LATE_SALESBOT_BUFFER : ROUND2_BN3_SALESBOT_BUFFER));
+            if (!canSpend(cost, floor)) return null;
+            c.levelUpgrade('ABC SalesBots');
+            return `ABC SalesBots -> ${c.getUpgradeLevel('ABC SalesBots')}`;
+        } catch {
+            return null;
+        }
+    }
+
+    function tryBn3Round2PostfillStorageStep(reserve, materialFilled) {
+        const autoLate = useBn3ExpandedTobaccoRound2() && hasDiv(DIV_TOBACCO);
+        if (!(useBn3PostfillStorage() || autoLate) || !materialFilled) return null;
+        if (shouldDeferBn3HighBudgetGenericUpgradesForChem()) return null;
+        const usage = getAgriWarehouseUsageSummary();
+        if (usage.avg < ROUND2_BN3_POSTFILL_STORAGE_AVG_PCT && usage.peak < ROUND2_BN3_POSTFILL_STORAGE_PEAK_PCT) return null;
+        try {
+            const level = c.getUpgradeLevel('Smart Storage');
+            const agriPressure = useBn3HighBudgetRound2() ? getBn3AgriPressureSnapshot() : null;
+            let target = autoLate ? ROUND2_BN3_LATE_POSTFILL_SMART_STORAGE_TARGET : ROUND2_BN3_POSTFILL_SMART_STORAGE_TARGET;
+            if (useBn3HighBudgetRound2() && agriPressure?.moderate) {
+                target = Math.max(target, ROUND2_BN3_HIGH_BUDGET_PRESSURE_SMART_STORAGE_TARGET);
+            }
+            if (level >= target) return null;
+            const cost = c.getUpgradeLevelCost('Smart Storage');
+            const floor = Math.max(reserve, reserve + (autoLate ? ROUND2_BN3_LATE_POSTFILL_STORAGE_BUFFER : ROUND2_BN3_POSTFILL_STORAGE_BUFFER));
+            if (!canSpend(cost, floor)) return null;
+            c.levelUpgrade('Smart Storage');
+            return `Smart Storage -> ${c.getUpgradeLevel('Smart Storage')}`;
+        } catch {
+            return null;
+        }
+    }
+
+    function tryBn3HighBudgetEarlyPressureWarehouseStep(reserve, materialFilled) {
+        // Proactively upgrades per-city warehouses before the aggregate pressure
+        // system (which triggers at 93% peak) kicks in. Covers both Agriculture
+        // and Chemical since both can pin individually without tripping the aggregate.
+        // A profit gate and a $2B fund buffer ensure this only runs when income is
+        // healthy enough that accumulating funds is worthwhile.
+        if (!useBn3HighBudgetRound2() || !materialFilled) return null;
+        try {
+            const finance = getRound2FinanceSnapshot();
+            if (Number(finance.profit ?? 0) < ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_MIN_PROFIT) return null;
+        } catch { return null; }
+        const floor = reserve + ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_BUFFER;
+
+        // Agriculture: cap at level 13, same threshold as before.
+        if (hasDiv(DIV_AGRI)) {
+            const candidates = [];
+            for (const city of CITIES) {
+                try {
+                    const wh = c.getWarehouse(DIV_AGRI, city);
+                    if (wh.level >= ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_CAP) continue;
+                    const usage = Number(wh.size ?? 1) > 0 ? Number(wh.sizeUsed ?? 0) / Number(wh.size ?? 1) : 0;
+                    if (usage >= ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_PCT) candidates.push({ city, level: wh.level, usage });
+                } catch { }
+            }
+            candidates.sort((a, b) => b.usage - a.usage || a.level - b.level || a.city.localeCompare(b.city));
+            for (const { city, usage } of candidates) {
+                try {
+                    const wh = c.getWarehouse(DIV_AGRI, city);
+                    const cost = c.getUpgradeWarehouseCost(DIV_AGRI, city, 1);
+                    if (canSpend(cost, floor)) {
+                        c.upgradeWarehouse(DIV_AGRI, city, 1);
+                        return `Agriculture ${city} warehouse -> ${wh.level + 1} (early-pressure ${(usage * 100).toFixed(0)}%)`;
+                    }
+                } catch { }
+            }
+        }
+
+        // Chemical: cap at the existing moderate-pressure target per city,
+        // so this step proactively reaches what the pressure system would buy anyway.
+        if (hasDiv(DIV_CHEM) && isBn3HighBudgetPostfillUnlocked()) {
+            const candidates = [];
+            try {
+                const chemCities = c.getDivision(DIV_CHEM).cities;
+                for (const city of chemCities) {
+                    try {
+                        const wh = c.getWarehouse(DIV_CHEM, city);
+                        const cap = city === HQ_CITY
+                            ? ROUND2_BN3_HIGH_BUDGET_CHEM_HQ_WAREHOUSE_PRESSURE
+                            : ROUND2_BN3_HIGH_BUDGET_CHEM_WAREHOUSE_PRESSURE;
+                        if (wh.level >= cap) continue;
+                        const usage = Number(wh.size ?? 1) > 0 ? Number(wh.sizeUsed ?? 0) / Number(wh.size ?? 1) : 0;
+                        if (usage >= ROUND2_BN3_HIGH_BUDGET_EARLY_PRESSURE_WH_PCT) candidates.push({ city, level: wh.level, usage });
+                    } catch { }
+                }
+            } catch { }
+            candidates.sort((a, b) => b.usage - a.usage || a.level - b.level || a.city.localeCompare(b.city));
+            for (const { city, usage } of candidates) {
+                try {
+                    const wh = c.getWarehouse(DIV_CHEM, city);
+                    const cost = c.getUpgradeWarehouseCost(DIV_CHEM, city, 1);
+                    if (canSpend(cost, floor)) {
+                        c.upgradeWarehouse(DIV_CHEM, city, 1);
+                        return `Chemical ${city} warehouse -> ${wh.level + 1} (early-pressure ${(usage * 100).toFixed(0)}%)`;
+                    }
+                } catch { }
+            }
+        }
+
+        return null;
+    }
+
+    function tryBn3Round2PressureWarehouseStep(reserve, materialFilled) {
+        if (!useBn3HighBudgetRound2() || !materialFilled || !hasDiv(DIV_AGRI)) return null;
+        const agriPressure = getBn3AgriPressureSnapshot();
+        if (!agriPressure.moderate) return null;
+        const target = agriPressure.severe
+            ? ROUND2_BN3_HIGH_BUDGET_PRESSURE_WAREHOUSE_TARGET_FULL
+            : ROUND2_BN3_HIGH_BUDGET_PRESSURE_WAREHOUSE_TARGET;
+        const candidates = [];
+        for (const city of CITIES) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                if (wh.level < target) {
+                    const usage = Number(wh.size ?? 0) > 0 ? Number(wh.sizeUsed ?? 0) / Number(wh.size ?? 1) : 0;
+                    candidates.push({ city, level: wh.level, usage });
+                }
+            } catch { }
+        }
+        candidates.sort((a, b) => a.level - b.level || b.usage - a.usage || a.city.localeCompare(b.city));
+        for (const { city } of candidates) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                const spendCost = estimateWarehouseUpgradeSpend(DIV_AGRI, city);
+                if (canSpend(spendCost, reserve)) {
+                    c.upgradeWarehouse(DIV_AGRI, city, 1);
+                    return `Agriculture ${city} warehouse -> ${wh.level + 1}`;
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function maintainChemTobPlantRelief() {
+        // Sells excess Plants from Chemical and Tobacco cities when their warehouses
+        // are backed up (竕･ 85%). Safe because the corp cycle runs PRODUCTION before
+        // EXPORT 窶・by the time SALE runs, production has already consumed its share
+        // and the freshly-exported Plants are genuinely surplus for this cycle.
+        // A per-division buffer is kept so next cycle's production isn't starved.
+        if (!useBn3HighBudgetRound2()) return;
+        const divConfigs = [
+            { div: DIV_CHEM, buffer: ROUND2_BN3_HIGH_BUDGET_CHEM_PLANT_BUFFER },
+            { div: DIV_TOBACCO, buffer: ROUND2_BN3_HIGH_BUDGET_TOB_PLANT_BUFFER },
+        ];
+        for (const { div, buffer } of divConfigs) {
+            if (!hasDiv(div)) continue;
+            try {
+                const cities = c.getDivision(div).cities;
+                for (const city of cities) {
+                    if (!c.hasWarehouse(div, city)) continue;
+                    try {
+                        const wh = c.getWarehouse(div, city);
+                        const usage = Number(wh.sizeUsed ?? 0) / Math.max(Number(wh.size ?? 1), 1);
+                        const stored = Number(c.getMaterial(div, city, 'Plants').stored ?? 0);
+                        const excess = stored - buffer;
+                        if (usage >= ROUND2_BN3_HIGH_BUDGET_PLANT_RELIEF_PCT && excess > 0) {
+                            // Drain excess gradually over ~2 cycles (cycle 竕・10s) so we
+                            // don't aggressively pull Plants needed next production tick.
+                            c.sellMaterial(div, city, 'Plants', Math.ceil(excess / 20), 'MP');
+                        } else {
+                            c.sellMaterial(div, city, 'Plants', 0, 'MP');
+                        }
+                    } catch { }
+                }
+            } catch { }
+        }
+    }
+
+    function maintainBn3Round2MaterialRelief() {
+        if (!useBn3Round2() || !hasDiv(DIV_AGRI)) return;
+        const baseProfile = useBn3HeadroomFill() ? 'headroom90' : 'classic';
+        const activeProfile = getBn3MaterialTargetProfileLabel();
+        const postfillUnlocked = isBn3HighBudgetPostfillUnlocked();
+        const reliefActive = useBn3HighBudgetRound2() && activeProfile !== baseProfile && postfillUnlocked;
+        const targets = reliefActive ? getBn3MaterialTargets() : null;
+
+        if (useBn3LeanTobRound2() && isLeanTobSpikeUnlocked()) {
+            noteBn3Gate(
+                'material-relief',
+                `BN3 lean-tob spike active 窶・filling Agriculture boost mats to spike targets (${activeProfile}) with up to ${formatMoney(ROUND2_BN3_LEAN_TOB_SPIKE_DEBT_MAX)} debt allowed.`,
+            );
+        }
+
+        if (useBn3HighBudgetRound2() && (postfillUnlocked || reliefActive)) {
+            if (activeProfile === 'buildout-zero') {
+                noteBn3Gate(
+                    'material-relief',
+                    'BN3 buildout mode active - holding Agriculture boost mats at base targets (not selling) until late-spike fill begins.',
+                );
+            } else if (activeProfile === 'late-spike') {
+                noteBn3Gate(
+                    'material-relief',
+                    'BN3 late valuation spike active - rebuilding Agriculture boost mats for the final round-2 offer push, including bounded material debt if needed.',
+                );
+            } else if (reliefActive) {
+                noteBn3Gate(
+                    'material-relief',
+                    `BN3 material relief active - trimming Agriculture boost mats to the ${activeProfile} profile to free warehouse room for Chemical and Agriculture throughput.`,
+                );
+            } else {
+                noteBn3Gate(
+                    'material-relief',
+                    `BN3 material relief cleared - restoring the standard ${baseProfile} Agriculture boost profile.`,
+                );
+            }
+        }
+
+        for (const city of CITIES) {
+            for (const mat of Object.keys(ROUND2_BN3_MATERIAL_TARGETS)) {
+                try {
+                    if (!reliefActive) {
+                        c.sellMaterial(DIV_AGRI, city, mat, '0', 'MP');
+                        continue;
+                    }
+                    const stored = Math.max(0, Number(c.getMaterial(DIV_AGRI, city, mat).stored ?? 0));
+                    const target = Math.max(0, Number(targets?.[mat] ?? 0));
+                    try { c.buyMaterial(DIV_AGRI, city, mat, 0); } catch { }
+                    c.sellMaterial(DIV_AGRI, city, mat, '0', 'MP');
+                } catch { }
+            }
+        }
+    }
+
+    function tryBn3Round2WilsonStep(reserve, bestOffer, materialFilled, stagnantChecks) {
+        if (!useBn3ExpandedTobaccoRound2() || !hasDiv(DIV_TOBACCO) || !materialFilled) return null;
+        if (!isBn3LateValuationSpendReady(bestOffer, materialFilled, stagnantChecks)) return null;
+        if (!isBn3LateThroughputReady()) return null;
+        try {
+            const level = c.getUpgradeLevel('Wilson Analytics');
+            if (level >= ROUND2_BN3_LATE_WILSON_TARGET) return null;
+            const cost = c.getUpgradeLevelCost('Wilson Analytics');
+            const floor = reserve + ROUND2_BN3_LATE_WILSON_BUFFER;
+            if (!canSpend(cost, floor)) return null;
+            c.levelUpgrade('Wilson Analytics');
+            bn3DynamicLateCheckCounter = 0;
+            bn3DynamicLateSettleChecks = ROUND2_BN3_DYNAMIC_SETTLE_CHECKS;
+            return `Wilson Analytics -> ${c.getUpgradeLevel('Wilson Analytics')}`;
+        } catch {
+            return null;
+        }
+    }
+
+    async function manageBn3Round2Scaling(bestOffer, stagnantChecks) {
+        const reserve = getBn3Round2Reserve();
+        const expandedTobacco = useBn3ExpandedTobaccoRound2();
+        if (expandedTobacco) ensureTobaccoProduct(getBn3LeanTobaccoProductReserve(reserve), bestOffer, stagnantChecks);
+        const officeBuiltOut = isBn3Round2OfficeBuiltOut();
+        const upgradeBuiltOut = isBn3Round2UpgradeBuiltOut();
+        const warehouseBuiltOut = isBn3Round2WarehouseBuiltOut();
+        const materialFilled = isBn3Round2MaterialFilled();
+        const postfillUnlocked = isBn3HighBudgetPostfillUnlocked();
+        const postfillActive = materialFilled || postfillUnlocked;
+        const postfillSales = useBn3PostfillSales();
+        const postfillSalesMode = getBn3PostfillSalesMode();
+        const salesPivotState = !postfillSales ? 'off' : (postfillActive ? 'active' : 'armed');
+        const remainingFillCost = estimateBn3RemainingMaterialSpend();
+        const dummyEnabled = useBn3Round2Dummy();
+        const dummyFloor = dummyEnabled ? getBn3DummySpendFloor(reserve) : null;
+        if (!postfillActive) {
+            bn3DynamicLateCheckCounter = 0;
+            bn3DynamicLateSettleChecks = 0;
+            bn3DynamicLateRecoveryBasis = 0;
+            bn3DynamicLateRecoveryLabel = '';
+        }
+
+        if (salesPivotState !== lastBn3SalesPivotState) {
+            lastBn3SalesPivotState = salesPivotState;
+            if (salesPivotState === 'armed') {
+                noteBn3Gate('sales-pivot', 'BN3 sales pivot armed - Agriculture will switch into the post-fill sales mix once material fill finishes.');
+            } else if (salesPivotState === 'active') {
+                noteBn3Gate('sales-pivot', 'BN3 sales pivot active - Agriculture is now using the post-fill sales mix.');
+            }
+        }
+        if (useBn3HighBudgetRound2() && postfillActive) {
+            const agriPressure = getBn3AgriPressureSnapshot();
+            if (agriPressure.severe) {
+                noteBn3Gate(
+                    'high-budget-pressure',
+                    `BN3 high-budget pressure relief active - Agriculture warehouses are pinned (${(agriPressure.peak * 100).toFixed(1)}% peak), so the scaler is prioritizing Chemical support and extra headroom.`,
+                );
+            } else if (agriPressure.moderate) {
+                noteBn3Gate(
+                    'high-budget-pressure',
+                    `BN3 high-budget pressure relief active - Agriculture warehouses are running hot (${(agriPressure.peak * 100).toFixed(1)}% peak), so the scaler is leaning into Chemical throughput and more capacity.`,
+                );
+            }
+            if (shouldDeferBn3HighBudgetGenericUpgradesForChem()) {
+                noteBn3Gate(
+                    'high-budget-upgrade-hold',
+                    'BN3 high-budget upgrade hold active - deferring SalesBots / generic upgrades until Chemical buildout catches up.',
+                );
+            }
+            if (isBn3HighBudgetBuildoutMode() && !isBn3HighBudgetBuildoutHealthy(bestOffer)) {
+                noteBn3Gate(
+                    'high-budget-sustainability',
+                    'BN3 high-budget sustainability hold active - pacing Chem/Tobacco buildout until cashflow and valuation recover.',
+                );
+            }
+        }
+
+        if (useBn3LeanTobRound2()) {
+            try {
+                const division = c.getDivision(DIV_TOBACCO);
+                const { finishedProducts, highestProgress } = getTobaccoProductStats();
+                const adverts = c.getHireAdVertCount(DIV_TOBACCO);
+                if (division.cities.length <= 1 && finishedProducts <= 0) {
+                    const triggerReady = bestOffer >= ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_TRIGGER ||
+                        stagnantChecks >= ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_STAGNATION;
+                    if (highestProgress < ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_PROGRESS) {
+                        noteBn3Gate(
+                            'early-support',
+                            `BN3 early support waiting for Tobacco v1 progress - currently ${highestProgress.toFixed(0)}%, wants ${ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_PROGRESS.toFixed(0)}% before buying a pre-v1 support city.`,
+                        );
+                    } else if (!triggerReady) {
+                        noteBn3Gate(
+                            'early-support',
+                            `BN3 early support waiting for trigger - best ${formatMoney(bestOffer)} / stagnant ${stagnantChecks}, needs ${formatMoney(ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_TRIGGER)} or stagnation ${ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_STAGNATION}.`,
+                        );
+                    } else {
+                        const supportExpandCost = 4e9;
+                        const supportWarehouseCost = 5e9;
+                        const supportFloor = ROUND2_BN3_LEAN_TOB_EARLY_SUPPORT_MIN_CASH;
+                        const needed = supportFloor + supportExpandCost + supportWarehouseCost;
+                        if (c.getCorporation().funds < needed) {
+                            noteBn3Gate(
+                                'early-support',
+                                `BN3 early support waiting for a city+warehouse package - funds ${formatMoney(c.getCorporation().funds)}, needs about ${formatMoney(needed)} before the first finished Tobacco product.`,
+                            );
+                        }
+                    }
+                }
+                if (finishedProducts <= 0 && adverts >= ROUND2_BN3_LEAN_TOB_ADVERT) {
+                    noteBn3Gate(
+                        'pre-v1-advert',
+                        `BN3 Tobacco advert holding at ${adverts} until the first Tobacco product finishes - extra AdVert levels are deferred pre-v1.`,
+                    );
+                }
+            } catch { }
+        }
+
+        const ret = (branch, action = null) => ({
+            action,
+            reserve,
+            debug: formatRound2Debug({
+                mode: useBn3HighBudgetRound2() ? 'bn3-high' : 'bn3',
+                branch,
+                reserveBranch: 'bn3',
+                reserve: formatMoney(reserve),
+                funds: formatMoney(c.getCorporation().funds),
+                ...getRound2CorpDebugStats(),
+                ...getRound2StagnationDebugStats(),
+                ...getExpandedTobaccoDebugStats(),
+                best: formatMoney(bestOffer),
+                tobMode: expandedTobacco ? (useBn3HighBudgetRound2() ? 'high-budget' : 'lean') : 'off',
+                office9: officeBuiltOut ? 'yes' : 'no',
+                smart10: upgradeBuiltOut ? 'yes' : 'no',
+                wh2k: warehouseBuiltOut ? 'yes' : 'no',
+                fill: postfillActive ? 'yes' : 'no',
+                fillProfile: getBn3MaterialTargetProfileLabel(),
+                salesPivot: !postfillSales ? 'off' : (postfillActive ? 'active' : 'armed'),
+                salesMode: postfillSalesMode,
+                remFill: formatMoney(remainingFillCost),
+                dummy: dummyEnabled ? 'on' : 'off',
+                dummyFloor: dummyFloor === null ? undefined : formatMoney(dummyFloor),
+                stagnant: stagnantChecks,
+            }),
+        });
+
+        if (useBn3HighBudgetRound2() && !c.hasUnlock(UNLOCKS.smartSupply)) {
+            const { highestProgress, finishedProducts } = getTobaccoProductStats();
+            const cost = unlockCost(UNLOCKS.smartSupply, 25e9);
+            const floor = Math.max(reserve, reserve + 20e9);
+            const shouldBuySmartSupply =
+                bestOffer >= ROUND2_BN3_HIGH_BUDGET_SMART_SUPPLY_TRIGGER ||
+                highestProgress >= ROUND2_BN3_HIGH_BUDGET_TOB_SUPPORT_PROGRESS ||
+                finishedProducts > 0;
+            if (shouldBuySmartSupply && canSpend(cost, floor)) {
+                buyUnlock(UNLOCKS.smartSupply);
+                stopRound1AgriSupply();
+                stopChemicalWaterSupply();
+                enableSmartSupply(DIV_AGRI);
+                enableSmartSupply(DIV_CHEM);
+                enableSmartSupply(DIV_TOBACCO);
+                return ret('bn3-smart-supply', 'Purchased Smart Supply');
+            }
+        }
+
+        const bootstrapActions = runBn3Round2BootstrapBatch(reserve, bestOffer, stagnantChecks, postfillActive);
+        if (bootstrapActions.length > 0) return ret('bn3-bootstrap', bootstrapActions.join(', '));
+
+        const materialAction = await tryBn3Round2MaterialStep(reserve);
+        if (materialAction) return ret('bn3-material', materialAction);
+
+        const postfillStorageAction = tryBn3Round2PostfillStorageStep(reserve, postfillActive);
+        if (postfillStorageAction) return ret('bn3-postfill-storage', postfillStorageAction);
+
+        const salesBotAction = tryBn3Round2SalesBotStep(reserve, postfillActive);
+        if (salesBotAction) return ret('bn3-salesbots', salesBotAction);
+
+        const earlyPressureWarehouseAction = tryBn3HighBudgetEarlyPressureWarehouseStep(reserve, postfillActive);
+        if (earlyPressureWarehouseAction) return ret('bn3-early-pressure-wh', earlyPressureWarehouseAction);
+
+        const pressureWarehouseAction = tryBn3Round2PressureWarehouseStep(reserve, postfillActive);
+        if (pressureWarehouseAction) return ret('bn3-pressure-warehouse', pressureWarehouseAction);
+
+        const wilsonAction = tryBn3Round2WilsonStep(reserve, bestOffer, postfillActive, stagnantChecks);
+        if (wilsonAction) return ret('bn3-wilson', wilsonAction);
+
+        const dynamicLateAction = tryBn3DynamicLateSpendStep(reserve, bestOffer, postfillActive, stagnantChecks);
+        if (dynamicLateAction) return ret('bn3-dynamic-late', dynamicLateAction);
+
+        const dummyAction = expandedTobacco && postfillActive
+            ? null
+            : tryBn3Round2DummyStep(reserve, bestOffer, postfillActive);
+        if (dummyAction) return ret('bn3-dummy', dummyAction);
+
+        if (useBn3Round2RealEstatePush()) {
+            const rePushAction = await tryBn3Round2RealEstatePush(reserve);
+            if (rePushAction) return ret('bn3-re-push', rePushAction);
+        }
+
+        return ret('bn3-wait');
+    }
+
+    function getClassicRound2Reserve() {
+        const funds = c.getCorporation().funds;
+        return Math.max(ROUND2_CLASSIC_RESERVE, funds * ROUND2_CLASSIC_RESERVE_PCT);
+    }
+
+    function isClassicRound2BuiltOut() {
+        if (!isRound2AgriBuiltOut()) return false;
+        return ['Smart Factories', 'Smart Storage'].every((upg) => {
+            try { return c.getUpgradeLevel(upg) >= ROUND2_GLOBAL_UPGRADE_TARGET_LATE; }
+            catch { return false; }
+        });
+    }
+
+    function tryClassicRound2OfficeStep(reserve) {
+        for (const city of CITIES) {
+            try {
+                const off = c.getOffice(DIV_AGRI, city);
+                if (off.size < ROUND2_CLASSIC_AGRI_OFFICE) {
+                    const increase = ROUND2_CLASSIC_AGRI_OFFICE - off.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_AGRI, city, increase);
+                    if (canSpend(cost, reserve)) {
+                        fillOffice(DIV_AGRI, city, ROUND2_CLASSIC_AGRI_OFFICE, ROUND2_CLASSIC_AGRI_JOBS);
+                        return `Agriculture ${city} office -> ${ROUND2_CLASSIC_AGRI_OFFICE}`;
+                    }
+                }
+                if (off.numEmployees < off.size) {
+                    fillOffice(DIV_AGRI, city, off.size, getRound2AgriJobs(off.size));
+                    return `Agriculture staffed in ${city}`;
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function tryClassicRound2WarehouseStep(reserve) {
+        const candidates = [];
+        for (const city of CITIES) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                if (wh.level < ROUND2_CLASSIC_AGRI_WAREHOUSE) {
+                    candidates.push({ city, level: wh.level });
+                }
+            } catch { }
+        }
+        candidates.sort((a, b) => a.level - b.level || a.city.localeCompare(b.city));
+        for (const { city } of candidates) {
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                const spendCost = estimateWarehouseUpgradeSpend(DIV_AGRI, city);
+                if (canSpend(spendCost, reserve)) {
+                    c.upgradeWarehouse(DIV_AGRI, city, 1);
+                    return `Agriculture ${city} warehouse -> ${wh.level + 1}`;
+                }
+            } catch { }
+        }
+        return null;
+    }
+
+    function manageClassicRound2Scaling(bestOffer, rpGateCleared, stagnantChecks) {
+        const reserve = getClassicRound2Reserve();
+        const agriBuiltOut = isRound2AgriBuiltOut();
+        const classicBuiltOut = isClassicRound2BuiltOut();
+        const chemReady = hasDiv(DIV_CHEM) && (() => {
+            try {
+                const wh = c.getWarehouse(DIV_CHEM, HQ_CITY);
+                const off = c.getOffice(DIV_CHEM, HQ_CITY);
+                return wh.level >= 2 && off.size >= ROUND2_CHEM_OFFICE;
+            } catch {
+                return false;
+            }
+        })();
+        const ret = (branch, action = null) => ({
+            action,
+            reserve,
+            debug: formatRound2Debug({
+                mode: 'classic',
+                branch,
+                reserveBranch: 'classic',
+                reserve: formatMoney(reserve),
+                funds: formatMoney(c.getCorporation().funds),
+                ...getRound2CorpDebugStats(),
+                ...getRound2StagnationDebugStats(),
+                best: formatMoney(bestOffer),
+                rpGate: rpGateCleared ? 'yes' : 'no',
+                chemReady: chemReady ? 'yes' : 'no',
+                agriBuiltOut: agriBuiltOut ? 'yes' : 'no',
+                classicBuilt: classicBuiltOut ? 'yes' : 'no',
+                stagnant: stagnantChecks,
+            }),
+        });
+
+        const chemHQAction = tryRound2ChemStep(reserve, 0);
+        if (chemHQAction) return ret('chem-hq', chemHQAction);
+
+        const officeAction = tryClassicRound2OfficeStep(reserve);
+        if (officeAction) return ret('classic-office', officeAction);
+
+        const upgradeAction = tryRound2UpgradeStep(reserve, ROUND2_GLOBAL_UPGRADE_TARGET_LATE);
+        if (upgradeAction) return ret('classic-upgrade', upgradeAction);
+
+        const warehouseAction = tryClassicRound2WarehouseStep(reserve);
+        if (warehouseAction) return ret('classic-warehouse', warehouseAction);
+
+        const dummyAction = tryRound2DummyStep(
+            bestOffer,
+            stagnantChecks,
+            reserve,
+            classicBuiltOut && (bestOffer >= ROUND2_CLASSIC_DUMMY_TRIGGER || stagnantChecks >= ROUND2_CLASSIC_DUMMY_STAGNATION),
+        );
+        if (dummyAction) return ret('classic-dummy', dummyAction);
+
+        return ret('classic-wait');
+    }
+
+    function manageAggressiveRound2Scaling(bestOffer, rpGateCleared, stagnantChecks) {
+        const reserveInfo = getRound2ReserveInfo(bestOffer, rpGateCleared);
+        const reserve = reserveInfo.reserve;
+        ensureTobaccoProduct(reserve, bestOffer);
+        const { highestProgress, finishedProducts } = getTobaccoProductStats();
+        const allowWarmupSupportCities =
+            finishedProducts > 0 ||
+            highestProgress >= ROUND2_AGGR_EARLY_SUPPORT_PROGRESS ||
+            bestOffer >= ROUND2_AGGR_EARLY_SUPPORT_TRIGGER ||
+            rpGateCleared;
+        const ret = (branch, action = null, reserveValue = reserve, reserveLabel = reserveInfo.label) => ({
+            action,
+            reserve: reserveValue,
+            debug: formatRound2Debug({
+                mode: 'aggr',
+                branch,
+                reserveBranch: reserveLabel,
+                reserve: formatMoney(reserveValue),
+                funds: formatMoney(c.getCorporation().funds),
+                ...getRound2CorpDebugStats(),
+                ...getRound2StagnationDebugStats(),
+                best: formatMoney(bestOffer),
+                rpGate: rpGateCleared ? 'yes' : 'no',
+                progress: highestProgress.toFixed(0),
+                finished: finishedProducts,
+                stagnant: stagnantChecks,
+            }),
+        });
+        if (!c.hasUnlock(UNLOCKS.smartSupply)) {
+            const ssCost = unlockCost(UNLOCKS.smartSupply, 25e9);
+            const ssReserve = Math.max(45e9, reserve * 0.75);
+            const shouldBuySmartSupply =
+                bestOffer >= ROUND2_AGGR_SMART_SUPPLY_TRIGGER ||
+                highestProgress >= ROUND2_AGGR_EARLY_SUPPORT_PROGRESS ||
+                finishedProducts > 0;
+            if (shouldBuySmartSupply && canSpend(ssCost, ssReserve)) {
+                buyUnlock(UNLOCKS.smartSupply);
+                stopRound1AgriSupply();
+                stopChemicalWaterSupply();
+                enableSmartSupply(DIV_AGRI);
+                enableSmartSupply(DIV_CHEM);
+                enableSmartSupply(DIV_TOBACCO);
+                return ret('smart-supply', 'Purchased Smart Supply');
+            }
+        }
+
+        const needsWarmup = !rpGateCleared &&
+            finishedProducts === 0 &&
+            (highestProgress < ROUND2_AGGR_FREEZE_PROGRESS || bestOffer < ROUND2_AGGR_WARMUP_TARGET);
+        if (needsWarmup) {
+            const tobWarmupAction = tryRound2TobaccoStep(reserve, false, true);
+            if (tobWarmupAction) return ret('warmup-tobacco', tobWarmupAction);
+            const warmupAction = tryAggressiveWarmupHQStep(reserve);
+            if (warmupAction) return ret('warmup-hq', warmupAction);
+        }
+
+        const preserveValuationCarryover = shouldPreserveAggressiveRound2(bestOffer, rpGateCleared, stagnantChecks);
+        if (preserveValuationCarryover) {
+            if (bestOffer >= ROUND2_AGGR_ACCELERATE_TRIGGER) {
+                const warmupAction = tryAggressiveWarmupHQStep(reserve);
+                if (warmupAction) return ret('warmup-hq', warmupAction);
+            }
+            return ret('preserve-carry');
+        }
+
+        const allowTobSupportCities = allowWarmupSupportCities || rpGateCleared;
+        const tobAction = tryRound2TobaccoStep(reserve, allowTobSupportCities, true);
+        if (tobAction) return ret('tobacco', tobAction);
+
+        const bootstrapChemCities = finishedProducts > 0 || highestProgress >= ROUND2_AGGR_EARLY_SUPPORT_PROGRESS || bestOffer >= ROUND2_AGGR_EARLY_SUPPORT_TRIGGER || rpGateCleared
+            ? supportCities().length
+            : 0;
+        const chemBootstrapAction = tryRound2ChemStep(reserve, bootstrapChemCities);
+        if (chemBootstrapAction) return ret(`chem-bootstrap-${bootstrapChemCities}`, chemBootstrapAction);
+
+        const freezeForValuation = !rpGateCleared &&
+            finishedProducts === 0 &&
+            highestProgress >= ROUND2_AGGR_FREEZE_PROGRESS &&
+            bestOffer >= ROUND2_AGGR_WARMUP_TARGET;
+        if (freezeForValuation) {
+            return ret('freeze-for-valuation');
+        }
+
+        const aggressiveMature = finishedProducts > 0 || highestProgress >= 100 || bestOffer >= 1.2e12 || rpGateCleared;
+
+        const agriAction = tryRound2AgriStep(reserve, bestOffer >= ROUND2_AGRI_OFFICE_TRIGGER || aggressiveMature);
+        if (agriAction) return ret('agri', agriAction);
+
+        const dummyAction = tryRound2DummyStep(
+            bestOffer,
+            stagnantChecks,
+            reserve,
+            finishedProducts > 0 && bestOffer >= 1.5e12,
+        );
+        if (dummyAction) return ret('dummy', dummyAction);
+
+        if (!aggressiveMature) {
+            return ret('idle');
+        }
+
+        const upgradeAction = tryRound2UpgradeStep(reserve);
+        if (upgradeAction) return ret('upgrade', upgradeAction);
+
+        return ret('idle');
+    }
+
+    async function manageRound2Scaling(bestOffer, rpGateCleared, stagnantChecks) {
+        if (useBn3Round2()) {
+            return manageBn3Round2Scaling(bestOffer, stagnantChecks);
+        }
+        if (opts['classic-round2']) {
+            return manageClassicRound2Scaling(bestOffer, rpGateCleared, stagnantChecks);
+        }
+        if (opts['aggressive-round2']) {
+            return manageAggressiveRound2Scaling(bestOffer, rpGateCleared, stagnantChecks);
+        }
+
+        const reserveInfo = getRound2ReserveInfo(bestOffer, rpGateCleared);
+        const reserve = reserveInfo.reserve;
+        ensureTobaccoProduct(reserve, bestOffer);
+
+        const { highestProgress, finishedProducts } = getTobaccoProductStats();
+        const freezeGrowth = !rpGateCleared && bestOffer >= ROUND2_FREEZE_BEST_OFFER;
+        const agriBuiltOut = isRound2AgriBuiltOut();
+        const latePushReserve = Math.min(
+            reserve,
+            Math.max(ROUND2_LATE_PUSH_RESERVE, c.getCorporation().funds * ROUND2_LATE_PUSH_RESERVE_PCT),
+        );
+        const latePushCandidate = agriBuiltOut && bestOffer >= ROUND2_LATE_PUSH_TRIGGER;
+        const latePushActive = latePushCandidate &&
+            (rpGateCleared || bestOffer >= ROUND2_LATE_PUSH_FORCE_TRIGGER || stagnantChecks >= ROUND2_LATE_PUSH_STAGNATION);
+        const activeReserve = latePushActive ? latePushReserve : reserve;
+        const activeReserveLabel = latePushActive ? 'late-push' : reserveInfo.label;
+        const allowTobSupportCities = !DELAY_TOBACCO_UNTIL_POST_ROUND2 &&
+            hasDiv(DIV_TOBACCO) &&
+            !freezeGrowth &&
+            (finishedProducts > 0 || highestProgress >= 90 || bestOffer >= ROUND2_TOB_SUPPORT_TRIGGER || rpGateCleared);
+        const allowChemSupportCities = !DELAY_TOBACCO_UNTIL_POST_ROUND2 &&
+            agriBuiltOut &&
+            (rpGateCleared || bestOffer >= ROUND2_CHEM_FULL_TRIGGER);
+        const ret = (branch, action = null, reserveValue = activeReserve, reserveLabel = activeReserveLabel) => ({
+            action,
+            reserve: reserveValue,
+            debug: formatRound2Debug({
+                mode: 'default',
+                branch,
+                reserveBranch: reserveLabel,
+                reserve: formatMoney(reserveValue),
+                funds: formatMoney(c.getCorporation().funds),
+                ...getRound2CorpDebugStats(),
+                ...getRound2StagnationDebugStats(),
+                best: formatMoney(bestOffer),
+                rpGate: rpGateCleared ? 'yes' : 'no',
+                freeze: freezeGrowth ? 'yes' : 'no',
+                agriBuiltOut: agriBuiltOut ? 'yes' : 'no',
+                lateCandidate: latePushCandidate ? 'yes' : 'no',
+                latePush: latePushActive ? 'yes' : 'no',
+                chemSupport: allowChemSupportCities ? 'yes' : 'no',
+                tobSupport: allowTobSupportCities ? 'yes' : 'no',
+                progress: highestProgress.toFixed(0),
+                finished: finishedProducts,
+                stagnant: stagnantChecks,
+            }),
+        });
+
+        const chemHQAction = tryRound2ChemStep(reserve, 0);
+        if (chemHQAction) return ret('chem-hq', chemHQAction);
+
+        const agriAction = tryRound2AgriStep(reserve, !freezeGrowth);
+        if (agriAction) return ret('agri', agriAction);
+
+        const upgradeAction = tryRound2UpgradeStep(reserve);
+        if (upgradeAction) return ret('upgrade', upgradeAction);
+
+        const tobAction = tryRound2TobaccoStep(reserve, allowTobSupportCities, true);
+        if (tobAction) return ret('tobacco', tobAction);
+
+        if (latePushActive) {
+            const lateAgriAction = tryRound2LateAgriStep(latePushReserve);
+            if (lateAgriAction) return ret('late-agri', lateAgriAction, latePushReserve, 'late-push');
+            const lateUpgradeAction = tryRound2UpgradeStep(latePushReserve, ROUND2_GLOBAL_UPGRADE_TARGET_LATE);
+            if (lateUpgradeAction) return ret('late-upgrade', lateUpgradeAction, latePushReserve, 'late-push');
+        }
+
+        if (allowChemSupportCities) {
+            const chemAction = tryRound2ChemStep(reserve, supportCities().length);
+            if (chemAction) return ret('chem-support', chemAction);
+        }
+
+        const dummyReserve = agriBuiltOut && bestOffer >= ROUND2_LATE_DUMMY_TRIGGER ? latePushReserve : reserve;
+        const dummyAction = tryRound2DummyStep(
+            bestOffer,
+            stagnantChecks,
+            dummyReserve,
+            agriBuiltOut && (bestOffer >= ROUND2_LATE_DUMMY_TRIGGER || finishedProducts > 0 || highestProgress >= 100 || rpGateCleared),
+        );
+        if (dummyAction) return ret('dummy', dummyAction, dummyReserve, dummyReserve === reserve ? reserveInfo.label : 'late-push');
+
+        if (freezeGrowth) {
+            tryFillOffice(DIV_TOBACCO, HQ_CITY, ROUND2_TOB_HQ_OFFICE, ROUND2_TOB_HQ_JOBS);
+            tryFillOffice(DIV_CHEM, HQ_CITY, ROUND2_CHEM_OFFICE, ROUND2_CHEM_JOBS);
+        }
+
+        return ret(freezeGrowth ? 'freeze-idle' : 'idle');
+    }
+
+    function getPostRound2BootstrapReserve() {
+        const funds = c.getCorporation().funds;
+        return Math.max(ROUND2_POST_ACCEPT_BOOTSTRAP_RESERVE, funds * ROUND2_POST_ACCEPT_BOOTSTRAP_RESERVE_PCT);
+    }
+
+    function getPostRound2TobaccoOfficeTarget(city) {
+        return city === HQ_CITY ? ROUND2_POST_ACCEPT_TOB_HQ_OFFICE : ROUND2_POST_ACCEPT_TOB_SUPPORT_OFFICE;
+    }
+
+    function getPostRound2OfficeJobs(div, city) {
+        if (div === DIV_TOBACCO) return city === HQ_CITY ? ROUND2_POST_ACCEPT_TOB_HQ_JOBS : ROUND2_POST_ACCEPT_TOB_SUPPORT_JOBS;
+        if (div === DIV_AGRI) return ROUND2_POST_ACCEPT_AGRI_JOBS;
+        if (div === DIV_CHEM) return ROUND2_POST_ACCEPT_CHEM_JOBS;
+        return {};
+    }
+
+    function isPostRound2BootstrapReady() {
+        if (!hasDiv(DIV_AGRI) || !hasDiv(DIV_CHEM) || !hasDiv(DIV_TOBACCO)) return false;
+        if (!divisionInfraReady(DIV_AGRI) || !divisionInfraReady(DIV_CHEM) || !divisionInfraReady(DIV_TOBACCO)) return false;
+        if (!c.hasUnlock(UNLOCKS.export) || !c.hasUnlock(UNLOCKS.smartSupply)) return false;
+        try {
+            if (c.getUpgradeLevel('Smart Factories') < ROUND2_POST_ACCEPT_SMART_FACTORIES_TARGET) return false;
+            if (c.getUpgradeLevel('Smart Storage') < ROUND2_POST_ACCEPT_SMART_STORAGE_TARGET) return false;
+            if (c.getUpgradeLevel('Wilson Analytics') < ROUND2_POST_ACCEPT_WILSON_TARGET) return false;
+            if (c.getHireAdVertCount(DIV_TOBACCO) < ROUND2_POST_ACCEPT_TOB_ADVERT_TARGET) return false;
+        } catch {
+            return false;
+        }
+        for (const city of CITIES) {
+            try {
+                const agriOffice = c.getOffice(DIV_AGRI, city);
+                const tobOffice = c.getOffice(DIV_TOBACCO, city);
+                const chemOffice = c.getOffice(DIV_CHEM, city);
+                const tobTarget = getPostRound2TobaccoOfficeTarget(city);
+                if (agriOffice.size < ROUND2_POST_ACCEPT_AGRI_OFFICE || agriOffice.numEmployees < ROUND2_POST_ACCEPT_AGRI_OFFICE) return false;
+                if (tobOffice.size < tobTarget || tobOffice.numEmployees < tobTarget) return false;
+                if (chemOffice.size < ROUND2_POST_ACCEPT_CHEM_OFFICE || chemOffice.numEmployees < ROUND2_POST_ACCEPT_CHEM_OFFICE) return false;
+                if (c.getWarehouse(DIV_AGRI, city).level < ROUND2_POST_ACCEPT_WAREHOUSE_LEVEL) return false;
+                if (c.getWarehouse(DIV_TOBACCO, city).level < ROUND2_POST_ACCEPT_WAREHOUSE_LEVEL) return false;
+                if (c.getWarehouse(DIV_CHEM, city).level < ROUND2_POST_ACCEPT_WAREHOUSE_LEVEL) return false;
+            } catch {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function tryPostRound2BootstrapStep(reserve) {
+        if (!hasDiv(DIV_CHEM)) {
+            const cost = expandIndustryCost(IND_CHEM);
+            if (canSpend(cost, reserve)) {
+                c.expandIndustry(IND_CHEM, DIV_CHEM);
+                return 'Chemical launched';
+            }
+            return null;
+        }
+        if (!hasDiv(DIV_TOBACCO)) {
+            const cost = expandIndustryCost(IND_TOBACCO);
+            if (canSpend(cost, reserve)) {
+                c.expandIndustry(IND_TOBACCO, DIV_TOBACCO);
+                return 'Tobacco launched';
+            }
+            return null;
+        }
+
+        const officeCost = getCorpOfficeInitialCost();
+        const warehouseCost = getCorpWarehouseInitialCost();
+        for (const [div, label] of [[DIV_CHEM, 'Chemical'], [DIV_TOBACCO, 'Tobacco']]) {
+            for (const city of CITIES) {
+                try {
+                    const cities = c.getDivision(div).cities;
+                    if (!cities.includes(city)) {
+                        const floor = reserve + warehouseCost;
+                        if (!canSpend(officeCost, floor)) return null;
+                        c.expandCity(div, city);
+                        return `${label} expanded to ${city}`;
+                    }
+                    if (!c.hasWarehouse(div, city)) {
+                        if (!canSpend(warehouseCost, reserve)) return null;
+                        c.purchaseWarehouse(div, city);
+                        return `${label} warehouse purchased in ${city}`;
+                    }
+                } catch {
+                    return null;
+                }
+            }
+        }
+
+        if (!c.hasUnlock(UNLOCKS.export)) {
+            const cost = unlockCost(UNLOCKS.export, Infinity);
+            if (!canSpend(cost, reserve)) return null;
+            buyUnlock(UNLOCKS.export);
+            return `Unlock ${UNLOCKS.export}`;
+        }
+        if (!c.hasUnlock(UNLOCKS.smartSupply)) {
+            const cost = unlockCost(UNLOCKS.smartSupply, Infinity);
+            if (!canSpend(cost, reserve)) return null;
+            buyUnlock(UNLOCKS.smartSupply);
+            return `Unlock ${UNLOCKS.smartSupply}`;
+        }
+
+        for (const [upgrade, target] of [
+            ['Smart Factories', ROUND2_POST_ACCEPT_SMART_FACTORIES_TARGET],
+            ['Smart Storage', ROUND2_POST_ACCEPT_SMART_STORAGE_TARGET],
+            ['Wilson Analytics', ROUND2_POST_ACCEPT_WILSON_TARGET],
+        ]) {
+            try {
+                if (c.getUpgradeLevel(upgrade) >= target) continue;
+                const cost = c.getUpgradeLevelCost(upgrade);
+                if (!canSpend(cost, reserve)) return null;
+                c.levelUpgrade(upgrade);
+                return `${upgrade} -> ${c.getUpgradeLevel(upgrade)}`;
+            } catch {
+                return null;
+            }
+        }
+
+        try {
+            if (c.getHireAdVertCount(DIV_TOBACCO) < ROUND2_POST_ACCEPT_TOB_ADVERT_TARGET) {
+                const cost = c.getHireAdVertCost(DIV_TOBACCO);
+                if (!canSpend(cost, reserve)) return null;
+                c.hireAdVert(DIV_TOBACCO);
+                return `Tobacco advert -> ${c.getHireAdVertCount(DIV_TOBACCO)}`;
+            }
+        } catch {
+            return null;
+        }
+
+        for (const city of CITIES) {
+            try {
+                const tobTarget = getPostRound2TobaccoOfficeTarget(city);
+                const tobOffice = c.getOffice(DIV_TOBACCO, city);
+                if (tobOffice.size < tobTarget) {
+                    const increase = tobTarget - tobOffice.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_TOBACCO, city, increase);
+                    if (!canSpend(cost, reserve)) return null;
+                    fillOffice(DIV_TOBACCO, city, tobTarget, getPostRound2OfficeJobs(DIV_TOBACCO, city));
+                    return `Tobacco ${city} office -> ${tobTarget}`;
+                }
+                if (tobOffice.numEmployees < tobOffice.size) {
+                    fillOffice(DIV_TOBACCO, city, tobOffice.size, getPostRound2OfficeJobs(DIV_TOBACCO, city));
+                    return `Tobacco staffed in ${city}`;
+                }
+                assignJobs(DIV_TOBACCO, city, getPostRound2OfficeJobs(DIV_TOBACCO, city));
+            } catch {
+                return null;
+            }
+        }
+
+        for (const city of CITIES) {
+            try {
+                const agriOffice = c.getOffice(DIV_AGRI, city);
+                if (agriOffice.size < ROUND2_POST_ACCEPT_AGRI_OFFICE) {
+                    const increase = ROUND2_POST_ACCEPT_AGRI_OFFICE - agriOffice.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_AGRI, city, increase);
+                    if (!canSpend(cost, reserve)) return null;
+                    fillOffice(DIV_AGRI, city, ROUND2_POST_ACCEPT_AGRI_OFFICE, ROUND2_POST_ACCEPT_AGRI_JOBS);
+                    return `Agriculture ${city} office -> ${ROUND2_POST_ACCEPT_AGRI_OFFICE}`;
+                }
+                if (agriOffice.numEmployees < agriOffice.size) {
+                    fillOffice(DIV_AGRI, city, agriOffice.size, ROUND2_POST_ACCEPT_AGRI_JOBS);
+                    return `Agriculture staffed in ${city}`;
+                }
+                assignJobs(DIV_AGRI, city, ROUND2_POST_ACCEPT_AGRI_JOBS);
+            } catch {
+                return null;
+            }
+        }
+
+        for (const city of CITIES) {
+            try {
+                const chemOffice = c.getOffice(DIV_CHEM, city);
+                if (chemOffice.size < ROUND2_POST_ACCEPT_CHEM_OFFICE) {
+                    const increase = ROUND2_POST_ACCEPT_CHEM_OFFICE - chemOffice.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_CHEM, city, increase);
+                    if (!canSpend(cost, reserve)) return null;
+                    fillOffice(DIV_CHEM, city, ROUND2_POST_ACCEPT_CHEM_OFFICE, ROUND2_POST_ACCEPT_CHEM_JOBS);
+                    return `Chemical ${city} office -> ${ROUND2_POST_ACCEPT_CHEM_OFFICE}`;
+                }
+                if (chemOffice.numEmployees < chemOffice.size) {
+                    fillOffice(DIV_CHEM, city, chemOffice.size, ROUND2_POST_ACCEPT_CHEM_JOBS);
+                    return `Chemical staffed in ${city}`;
+                }
+                assignJobs(DIV_CHEM, city, ROUND2_POST_ACCEPT_CHEM_JOBS);
+            } catch {
+                return null;
+            }
+        }
+
+        for (const div of [DIV_AGRI, DIV_TOBACCO, DIV_CHEM]) {
+            for (const city of CITIES) {
+                try {
+                    const wh = c.getWarehouse(div, city);
+                    if (wh.level >= ROUND2_POST_ACCEPT_WAREHOUSE_LEVEL) continue;
+                    const cost = c.getUpgradeWarehouseCost(div, city, 1);
+                    if (!canSpend(cost, reserve)) return null;
+                    c.upgradeWarehouse(div, city, 1);
+                    return `${div} ${city} warehouse -> ${wh.level + 1}`;
+                } catch {
+                    return null;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    function runPostRound2BootstrapBatch(maxActions = 64) {
+        const actions = [];
+        for (let i = 0; i < maxActions; i++) {
+            const reserve = getPostRound2BootstrapReserve();
+            const action = tryPostRound2BootstrapStep(reserve);
+            if (!action) break;
+            actions.push({ action, reserve });
+            if (c.hasUnlock(UNLOCKS.smartSupply)) {
+                stopRound1AgriSupply();
+                stopChemicalWaterSupply();
+                enableSmartSupply(DIV_AGRI);
+                enableSmartSupply(DIV_CHEM);
+                enableSmartSupply(DIV_TOBACCO);
+            }
+            configureExports();
+            if (isPostRound2BootstrapReady()) break;
+        }
+        return actions;
+    }
+
+    function getPhase3ChemicalReserve() {
+        const chemCost = expandIndustryCost(IND_CHEM);
+        const funds = c.getCorporation().funds;
+        const gap = Math.max(0, chemCost - funds);
+        if (gap <= PHASE3_CHEM_FREEZE_GAP) {
+            return Math.max(chemCost - 2e9, funds * 0.95);
+        }
+        if (gap <= 20e9) {
+            return Math.max(PHASE3_CHEM_MID_RESERVE, funds * 0.72);
+        }
+        return Math.max(PHASE3_CHEM_MIN_RESERVE, funds * 0.60);
+    }
+
+    async function investInAgricultureWhileWaitingForChemical() {
+        maintainAgriSalesAndJobs({ ops: 2, eng: 3, biz: 1, mgmt: 1, rnd: 1 });
+        if (!c.hasUnlock(UNLOCKS.smartSupply)) maintainRound1AgriSupply();
+        tryResearch(DIV_AGRI, MAT_RESEARCH);
+
+        const reserve = getPhase3ChemicalReserve();
+        const corpFunds = () => c.getCorporation().funds;
+
+        for (const city of CITIES) {
+            try {
+                const off = c.getOffice(DIV_AGRI, city);
+                if (off.size < PHASE3_AGRI_TARGET_OFFICE) {
+                    const increase = PHASE3_AGRI_TARGET_OFFICE - off.size;
+                    const cost = c.getOfficeSizeUpgradeCost(DIV_AGRI, city, increase);
+                    if (corpFunds() - cost >= reserve) {
+                        fillOffice(DIV_AGRI, city, PHASE3_AGRI_TARGET_OFFICE, { ops: 2, eng: 3, biz: 1, mgmt: 1, rnd: 1 });
+                    }
+                } else {
+                    fillOffice(DIV_AGRI, city, off.size, { ops: 2, eng: 3, biz: 1, mgmt: 1, rnd: 1 });
+                }
+            } catch { }
+
+            try {
+                const wh = c.getWarehouse(DIV_AGRI, city);
+                if (wh.level < PHASE3_AGRI_TARGET_WAREHOUSE) {
+                    const cost = c.getUpgradeWarehouseCost(DIV_AGRI, city, 1);
+                    if (corpFunds() - cost >= reserve) {
+                        c.upgradeWarehouse(DIV_AGRI, city, 1);
+                    }
+                }
+            } catch { }
+        }
+
+        try {
+            while (c.getHireAdVertCount(DIV_AGRI) < PHASE3_AGRI_TARGET_ADVERT) {
+                const cost = c.getHireAdVertCost(DIV_AGRI);
+                if (corpFunds() - cost < reserve) break;
+                c.hireAdVert(DIV_AGRI);
+            }
+        } catch { }
+
+        for (const upg of ['Smart Factories', 'Smart Storage']) {
+            try {
+                while (c.getUpgradeLevel(upg) < PHASE3_AGRI_GLOBAL_UPGRADE_TARGET) {
+                    const cost = c.getUpgradeLevelCost(upg);
+                    if (corpFunds() - cost < reserve) break;
+                    c.levelUpgrade(upg);
+                }
+            } catch { }
+        }
+        await refreshBoosts(DIV_AGRI, AGRI_BOOST.factors, AGRI_BOOST.sizes, AGRI_BOOST.mats);
+    }
+
+    // Docs: "Buy tea / throw party every cycle. Maintain maximum energy/morale."
+    function boostMorale(...divs) {
+        latestTeaSpend = 0;
+        latestPartySpend = 0;
+        const upkeepFloor = getMoraleUpkeepFloor();
+        const now = Date.now();
+        for (const div of divs)
+            for (const city of CITIES) {
+                try {
+                    const office = c.getOffice(div, city);
+                    if (office.numEmployees < 9) continue;
+                    const key = getOfficeSpendKey(div, city);
+                    if ((office.avgEnergy ?? 100) < CORP_ENERGY_THRESHOLD &&
+                        now >= Number(teaCooldownByOffice[key] ?? 0) &&
+                        c.getCorporation().funds - CORP_TEA_COST >= upkeepFloor) {
+                        c.buyTea(div, city);
+                        teaCooldownByOffice[key] = now + CORP_MORALE_ACTION_COOLDOWN_MS;
+                        latestTeaSpend += CORP_TEA_COST;
+                    }
+                    const moraleGap = Math.max(0, CORP_MORALE_THRESHOLD - Number(office.avgMorale ?? 100));
+                    if (moraleGap <= 0) continue;
+                    if (now < Number(partyCooldownByOffice[key] ?? 0)) continue;
+                    const partySpend = clamp(
+                        Math.round(office.numEmployees * moraleGap * 15e3),
+                        CORP_MORALE_PARTY_SPEND_MIN,
+                        CORP_MORALE_PARTY_SPEND_MAX,
+                    );
+                    if (c.getCorporation().funds - partySpend < upkeepFloor) continue;
+                    c.throwParty(div, city, partySpend);
+                    partyCooldownByOffice[key] = now + CORP_MORALE_ACTION_COOLDOWN_MS;
+                    latestPartySpend += partySpend;
+                } catch { }
+            }
+    }
+
+    // Spike-mode morale management: bypasses the upkeep floor check entirely.
+    // During debt-spike, funds are deeply negative but tea ($500k) and minimum
+    // parties ($100k) are rounding error vs. $400B material debt 窶・safe to spend.
+    // Only triggers at crisis thresholds, not the normal 98% maintenance level.
+    function boostMoraleSpike(...divs) {
+        const now = Date.now();
+        for (const div of divs)
+            for (const city of CITIES) {
+                try {
+                    const office = c.getOffice(div, city);
+                    if (office.numEmployees < 9) continue;
+                    const key = getOfficeSpendKey(div, city);
+                    if ((office.avgEnergy ?? 100) < CORP_SPIKE_ENERGY_THRESHOLD &&
+                        now >= Number(teaCooldownByOffice[key] ?? 0)) {
+                        try {
+                            c.buyTea(div, city);
+                            teaCooldownByOffice[key] = now + CORP_MORALE_ACTION_COOLDOWN_MS;
+                            latestTeaSpend += CORP_TEA_COST;
+                        } catch { }
+                    }
+                    const moraleGap = Math.max(0, CORP_SPIKE_MORALE_THRESHOLD - Number(office.avgMorale ?? 100));
+                    if (moraleGap > 0 && now >= Number(partyCooldownByOffice[key] ?? 0)) {
+                        try {
+                            c.throwParty(div, city, CORP_MORALE_PARTY_SPEND_MIN);
+                            partyCooldownByOffice[key] = now + CORP_MORALE_ACTION_COOLDOWN_MS;
+                            latestPartySpend += CORP_MORALE_PARTY_SPEND_MIN;
+                        } catch { }
+                    }
+                } catch { }
+            }
+    }
+
+    // 笏笏 Research (with RP threshold enforcement) 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    function getResearchSpendThreshold(div, name) {
+        if (PRODUCTION_RESEARCH.has(name)) return 10;
+        // After round-3 setup, TA2 is no longer a product-quality tradeoff.
+        // Research it as soon as its RP cost is available instead of waiting for
+        // a full 2x-cost buffer.
+        if (phase >= 7 && div === DIV_TOBACCO && name === 'Market-TA.II') return 1;
+        return 2;
+    }
+
+    function tryResearch(div, queue) {
+        try {
+            let availableRp = c.getDivision(div).researchPoints;
+            for (const name of queue) {
+                if (c.hasResearched(div, name)) continue;
+                const cost = c.getResearchCost(div, name);
+                // Production research: 10% pool threshold. General research: 50%.
+                const threshold = getResearchSpendThreshold(div, name);
+                if (availableRp < cost * threshold) continue;
+                try {
+                    c.research(div, name);
+                    availableRp -= cost;
+                    log(ns, `  Researched "${name}" (${div})`, false, 'info');
+                } catch { }
+            }
+        } catch { }
+    }
+
+    // 笏笏 Upgrades 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    // All names are exact CorpUpgradeName enum VALUES (not keys).
+    function buyUpgrades(upgs, mult) {
+        const funds = c.getCorporation().funds;
+        for (const upg of upgs)
+            try { if (funds > c.getUpgradeLevelCost(upg) * mult) c.levelUpgrade(upg); } catch { }
+    }
+
+    // 笏笏 Product pricing 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    // setProductMarketTA2 sets auto-pricing only.
+    // sellProduct must ALSO be called to configure the sell AMOUNT (MAX).
+    // Without this the product sells 0 units if the amount was never set.
+    function priceProducts() {
+        if (!hasDiv(DIV_TOBACCO)) return;
+        for (const pName of c.getDivision(DIV_TOBACCO).products) {
+            try {
+                const prod = c.getProduct(DIV_TOBACCO, HQ_CITY, pName);
+                if (prod.developmentProgress < 100) continue;
+                if (c.hasResearched(DIV_TOBACCO, 'Market-TA.II'))
+                    c.setProductMarketTA2(DIV_TOBACCO, pName, true);
+                else if (c.hasResearched(DIV_TOBACCO, 'Market-TA.I'))
+                    c.setProductMarketTA1(DIV_TOBACCO, pName, true);
+                const price = 'MP';
+                for (const city of c.getDivision(DIV_TOBACCO).cities)
+                    c.sellProduct(DIV_TOBACCO, city, pName, 'MAX', price, true);
+            } catch { }
+        }
+    }
+
+    if (phase <= 3) {
+        if (opts['round1-only']) {
+            writePhase(3); phase = 3;
+            log(ns, 'INFO: Round-1-only mode enabled 窶・skipping post-round-1 setup.', true, 'info');
+            return;
+        }
+        if (useBn3LeanTobRound2()) {
+            log(ns, 'INFO: Phase 3 窶・launching a lean Tobacco shell before round 2 while still delaying Chemical.', true, 'info');
+        } else {
+            log(ns, `INFO: Phase 3 窶・launching Chemical${delayTobaccoUntilPostRound2() ? '' : ' and Tobacco'} without a cash deadlock...`, true, 'info');
+        }
+        if (useBn3Round2() && !useBn3HighBudgetRound2()) {
+            if (useBn3LeanTobRound2()) {
+                log(ns, 'INFO: Phase 3 - BN3 lean-Tobacco mode enabled; delaying Chemical but launching Tobacco HQ + Export before round 2.', true, 'info');
+
+                while (!c.hasUnlock(UNLOCKS.export)) {
+                    const cost = unlockCost(UNLOCKS.export, 25e9);
+                    if (c.getCorporation().funds >= cost + PHASE3_EXPORT_RESERVE) {
+                        buyUnlock(UNLOCKS.export);
+                        break;
+                    }
+                    maintainRound1AgriSupply();
+                    log(ns, `  Waiting for Export: ${formatMoney(c.getCorporation().funds)} / ${formatMoney(cost)}`, false);
+                    await waitCycles(2);
+                }
+
+                while (!hasDiv(DIV_TOBACCO)) {
+                    const tobCost = expandIndustryCost(IND_TOBACCO);
+                    if (c.getCorporation().funds >= tobCost + PHASE3_EXPORT_RESERVE) {
+                        c.expandIndustry(IND_TOBACCO, DIV_TOBACCO);
+                        log(ns, 'INFO: Tobacco launched.', true, 'success');
+                        break;
+                    }
+                    maintainRound1AgriSupply();
+                    log(ns, `  Waiting for Tobacco: ${formatMoney(c.getCorporation().funds)} / ${formatMoney(tobCost)}`, false);
+                    await waitCycles(2);
+                }
+
+                await waitForDivisionInfrastructure(DIV_TOBACCO, 'Tobacco', PHASE3_TOB_START_CITIES);
+                await waitForWarehouseLevel(DIV_TOBACCO, HQ_CITY, 3);
+                await waitFillOffice(DIV_TOBACCO, HQ_CITY, PHASE3_TOB_INITIAL_HQ_OFFICE, { ops: 1, eng: 3, biz: 1, mgmt: 1 });
+                configureExports();
+                boostMorale(DIV_AGRI, DIV_TOBACCO);
+                ensureTobaccoProduct(ROUND2_BN3_LEAN_TOB_PRODUCT_RESERVE);
+
+                writePhase(4); phase = 4;
+            } else {
+                log(ns, 'INFO: Phase 3 - BN3 round-2 mode enabled; delaying Chemical, Tobacco, and Export until after round 2.', true, 'info');
+                writePhase(4); phase = 4;
+            }
+        } else {
+            if (useBn3HighBudgetRound2()) {
+                lockBn3HighBudgetRound2Profile();
+                log(
+                    ns,
+                    `INFO: BN3 high-budget round-2 mode enabled - locking the phase-3 budget from ${formatMoney(bn3HighBudgetRound2StartFunds)} and launching Chemical + Tobacco together before the round-2 wait.`,
+                    true,
+                    'info',
+                );
+                await launchBn3HighBudgetPhase3Shell();
+                const phase3Actions = await runBn3HighBudgetPhase3Budget();
+                for (const { action, reserve } of phase3Actions) {
+                    log(ns, `  Phase-3 high-budget: ${action} (reserve ${formatMoney(reserve)})`, false);
+                }
+            } else {
+                // Keep Agriculture alive on custom supply until Smart Supply is affordable later.
+
+                // Launch Chemical as soon as it is affordable.
+                while (!hasDiv(DIV_CHEM)) {
+                    const chemCost = expandIndustryCost(IND_CHEM);
+                    if (c.getCorporation().funds >= chemCost) {
+                        c.expandIndustry(IND_CHEM, DIV_CHEM);
+                        log(ns, 'INFO: Chemical launched.', true, 'success');
+                        break;
+                    }
+                    await investInAgricultureWhileWaitingForChemical();
+                    const corp = c.getCorporation();
+                    const profit = corp.revenue - corp.expenses;
+                    log(ns, `  Waiting for Chemical: ${formatMoney(corp.funds)} / ${formatMoney(chemCost)} | profit ${formatMoney(profit)}/s`, false);
+                    await waitCycles(3);
+                }
+
+                await waitForDivisionInfrastructure(DIV_CHEM, 'Chemical', PHASE3_CHEM_START_CITIES);
+                for (const city of PHASE3_CHEM_START_CITIES) {
+                    await waitForWarehouseLevel(DIV_CHEM, city, PHASE3_CHEM_INITIAL_WAREHOUSE);
+                    await waitFillOffice(DIV_CHEM, city, PHASE3_CHEM_INITIAL_OFFICE, { ops: 1, eng: 1, rnd: 1 });
+                }
+                for (const city of PHASE3_CHEM_START_CITIES) {
+                    try { c.sellMaterial(DIV_CHEM, city, 'Chemicals', 'MAX', 'MP'); } catch { }
+                }
+
+                while (!c.hasUnlock(UNLOCKS.export)) {
+                    const cost = unlockCost(UNLOCKS.export, 20e9);
+                    if (c.getCorporation().funds >= cost + PHASE3_EXPORT_RESERVE) {
+                        buyUnlock(UNLOCKS.export);
+                        break;
+                    }
+                    maintainRound1AgriSupply();
+                    maintainChemicalWaterSupply();
+                    const corp = c.getCorporation();
+                    log(ns, `  Waiting for Export: ${formatMoney(corp.funds)} / ${formatMoney(cost)}`, false);
+                    await waitCycles(2);
+                }
+                configureExports();
+                maintainChemicalWaterSupply();
+
+                if (!delayTobaccoUntilPostRound2()) {
+                    // Launch Tobacco as soon as it is affordable.
+                    while (!hasDiv(DIV_TOBACCO)) {
+                        const tobCost = expandIndustryCost(IND_TOBACCO);
+                        if (c.getCorporation().funds >= tobCost) {
+                            c.expandIndustry(IND_TOBACCO, DIV_TOBACCO);
+                            log(ns, 'INFO: Tobacco launched.', true, 'success');
+                            break;
+                        }
+                        maintainRound1AgriSupply();
+                        maintainChemicalWaterSupply();
+                        log(ns, `  Waiting for Tobacco: ${formatMoney(c.getCorporation().funds)} / ${formatMoney(tobCost)}`, false);
+                        await waitCycles(3);
+                    }
+
+                    await waitForDivisionInfrastructure(DIV_TOBACCO, 'Tobacco', PHASE3_TOB_START_CITIES);
+                    await waitFillOffice(DIV_TOBACCO, HQ_CITY, PHASE3_TOB_INITIAL_HQ_OFFICE, { ops: 1, eng: 3, biz: 1, mgmt: 1 });
+                } else {
+                    log(ns, 'INFO: Delaying Tobacco until after round 2 to follow the docs path.', true, 'info');
+                }
+
+                boostMorale(DIV_CHEM, ...(hasDiv(DIV_TOBACCO) ? [DIV_TOBACCO] : []));
+                configureExports();
+
+                for (const city of PHASE3_CHEM_START_CITIES) await waitForWarehouseLevel(DIV_CHEM, city, 3);
+                if (hasDiv(DIV_TOBACCO)) for (const city of PHASE3_TOB_START_CITIES) await waitForWarehouseLevel(DIV_TOBACCO, city, 3);
+                for (const city of CITIES) await waitForWarehouseLevel(DIV_AGRI, city, 3);
+
+                if (hasDiv(DIV_TOBACCO) && !c.getDivision(DIV_TOBACCO).products.includes('Tobac-v1')) {
+                    const invest = getTobaccoProductInvestment();
+                    try {
+                        c.makeProduct(DIV_TOBACCO, HQ_CITY, 'Tobac-v1', invest / 2, invest / 2);
+                        log(ns, `INFO: Started product Tobac-v1 with ${formatMoney(invest)} investment.`, true, 'info');
+                    } catch { }
+                }
+
+                // Keep the pre-round-2 shell disciplined. We still want most spending to
+                // translate into near-term valuation via throughput, products, and fill.
+            }
+
+        writePhase(4); phase = 4;
+        }
+    }
+
+    // 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    // PHASE 4 窶・Wait for and accept investment round 2
+    // 笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏笏
+    async function ensureBn3LeanRound2ShellRecovered() {
+        if (!useBn3Round2() || !useBn3LeanTobRound2()) return;
+        const missingExport = !c.hasUnlock(UNLOCKS.export);
+        const missingTobacco = !hasDiv(DIV_TOBACCO);
+        if (!missingExport && !missingTobacco) return;
+
+        log(ns, 'INFO: BN3 lean-Tobacco recovery - missing Export/Tobacco in phase 4; rebuilding lean shell before round-2 wait.', true, 'warning');
+
+        while (!c.hasUnlock(UNLOCKS.export)) {
+            const cost = unlockCost(UNLOCKS.export, 25e9);
+            if (c.getCorporation().funds >= cost + PHASE3_EXPORT_RESERVE) {
+                buyUnlock(UNLOCKS.export);
+                continue;
+            }
+            maintainRound1AgriSupply();
+            log(ns, `  Recovery waiting for Export: ${formatMoney(c.getCorporation().funds)} / ${formatMoney(cost)}`, false);
+            await waitCycles(2);
+        }
+
+        while (!hasDiv(DIV_TOBACCO)) {
+            const tobCost = expandIndustryCost(IND_TOBACCO);
+            if (c.getCorporation().funds >= tobCost + PHASE3_EXPORT_RESERVE) {
+                c.expandIndustry(IND_TOBACCO, DIV_TOBACCO);
+                log(ns, 'INFO: Tobacco launched (phase-4 recovery).', true, 'success');
+                continue;
+            }
+            maintainRound1AgriSupply();
+            log(ns, `  Recovery waiting for Tobacco: ${formatMoney(c.getCorporation().funds)} / ${formatMoney(tobCost)}`, false);
+            await waitCycles(2);
+        }
+
+        await waitForDivisionInfrastructure(DIV_TOBACCO, 'Tobacco', PHASE3_TOB_START_CITIES);
+        await waitForWarehouseLevel(DIV_TOBACCO, HQ_CITY, 3);
+        await waitFillOffice(DIV_TOBACCO, HQ_CITY, PHASE3_TOB_INITIAL_HQ_OFFICE, { ops: 1, eng: 3, biz: 1, mgmt: 1 });
+        configureExports();
+        boostMorale(DIV_AGRI, DIV_TOBACCO);
+        ensureTobaccoProduct(ROUND2_BN3_LEAN_TOB_PRODUCT_RESERVE);
+
+        log(ns, 'INFO: BN3 lean-Tobacco recovery complete - Export + Tobacco shell ready.', true, 'info');
+    }
+
+    function isBn3HighBudgetRound2ShellReady() {
+        if (!c.hasUnlock(UNLOCKS.export) || !hasDiv(DIV_CHEM) || !hasDiv(DIV_TOBACCO)) return false;
+        try {
+            for (const city of PHASE3_CHEM_START_CITIES) {
+                const wh = c.getWarehouse(DIV_CHEM, city);
+                const off = c.getOffice(DIV_CHEM, city);
+                if ((wh.level ?? 0) < PHASE3_CHEM_INITIAL_WAREHOUSE) return false;
+                if ((off.size ?? 0) < PHASE3_CHEM_INITIAL_OFFICE || (off.numEmployees ?? 0) < PHASE3_CHEM_INITIAL_OFFICE) return false;
+            }
+            for (const city of PHASE3_TOB_START_CITIES) {
+                if (!c.hasWarehouse(DIV_TOBACCO, city)) return false;
+                const off = c.getOffice(DIV_TOBACCO, city);
+                if ((off.size ?? 0) < PHASE3_TOB_INITIAL_HQ_OFFICE || (off.numEmployees ?? 0) < PHASE3_TOB_INITIAL_HQ_OFFICE) return false;
+            }
+        } catch {
+            return false;
+        }
+        return tobaccoProducts().length > 0;
+    }
+
+    async function ensureBn3HighBudgetRound2ShellRecovered() {
+        if (!useBn3Round2() || !useBn3HighBudgetRound2()) return;
+        if (isBn3HighBudgetRound2ShellReady()) return;
+
+        log(ns, 'INFO: BN3 high-budget recovery - rebuilding any missing Chem/Tob/Export shell pieces before the round-2 wait.', true, 'warning');
+        await launchBn3HighBudgetPhase3Shell();
+        log(ns, 'INFO: BN3 high-budget recovery complete - phase-3 shell is back in sync.', true, 'info');
+    }
+
+    if (phase <= 4) {
+        log(ns, `INFO: Waiting for round-2 offer 竕･ ${formatMoney(MIN_ROUND2)}...`, true);
+        if (opts['classic-round2']) {
+            log(ns, 'INFO: Classic round-2 mode enabled 窶・pushing Agriculture office/upgrade/warehouse scaling before waiting.', true, 'info');
+        } else if (opts['aggressive-round2']) {
+            log(ns, 'INFO: Aggressive round-2 mode enabled 窶・using early Tobacco and product warmup to push valuation.', true, 'info');
+        }
+
+        if (useBn3Round2()) {
+            if (useBn3HighBudgetRound2()) {
+                log(ns, 'INFO: BN3 high-budget route enabled - full Agri/Chem/Tob setup, earlier Chem/Tob support, and stronger Tobacco product warmup before the BN3 late valuation spend phase.', true, 'info');
+            } else {
+                log(ns, 'INFO: BN3 round-2 mode enabled - matching the old Agriculture 9/10/10/2k/material-fill path before accepting round 2.', true, 'info');
+            }
+            if (useBn3LeanTobRound2()) {
+                log(ns, 'INFO: BN3 lean-Tobacco route enabled - running a Tobacco HQ shell and product warmup before round 2.', true, 'info');
+                if (useBn3Hard5tGoal()) {
+                    log(ns, 'INFO: BN3 hard 5t goal enabled - pragmatic accept is disabled and round 2 will wait for 5.000t.', true, 'info');
+                } else if (!opts['bn3-soft-accept']) {
+                    log(ns, 'INFO: BN3 pragmatic accept enabled automatically for the lean-Tobacco path.', true, 'info');
+                }
+                if (useBn3LeanTobSupport()) {
+                    log(ns, 'INFO: BN3 lean-Tobacco support mode enabled - expanding Tobacco to support cities after the Agriculture fill is complete.', true, 'info');
+                }
+                if (useBn3LeanTobHQPush()) {
+                    log(ns, 'INFO: BN3 lean-Tobacco HQ push enabled - scaling Tobacco HQ only after fill and only on stronger runs.', true, 'info');
+                }
+            }
+            if (useBn3Round2Dummy()) {
+                log(ns, 'INFO: BN3 dummy route enabled - spending only protected surplus on a Restaurant valuation dummy.', true, 'info');
+            }
+            if (useBn3PostfillSales()) {
+                log(ns, 'INFO: BN3 post-fill sales mode enabled - shifting Agriculture into a balanced sales-heavy office mix after the 2k material fill completes.', true, 'info');
+            }
+            if (useBn3Round2SalesBots()) {
+                log(ns, 'INFO: BN3 SalesBots mode enabled - using protected post-fill surplus on a small ABC SalesBots bump.', true, 'info');
+            }
+            if (useBn3PostfillStorage()) {
+                log(ns, 'INFO: BN3 post-fill storage mode enabled - using protected post-fill surplus on extra Smart Storage when warehouses stay pinned.', true, 'info');
+            }
+            if (useBn3HeadroomFill()) {
+                log(ns, 'INFO: BN3 headroom-fill mode enabled - trimming the classic 2k material stack to a 90% profile to leave more permanent warehouse room.', true, 'info');
+            }
+        }
+        await ensureBn3HighBudgetRound2ShellRecovered();
+        await ensureBn3LeanRound2ShellRecovered();
+
+        // Initialise warehouse tracking for boost refresh.
+        for (const div of useBn3Round2() ? [DIV_AGRI] : [DIV_AGRI, DIV_CHEM])
+            for (const city of CITIES)
+                try { prevWHCapacity[`${div}|${city}`] = c.getWarehouse(div, city).size; } catch { }
+
+        let rpGateCleared = false;
+        let bestRound2Offer = 0;
+        let lastMeaningfulRound2Offer = 0;
+        let stagnantRound2Checks = 0;
+        let bn3PragmaticFloorChecks = 0;
+        let lastRound2Debug = '';
+        latestRound2Offer = 0;
+        latestMeaningfulRound2Offer = 0;
+        latestRound2StagnantNeed = 0;
+        latestBn3PragmaticFloorChecks = 0;
+        lastRound2AssetProxy = null;
+        lastBn3SalesPivotState = '';
+        bn3HighBudgetPostfillUnlocked = false;
+        bn3LeanTobSpikeUnlocked = false;
+        bn3LeanTobPreSpikeDummySettleCounter = 0;
+        bn3HighBudgetSupportTurn = 0;
+        bn3DynamicLateCheckCounter = 0;
+        bn3DynamicLateSettleChecks = 0;
+        bn3DynamicLateRecoveryBasis = 0;
+        bn3DynamicLateRecoveryLabel = '';
+
+        while (true) {
+            await waitCycles(1);
+            // Tick down the pre-spike dummy settle counter each cycle.
+            if (bn3LeanTobPreSpikeDummySettleCounter > 0) bn3LeanTobPreSpikeDummySettleCounter--;
+            // During the debt-spike fill, normal morale upkeep is blocked (funds < 0).
+            // Use the spike-mode function which bypasses the floor check at crisis thresholds.
+            if (useBn3LeanTobRound2() && isLeanTobSpikeUnlocked()) {
+                boostMoraleSpike(DIV_TOBACCO, DIV_AGRI);
+            } else {
+                boostMorale(DIV_TOBACCO, DIV_AGRI, DIV_CHEM);
+            }
+            maintainPreRound2SupplyState();
+            configureExports();
+            maintainBn3Round2MaterialRelief();
+            maintainChemTobPlantRelief();
+            const preserveAggressiveOffer = shouldPreserveAggressiveRound2(bestRound2Offer, rpGateCleared, stagnantRound2Checks);
+            const stabilizeBn3Offer = shouldStabilizeBn3Round2Offer(bestRound2Offer, stagnantRound2Checks);
+            if (stabilizeBn3Offer) {
+                noteBn3Gate('peak-stabilize', 'BN3 peak stabilize active - holding Agriculture on the standard post-fill mix near the current best offer.');
+            }
+            maintainRound2DivisionState(preserveAggressiveOffer, stabilizeBn3Offer);
+
+            // Price finished products (sellProduct required even when TA2 active).
+            priceProducts();
+
+            // Research with RP threshold (50% general, 10% production).
+            tryResearch(DIV_TOBACCO, TOB_RESEARCH);
+            tryResearch(DIV_AGRI, MAT_RESEARCH);
+            tryResearch(DIV_CHEM, MAT_RESEARCH);
+
+            // Wilson must be bought BEFORE Advert 窶・it multiplies future Advert benefit (not retroactive).
+            // Docs: "Buy Wilson if you can afford it, then use 竕･20% of funds on Advert."
+            try {
+                const wCost = c.getUpgradeLevelCost('Wilson Analytics');
+                if (c.getCorporation().funds > wCost * 2) c.levelUpgrade('Wilson Analytics');
+            } catch { }
+
+            if (false) buyUpgrades([
+                'Smart Factories', 'Smart Storage',
+                'Nuoptimal Nootropic Injector Implants',  // Correct spacing
+                'Neural Accelerators', 'FocusWires', 'Speech Processor Implants',
+                'ABC SalesBots',
+            ], 1.5);
+
+            // Advert for Tobacco 窶・after Wilson.
+            try {
+                const funds = c.getCorporation().funds;
+                const advCost = c.getHireAdVertCost(DIV_TOBACCO);
+                if (false && funds > advCost && advCost < funds * 0.2) c.hireAdVert(DIV_TOBACCO);
+            } catch { }
+
+            // Re-apply boosts if SmartStorage has expanded warehouse capacity.
+            if (!useBn3Round2()) {
+                await refreshBoosts(DIV_AGRI, AGRI_BOOST.factors, AGRI_BOOST.sizes, AGRI_BOOST.mats);
+                await refreshBoosts(DIV_CHEM, CHEM_BOOST.factors, CHEM_BOOST.sizes, CHEM_BOOST.mats);
+            }
+
+            // Dummy Restaurant divisions 窶・each adds 12 office+warehouse pairs,
+            // boosting private valuation by ﾃ・.1 (~10% better round-2 offer).
+            try {
+                if (false) for (let i = 1; i <= 5; i++) {
+                    const dName = `Dummy-${i}`;
+                    if (c.getCorporation().divisions.includes(dName)) continue;
+                    if (c.getCorporation().funds < 80e9) break;
+                    c.expandIndustry('Restaurant', dName);
+                    for (const city of CITIES) {
+                        try { c.expandCity(dName, city); } catch { }
+                        try { c.purchaseWarehouse(dName, city); } catch { }
+                    }
+                    log(ns, `INFO: Created ${dName} (valuation dummy, +10% offer).`, true, 'info');
+                    break; // One per iteration 窶・re-check funds next loop.
+                }
+            } catch { }
+
+            // RP gate 窶・log progress toward quality-loop threshold.
+            if (!useBn3Round2() && !rpGateCleared) {
+                try {
+                    const agriRP = c.getDivision(DIV_AGRI).researchPoints;
+                    const chemRP = c.getDivision(DIV_CHEM).researchPoints;
+                    if (agriRP >= RP_TARGET_AGRI && chemRP >= RP_TARGET_CHEM) {
+                        rpGateCleared = true;
+                        log(ns, `INFO: RP targets met (Agri=${agriRP.toFixed(0)}, Chem=${chemRP.toFixed(0)}). Quality loop is strong.`, true, 'success');
+                    } else {
+                        log(ns, `  RP: Agri=${agriRP.toFixed(0)}/${RP_TARGET_AGRI}  Chem=${chemRP.toFixed(0)}/${RP_TARGET_CHEM}`, false);
+                    }
+                } catch { }
+            }
+
+            const offer = c.getInvestmentOffer();
+            if (offer.funds > bestRound2Offer) {
+                bestRound2Offer = offer.funds;
+            }
+            latestRound2Offer = offer.funds;
+            const meaningfulGain = Math.max(
+                ROUND2_STAGNATION_ABS,
+                lastMeaningfulRound2Offer * ROUND2_STAGNATION_PCT,
+            );
+            if (offer.funds >= lastMeaningfulRound2Offer + meaningfulGain) {
+                lastMeaningfulRound2Offer = offer.funds;
+                stagnantRound2Checks = 0;
+            } else {
+                stagnantRound2Checks++;
+            }
+            // Detect and rebase a boost-mat liquidation spike. The boost-mat sell-off
+            // generates a large temporary revenue burst that pins lastMeaningfulRound2Offer
+            // far above the real ongoing baseline. Once:
+            //   窶｢ high-budget postfill is active (boost mats sold/zeroed),
+            //   窶｢ the corp is still in buildout mode (not yet late-spike ready),
+            //   窶｢ the offer has dropped more than 60% below the watermark, and
+            //   窶｢ stagnation has been confirmed for 50+ cycles,
+            // rebase the watermark to the current offer so the stagnation counter
+            // reflects real progress from the post-liquidation baseline.
+            if (useBn3HighBudgetRound2() &&
+                isBn3HighBudgetPostfillUnlocked() &&
+                !isBn3HighBudgetLateSpikeReady() &&
+                stagnantRound2Checks >= ROUND2_BN3_HIGH_BUDGET_POSTLIQ_RESET_STAGNATION &&
+                lastMeaningfulRound2Offer > 0 &&
+                offer.funds < lastMeaningfulRound2Offer * ROUND2_BN3_HIGH_BUDGET_POSTLIQ_RESET_RATIO &&
+                estimateBn3RemainingMaterialSpend() <= 0
+            ) {
+                log(ns, `INFO: BN3 post-liquidation baseline reset 窶・stagnation watermark was ${formatMoney(lastMeaningfulRound2Offer)} (boost-mat spike); rebasing to current offer ${formatMoney(offer.funds)}.`, true, 'info');
+                lastMeaningfulRound2Offer = offer.funds;
+                stagnantRound2Checks = 0;
+            }
+            const nextMeaningfulGain = Math.max(
+                ROUND2_STAGNATION_ABS,
+                lastMeaningfulRound2Offer * ROUND2_STAGNATION_PCT,
+            );
+            if (useBn3Round2() && useBn3LeanTobRound2() && offer.funds >= ROUND2_BN3_PRAGMATIC_ACCEPT_FLOOR) {
+                bn3PragmaticFloorChecks++;
+            } else {
+                bn3PragmaticFloorChecks = 0;
+            }
+            latestMeaningfulRound2Offer = lastMeaningfulRound2Offer;
+            latestRound2StagnantNeed = Math.max(0, lastMeaningfulRound2Offer + nextMeaningfulGain - offer.funds);
+            latestBn3PragmaticFloorChecks = bn3PragmaticFloorChecks;
+            log(ns, `  Round ${offer.round} offer: ${formatMoney(offer.funds)} (best ${formatMoney(bestRound2Offer)})`, false);
+            if (offer.round > 2) { log(ns, 'INFO: Round 2 already accepted.', true, 'info'); break; }
+            if (offer.round === 2 && offer.funds >= MIN_ROUND2) {
+                c.acceptInvestmentOffer();
+                log(ns, `INFO: Accepted Round 2 窶・received ${formatMoney(offer.funds)}!`, true, 'success');
+                break;
+            }
+            const bn3AcceptReason = offer.round === 2
+                ? getBn3Round2AcceptReason(offer.funds, bestRound2Offer, stagnantRound2Checks, bn3PragmaticFloorChecks)
+                : null;
+            if (bn3AcceptReason) {
+                c.acceptInvestmentOffer();
+                log(
+                    ns,
+                    `INFO: Accepted Round 2 BN3 ${bn3AcceptReason} - received ${formatMoney(offer.funds)} (best ${formatMoney(bestRound2Offer)}).`,
+                    true,
+                    'success',
+                );
+                break;
+            }
+            const scaling = await manageRound2Scaling(bestRound2Offer, rpGateCleared, stagnantRound2Checks);
+            if (scaling.debug && (scaling.debug !== lastRound2Debug || scaling.action)) {
+                log(ns, `  Round 2 debug: ${scaling.debug}`, false);
+                lastRound2Debug = scaling.debug;
+            }
+            if (scaling.action) {
+                log(ns, `  Round 2 scaling: ${scaling.action} (reserve ${formatMoney(scaling.reserve)})`, false);
+            }
+            if (!useBn3Round2()) {
+                await refreshBoosts(DIV_AGRI, AGRI_BOOST.factors, AGRI_BOOST.sizes, AGRI_BOOST.mats);
+                await refreshBoosts(DIV_CHEM, CHEM_BOOST.factors, CHEM_BOOST.sizes, CHEM_BOOST.mats);
+            }
+        }
+        await waitCycles(1);
+        writePhase(5); phase = 5;
+    }
+
+    // Chain back to orchestrator when this script's phases are done
+    ns.run('/corp/corp-setup.js', 1, ...ns.args);
+}
+
+
+

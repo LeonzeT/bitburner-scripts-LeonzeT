@@ -21,7 +21,7 @@
  *
  * Usage:
  *   run hwgw-manager.js [--targets N] [--hack-percent 0-1] [--period ms]
- *                       [--delta ms] [--min-hack-chance 0-1] [--quiet]
+ *                       [--delta ms] [--min-hack-chance 0-1] [--min-money $] [--quiet]
  *
  * Args:
  *   --targets         How many targets to batch simultaneously (0 = auto, default)
@@ -36,6 +36,8 @@
  *   --min-hack-chance Minimum hack success chance to consider a target (default: 0.50)
  *                     Targets below this threshold aren't worth batching — failed
  *                     hacks waste a full batch's timing window.
+ *   --min-money       Minimum maxMoney ($) a target must have. If omitted, this
+ *                     is auto-derived from current hack level and BN multipliers.
  *   --quiet           Suppress terminal output
  *
  * Coordination files (shared with daemon.js):
@@ -123,9 +125,9 @@ export async function main(ns) {
                                // consecutive batches to interleave, corrupting server state.
     ["delta", 50],
     ["min-hack-chance", 0.50],
-    ["min-money", 0],          // Minimum maxMoney ($) a target must have. Filters out weak servers
-                               // that would dominate scoring when exec RAM is low but earn little.
-                               // Dashboard auto-derives this from hack level (1e7/1e8/1e9).
+    ["min-money", 0],          // Minimum maxMoney ($) a target must have.
+                               // If omitted, manager auto-derives this from
+                               // hack level and BN multipliers.
     ["quiet", false],
     ["reserve-ram", 32],   // GB of home RAM to keep free. Do NOT use reserve.txt for this —
     // that file stores DOLLAR amounts for stockmaster/daemon, not RAM GB.
@@ -143,7 +145,7 @@ export async function main(ns) {
   const period = flags["period"];
   const delta = flags["delta"];
   const minHackChance = flags["min-hack-chance"];
-  const minMoney = flags["min-money"];
+  const rawMinMoney = flags["min-money"];
   const quiet = flags["quiet"];
 
   ns.disableLog("sleep");
@@ -194,6 +196,11 @@ export async function main(ns) {
   else logQuiet('Startup crack sweep: no new servers to crack.');
 
   const bnMults = readBnMults(ns);
+  const userSpecifiedMinMoney = ns.args.includes("--min-money");
+  const hackLevel = Number(ns.getPlayer()?.skills?.hacking ?? 0);
+  const minMoney = userSpecifiedMinMoney
+    ? rawMinMoney
+    : getDynamicMinMoneyThreshold(hackLevel, bnMults);
 
   // Determine operating mode — affects scoring, target selection, and manipulation.
   // hackIncomeViable: hacking actually earns money for the player this BN.
@@ -238,7 +245,7 @@ export async function main(ns) {
   let lastForceTarget = null; // Last value of the force-target file, to detect changes
   let lastUtilCheck = 0; // Timestamp of last RAM utilization check
 
-  logAlways(`hwgw-manager started. Targets: ${maxTargets}, hackPercent: ${(hackPercent * 100).toFixed(0)}%`);
+  logAlways(`hwgw-manager started. Targets: ${maxTargets}, hackPercent: ${(hackPercent * 100).toFixed(0)}%, minMoney: ${formatMoneyThreshold(minMoney)}${userSpecifiedMinMoney ? '' : ' (auto)'}`);
 
   // ── Main management loop ──────────────────────────────────────────────────
   while (true) {
@@ -363,7 +370,7 @@ export async function main(ns) {
         // Assign per-target server slices so batchers don't contend for RAM.
         // Must happen before prep launch so prep also uses the correct slice.
         targetExecSlices = assignExecSlices(ns, currentTargets, execHosts,
-          period, bnMults, hasFormulas, actualWeakenPerThread, logQuiet);
+          hackPercent, period, bnMults, hasFormulas, actualWeakenPerThread, logQuiet);
 
         // Kill old prep if running
         if (prepPid > 0 && ns.isRunning(prepPid)) {
@@ -377,10 +384,9 @@ export async function main(ns) {
         for (const t of currentTargets) {
           ns.write(`/Temp/hwgw-prep-${t}.txt`, "", "w");
           const slice = targetExecSlices.get(t) ?? execHosts;
-          // Pass the slice as a JSON arg so prep knows which servers to use.
-          // If prep doesn't support --exec-hosts, it will ignore unknown args.
+          // Prep reads its per-target slice from /Temp/hwgw-exec-hosts-{target}.txt.
           const pp = ns.exec(PREP_SCRIPT, "home", 1, t,
-            "--reserve", reserveRam);
+            "--reserve", reserveRam, "--quiet");
           if (pp > 0) {
             logQuiet(`Launched prep for "${t}" on ${slice.length} servers (PID ${pp})`);
             lastPrepPid = pp;
@@ -486,12 +492,12 @@ export async function main(ns) {
           // Prep and launch batchers for new targets
           // Recompute slices for the expanded target list
           targetExecSlices = assignExecSlices(ns, currentTargets, execHosts,
-            period, bnMults, hasFormulas, actualWeakenPerThread, logQuiet);
+            hackPercent, period, bnMults, hasFormulas, actualWeakenPerThread, logQuiet);
           for (const t of toAdd) {
             ns.write(`/Temp/hwgw-prep-${t}.txt`, "", "w");
             const slice = targetExecSlices.get(t) ?? execHosts;
             const prepP = ns.exec(PREP_SCRIPT, "home", 1, t,
-              "--reserve", reserveRam);
+              "--reserve", reserveRam, "--quiet");
             if (prepP > 0) {
               logQuiet(`Launched prep for "${t}" on ${slice.length} servers (PID ${prepP})`);
               prepPids.set(t, prepP);
@@ -513,6 +519,7 @@ export async function main(ns) {
       ),
       execHosts,
       reserveRam,
+      minMoney,
       bnMults: {
         ServerWeakenRate: bnMults.ServerWeakenRate,
         ServerGrowthRate: bnMults.ServerGrowthRate
@@ -553,7 +560,7 @@ export async function main(ns) {
  * @param {Function} logFn
  * @returns {Map<string, string[]>}  target → assigned servers
  */
-function assignExecSlices(ns, targets, execHosts, period, bnMults, hasFormulas, actualWeakenPerThread, logFn) {
+function assignExecSlices(ns, targets, execHosts, hackPercent, period, bnMults, hasFormulas, actualWeakenPerThread, logFn) {
   if (!execHosts || execHosts.length === 0 || targets.length === 0)
     return new Map(targets.map(t => [t, execHosts ?? []]));
 
@@ -589,7 +596,7 @@ function assignExecSlices(ns, targets, execHosts, period, bnMults, hasFormulas, 
       hackPctForSlice = ns.hackAnalyze(target) || 0.01;
     } catch { /* keep 0.01 default */ }
     const rpb = estimateRamPerBatch(ns, target,
-      hackPctForSlice, 0.25, period, bnMults, hasFormulas, actualWeakenPerThread);
+      hackPctForSlice, hackPercent, period, bnMults, hasFormulas, actualWeakenPerThread);
     const weakenTime = ns.getWeakenTime(target);
     const timingSlots = Math.max(1, Math.floor(weakenTime / period));
     const batches = Math.min(timingSlots, MAX_BATCHES_PER_TARGET);
@@ -711,6 +718,7 @@ async function selectTargets(ns, maxTargets, minHackChance, minMoney, hackPercen
   bnMults, hasFormulas, actualWeakenPerThread, execHosts, player, logFn, stockPositions = null) {
   const myHackLevel = ns.getHackingLevel();
   const scored = [];
+  const usesPreparedChance = hasFormulas && !!player;
 
   // Compute total available exec-host RAM once, before scoring.
   // Passed to estimateScore so ranking blends efficiency vs absolute $/s:
@@ -741,6 +749,9 @@ async function selectTargets(ns, maxTargets, minHackChance, minMoney, hackPercen
   let skipNoMoney = 0, skipMinMoney = 0, skipLevel = 0, skipChance = 0, skipRam = 0;
 
   // Pre-compute hackPct/hackChance for all rooted hosts in one batch.
+  // With Formulas.exe this uses the prepped server state (max money, min sec),
+  // because target selection should judge what prep can reach, not the current
+  // live state of a half-drained or half-weakened server.
   // Saves 2 GB static RAM by avoiding direct ns.hackAnalyze/ns.hackAnalyzeChance.
   const allRooted = getAllRootedHosts(ns);
   const hackData = await precomputeHackData(ns, allRooted, hasFormulas, player);
@@ -753,7 +764,7 @@ async function selectTargets(ns, maxTargets, minHackChance, minMoney, hackPercen
     if (reqLevel > myHackLevel) { skipLevel++; continue; }
 
     const hd = hackData[host] ?? { hackPct: 0, hackChance: 0 };
-    if (hd.hackChance < minHackChance) { skipChance++; continue; }
+    if (usesPreparedChance && hd.hackChance < minHackChance) { skipChance++; continue; }
 
     const weakenTime = ns.getWeakenTime(host);
     const score = estimateScore(ns, host, maxMoney, hd.hackChance, hd.hackPct, hackPercent,
@@ -771,7 +782,7 @@ async function selectTargets(ns, maxTargets, minHackChance, minMoney, hackPercen
   if (scored.length === 0) {
     logFn(`No viable targets. Filtered: ${skipNoMoney} no-money, ${skipLevel} level (need <=${myHackLevel}),`
       + ` ${skipMinMoney} below min-money ($${(minMoney/1e6).toFixed(0)}M),`
-      + ` ${skipChance} low-chance (<${(minHackChance*100).toFixed(0)}%),`
+      + ` ${skipChance} low-${usesPreparedChance ? 'prep-' : ''}chance (<${(minHackChance*100).toFixed(0)}%),`
       + ` ${skipRam} zero-score (exec RAM=${ns.format.ram(totalRam)}).`);
     return [];
   }
@@ -783,7 +794,7 @@ async function selectTargets(ns, maxTargets, minHackChance, minMoney, hackPercen
     logFn(`  ${host.padEnd(20)} score=${ns.format.number(score)} ` +
       `money=${ns.format.number(maxMoney)} ` +
       `W=${(weakenTime / 1000).toFixed(1)}s ` +
-      `chance=${(hackChance * 100).toFixed(0)}%`);
+      `chance=${(hackChance * 100).toFixed(0)}%${usesPreparedChance ? ' (prepped)' : ''}`);
   }
 
   // Auto-detect: pick as many targets as needed to fill purchased server RAM.
@@ -1203,8 +1214,10 @@ function getPurchasedServers(ns) {
 
 /**
  * Pre-compute hackAnalyze + hackAnalyzeChance for a list of hosts.
- * With Formulas.exe: uses ns.formulas.hacking.* (0 GB, already paid for getServer/getPlayer)
+ * With Formulas.exe: uses ns.formulas.hacking.* on the prepped server state
+ * (max money, min security).
  * Without: delegates to temp script (saves 2 GB vs direct ns.hackAnalyze/hackAnalyzeChance)
+ * and only provides live-state estimates, so chance filtering is skipped.
  * Returns: { hostname: { hackPct, hackChance }, ... }
  */
 async function precomputeHackData(ns, hosts, hasFormulas, player) {
@@ -1212,6 +1225,8 @@ async function precomputeHackData(ns, hosts, hasFormulas, player) {
     const data = {};
     for (const h of hosts) {
       const srv = ns.getServer(h);
+      srv.moneyAvailable = ns.getServerMaxMoney(h);
+      srv.hackDifficulty = ns.getServerMinSecurityLevel(h);
       data[h] = {
         hackPct:    ns.formulas.hacking.hackPercent(srv, player),
         hackChance: ns.formulas.hacking.hackChance(srv, player),
@@ -1327,6 +1342,37 @@ function readBnMults(ns) {
   const overrides = table[currentBN] ?? {};
   return { ServerWeakenRate: 1, ServerGrowthRate: 1, ServerMaxMoney: 1, ScriptHackMoney: 1,
            ScriptHackMoneyGain: 1, HackingLevelMultiplier: 1, HackExpGain: 1, ...overrides };
+}
+
+function getDynamicMinMoneyThreshold(hackLevel, bnMults = {}) {
+  const effectiveHackLevel = Math.max(0, Number(hackLevel ?? 0) * Math.max(0.01, Number(bnMults.HackingLevelMultiplier ?? 1)));
+  let baseThreshold = 0;
+  if (effectiveHackLevel >= 1000) baseThreshold = 1e9;
+  else if (effectiveHackLevel >= 500) baseThreshold = 1e8;
+  else if (effectiveHackLevel >= 250) baseThreshold = 2e7;
+  else if (effectiveHackLevel >= 100) baseThreshold = 1e7;
+  else if (effectiveHackLevel >= 50) baseThreshold = 1e6;
+  else return 0;
+
+  const serverMoneyScale = Math.max(0.01, Number(bnMults.ServerMaxMoney ?? 1));
+  return roundMoneyThreshold(baseThreshold * serverMoneyScale);
+}
+
+function roundMoneyThreshold(value) {
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  const power = Math.max(0, Math.floor(Math.log10(value)) - 1);
+  const unit = 10 ** power;
+  return Math.max(unit, Math.round(value / unit) * unit);
+}
+
+function formatMoneyThreshold(value) {
+  if (!Number.isFinite(value) || value <= 0) return '$0';
+  const abs = Math.abs(value);
+  if (abs >= 1e12) return '$' + (value / 1e12).toFixed(2) + 't';
+  if (abs >= 1e9)  return '$' + (value / 1e9).toFixed(2) + 'b';
+  if (abs >= 1e6)  return '$' + (value / 1e6).toFixed(2) + 'm';
+  if (abs >= 1e3)  return '$' + (value / 1e3).toFixed(1) + 'k';
+  return '$' + value.toFixed(0);
 }
 
 /**

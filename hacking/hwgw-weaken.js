@@ -21,6 +21,7 @@
 /** @param {NS} ns */
 export async function main(ns) {
     ns.disableLog("weaken");
+    ns.disableLog("sleep");
 
     const [target, delay, batchId, role] = ns.args;
 
@@ -37,5 +38,15 @@ export async function main(ns) {
     const port = ns.getPortHandle(1);
     // Don't signal the batcher port for prep workers — they use role='PREP'
     // and batchId=-1, which the batcher would count as anomalies.
-    if (role !== 'PREP') port.tryWrite(`${role}:${batchId}:${securityDecrease.toFixed(6)}:${target}`);
+    if (role !== 'PREP') {
+        const message = `${role}:${batchId}:${securityDecrease.toFixed(6)}:${target}`;
+        if (!port.tryWrite(message)) {
+            const deadline = Date.now() + 2000;
+            while (Date.now() < deadline) {
+                await ns.sleep(25);
+                if (port.tryWrite(message)) return;
+            }
+            ns.print(`WARN hwgw-weaken: completion port stayed full for batch ${batchId} on ${target}`);
+        }
+    }
 }

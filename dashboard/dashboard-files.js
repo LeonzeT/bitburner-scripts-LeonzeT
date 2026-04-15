@@ -84,6 +84,12 @@ export const FILES = {
         staleAfter: 8000,
         desc:       'Per-symbol stock data, positions, forecast',
     },
+    corp: {
+        path:       '/Temp/dashboard-corp-ui.txt',
+        writer:     'dashboard/dashboard-corp.js',
+        staleAfter: 8000,
+        desc:       'Corporation finance, automation, division summary',
+    },
     sleeves: {
         path:       '/Temp/dashboard-sleeves.txt',
         writer:     'dashboard/dashboard-sleeves.js',

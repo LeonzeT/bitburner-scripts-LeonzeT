@@ -83,6 +83,7 @@ const HIGH_POWERMULT_GANGS    = new Set(['Speakers for the Dead', 'The Black Han
 // During the TW batch, territory fires 4× (100-cycle events in a 400-cycle batch),
 // delivering 4× more power gain per TW window than the previous 1-event timing approach.
 const CRIME_BATCHES_PER_TW    = 9;
+const WANTED_PENALTY_THRESH   = 0.01;    // Source: Gang.ts wanted penalty logic uses this threshold
 
 const GANG_PREFERENCE = [
     "Speakers for the Dead", "The Dark Army", "The Syndicate", "Tetrads",
@@ -876,7 +877,7 @@ async function writeDashboardDataFull(ns) {
     const canRecruit = await getNsDataThroughFile(ns, 'ns.gang.canRecruitMember()');
     const dictMembers = await getGangDict(ns, myGangMembers, 'getMemberInformation');
     const ascResults  = await getGangDict(ns, myGangMembers, 'getAscensionResult');
-    const others = {};
+    const otherGangsList = await fetchOtherGangInfo(ns);
 
     const d = {
         _writer: 'gangs.js', _ts: Date.now(),
@@ -892,10 +893,7 @@ async function writeDashboardDataFull(ns) {
         moneyPerSec:   info.moneyGainRate       * 5,
         respectPerSec: info.respectGainRate     * 5,
         wantedPerSec:  info.wantedLevelGainRate * 5,
-        otherGangs: Object.entries(others)
-            .filter(([name]) => name !== myGangFaction)
-            .map(([name, g]) => ({ name, power: g.power, territory: g.territory }))
-            .sort((a, b) => b.territory - a.territory),
+        otherGangs: otherGangsList,
         members: Object.values(dictMembers).map(m => ({
             name: m.name, task: m.task,
             hackAscMult: m.hack_asc_mult, strAscMult: m.str_asc_mult,
@@ -948,7 +946,6 @@ async function waitForGameUpdate(ns, old) {
     return await getNsDataThroughFile(ns, 'ns.gang.getGangInformation()');
 }
 
-const WANTED_PENALTY_THRESH   = 0.01;
 const getWantedPenalty   = g => g.respect / (g.respect + g.wantedLevel);
 const getTerritoryPenalty = g => (0.2 * g.territory + 0.8) * multGangSoftcap;
 
@@ -1187,6 +1184,16 @@ function shuffleArray(arr) {
     return arr;
 }
 
+// ── Dashboard: fetch other gang info ─────────────────────────────────────────
+async function fetchOtherGangInfo(ns) {
+    const others = await getNsDataThroughFile(ns, 'ns.gang.getOtherGangInformation()');
+    return Object.entries(others)
+        .filter(([name]) => name !== myGangFaction)
+        .map(([name, g]) => ({ name, power: g.power, territory: g.territory }))
+        .sort((a, b) => b.territory - a.territory);
+}
+
+// ── API wrappers ───────────────────────────────────────────────────────────────
 const getGangDict = (ns, items, fn) =>
     getDict(ns, items, `gang.${fn}`, `/Temp/gang-${fn}.txt`);
 const getDict = (ns, items, fn, file) =>
